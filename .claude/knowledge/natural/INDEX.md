@@ -14,6 +14,7 @@ holds verified facts with sources. Read this index first, then the relevant topi
 | [calls-and-resolution.md](calls-and-resolution.md) | CALLNAT / PERFORM / FETCH / RUN / INCLUDE, steplib resolution | verified (2026-06-20) |
 | [data-definition.md](data-definition.md) | DEFINE DATA, LDA/GDA/PDA, level structure | verified (2026-06-20); array/REDEFINE grammar partial |
 | [modes-and-dialects.md](modes-and-dialects.md) | structured vs reporting mode, mainframe vs Linux/NaturalONE | verified (2026-06-20); column rules unverified |
+| [example-projects.md](example-projects.md) | public Natural source corpora & fixture candidates (licenses) | verified (2026-06-20) |
 
 ## Open questions (to verify on next relevant task)
 
@@ -28,9 +29,24 @@ holds verified facts with sources. Read this index first, then the relevant topi
   long-named subprograms are ever `CALLS_DYNAMIC` candidates).
 - **`&`/`*LANGUAGE` substitution** — confirm the analyzer's intended edge type for literals containing
   `&` (treat as dynamic vs resolved-with-wildcard).
+- **Reporting-mode fixtures don't exist publicly** — the public corpus is almost entirely structured
+  mode (see example-projects.md). Reporting-mode regression fixtures (DO/DOEND, loop-collapsing
+  `END`/`LOOP`, undeclared vars) will have to be hand-authored from the docs.
+- **License hygiene for fixtures** — only natls (MIT) and the Software AG sample/education repos
+  (Apache-2.0) are safe to derive committed fixtures from; all community GitHub repos found are
+  unlicensed. Decide on the attribution mechanism for derived fixtures before importing any.
+- **Map (`.NSM`) / helproutine (`.NSH`) coverage is scarce** — only the NaturalCruise DevOps sample
+  has a meaningful set; confirm the analyzer's map/INPUT-USING-MAP handling against it.
 
 ## Changelog
 
+- 2026-06-20 — ADDED topic `example-projects.md`: catalog of public Natural source corpora and
+  fixture candidates. Verified existence + inspected file counts via GitHub API / live docs.
+  Strongest fixture sources: MarkusAmshove/natls (MIT, ~186 `.NSx` fixtures in standard library
+  layout), and the two Software AG cruise demos (Apache-2.0). Documentation SYSEXPG/SYSEXSYN examples
+  are authoritative but doc-licensed (read-only). All community repos found are unlicensed → reference
+  only. Public corpus assessed as thin-but-adequate; reporting-mode and mainframe fixed-column code
+  under-represented. Added 4 open questions.
 - 2026-06-20 — Full sweep; all four topics verified against official Software AG docs.
   - file-extensions: ADDED missing types `.NS4` (class), `.NS7` (function), `.NS3` (dialog),
     `.NS8` (adapter), `.NST` (text); CONFIRMED `.NSD` = DDM. Set verified.
