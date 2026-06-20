@@ -350,10 +350,16 @@ cmd/natural-lsp/
   main.go                  Binary entrypoint — stdio LSP server
 
 internal/
+  config/
+    config.go              .natural-lsp.toml parsing, defaults, validation,
+                           workspace-root discovery, library map
+
   server/
     server.go              LSP lifecycle: initialize, shutdown
     handlers.go            textDocument/* and workspace/* dispatch
     progress.go            window/workDoneProgress helpers
+    diagnostics.go         Collects diagnostics from extraction + resolution
+                           and publishes them
 
   document/
     store.go               In-memory document store (didOpen/didChange/didClose)
@@ -362,20 +368,39 @@ internal/
   workspace/
     index.go               Cross-file symbol table
     cache.go               Serialize/deserialize index to disk
+    resolution.go          Steplib-chain resolution: current library → ordered
+                           steplibs → system; library map; ambiguity diagnostics
+
+  model/
+    model.go               Analyzer output types (FileAnalysis, symbols, edges)
+                           — the contract shared by analysis, workspace, server;
+                           free of backend internals
 
   analysis/
-    analyzer.go            Analyzer interface
+    analyzer.go            Analyzer interface (the replaceable-backend seam)
     natural/
       analyzer.go          Regex-based extraction pipeline
       symbols.go           Map FileAnalysis → LSP SymbolInformation
       hover.go             Hover content builders
       calls.go             CALLNAT / FETCH / RUN / PERFORM extraction
+                           (produces unresolved references; see resolution.go)
       data.go              DEFINE DATA / READ / STORE extraction
+
+editors/
+  vscode/                  VS Code companion extension (TypeScript)
+  jetbrains/               JetBrains integration (LSP4IJ config / plugin)
+                           Neovim / Zed / Helix are configured via the docs above
 
 testdata/
   workspace/               Sanitized Natural programs for integration tests
+                           (include multi-library cases for resolution)
   *.NSP                    Unit test fixtures per construct
 ```
+
+> **Extraction vs. resolution.** Per-file extraction (`analysis/natural/`) produces *unresolved*
+> references with caller context. Cross-file **resolution** (`workspace/resolution.go`) walks the
+> steplib chain and the configured library map to bind those references to definitions — keeping the
+> highest-risk logic out of the regex backend and behind the workspace index.
 
 ---
 
