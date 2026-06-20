@@ -1,0 +1,446 @@
+# natural-lsp
+
+A Language Server Protocol implementation
+for [Software AG Natural](https://www.softwareag.com/en_corporate/platform/adabas-natural.html) — the first open-source
+LSP server for the Natural programming language.
+
+Natural is a 4GL language widely deployed on IBM z/OS mainframes, typically alongside COBOL, Adabas, and IMS. Despite
+managing significant business logic at major enterprises, Natural has had no LSP server — meaning no jump-to-definition,
+no cross-file reference search, no structured hover information in any editor. This project changes that.
+
+It operates on **filesystem-based Natural sources** — the `.NSx` object files used by NaturalONE / SPoD — rather than
+objects stored only in the mainframe Natural/Adabas library system. Natural that lives solely on the mainframe must be
+exported to files before it can be indexed.
+
+> **Project status: early development / design stage.** This README describes the **target** design and feature set.
+> The server is not yet released — there are no published binaries, and the benchmarks and capabilities below are
+> goals, not all implemented today. Implemented behavior will be marked as the code lands.
+
+---
+
+## Features
+
+The capabilities below define the **target** feature set for the first stable release.
+
+**Navigation**
+
+- Jump to definition for `CALLNAT`, `FETCH`, `RUN`, and `PERFORM` targets
+- Find all references to a subroutine, program, or DDM field across the workspace
+- Workspace symbol search by program name or subroutine
+
+**Hover**
+
+- Program metadata: module name, location, inbound call count
+- Subroutine signatures on `PERFORM` targets
+- DDM field names, types, and file associations on data access statements
+
+**Document outline**
+
+- Full symbol tree: `DEFINE DATA` sections, subroutines, maps, external calls
+
+**Workspace indexing**
+
+- Cross-file resolution of static `CALLNAT 'LITERAL'` calls
+- `INCLUDE` / copycode dependency tracking
+- Dynamic `CALLNAT #VARIABLE` calls flagged as unresolved with caller context preserved
+- Incremental re-analysis on file change — only changed files re-indexed
+- Persistent cache across sessions (sub-second startup after first index)
+
+**LSP protocol compliance**
+
+- `textDocument/definition`
+- `textDocument/references`
+- `textDocument/hover`
+- `textDocument/documentSymbol`
+- `workspace/symbol`
+- `textDocument/codeLens` (call counts, table write summaries)
+- `window/workDoneProgress` (indexing progress on first run)
+
+---
+
+## Why regex-based extraction
+
+There is no mature, complete grammar for Natural in any parser ecosystem. Authoring one that handles production
+enterprise Natural — irregular column rules, `DEFINE DATA` variants, inline maps, structured vs. reporting mode,
+multi-dialect pragmas — is a months-long investment with significant edge-case exposure before it returns a single
+useful result.
+
+`natural-lsp` instead uses regex-based extraction tuned to the constructs that appear in real production code. The
+trade-off is deliberate: it reaches *usable* coverage of common patterns quickly, rather than complete coverage slowly.
+Two distinct kinds of "gap" are handled separately, and neither is dropped silently:
+
+- **Unresolvable references** — e.g. `CALLNAT #VARIABLE`, whose target cannot be determined statically — are a *modeled
+  outcome*, not a failure. They surface as explicit `CALLS_DYNAMIC` edges with caller context preserved.
+- **Unrecognized syntax** — a line the extractor matches no pattern for — is a *parser limitation*, surfaced as an LSP
+  diagnostic so it is observable. This visibility is something the regex pipeline has to do on purpose: unlike a
+  grammar's error nodes, an unmatched regex is otherwise just a no-op, so the analyzer explicitly flags statement-like
+  lines it failed to extract.
+
+The analyzer sits behind an interface so the extraction backend can later be replaced — a hand-written parser or a
+tree-sitter grammar, should one mature — without touching the LSP layer.
+
+---
+
+## Installation
+
+### Pre-built binary (recommended)
+
+Download the appropriate binary for your platform
+from [GitHub Releases](https://github.com/dkrieg/natural-lsp/releases):
+
+```
+natural-lsp-linux-amd64
+natural-lsp-linux-arm64
+natural-lsp-darwin-amd64
+natural-lsp-darwin-arm64
+natural-lsp-windows-amd64.exe
+```
+
+Place it somewhere on your `PATH`:
+
+```bash
+# Linux / macOS
+chmod +x natural-lsp-linux-amd64
+mv natural-lsp-linux-amd64 /usr/local/bin/natural-lsp
+
+# Verify
+natural-lsp --version
+```
+
+### Build from source
+
+Requires Go 1.22+.
+
+```bash
+git clone https://github.com/dkrieg/natural-lsp
+cd natural-lsp
+go build -o natural-lsp ./cmd/natural-lsp
+```
+
+### go install
+
+```bash
+go install github.com/dkrieg/natural-lsp/cmd/natural-lsp@latest
+```
+
+---
+
+## Editor setup
+
+### VS Code
+
+Install the companion extension from the VS Code Marketplace or directly from a `.vsix`:
+
+```bash
+code --install-extension natural-lsp-vscode.vsix
+```
+
+The extension handles launching the server automatically when a Natural source file (`.NSP`, `.NSN`, `.NSS`, `.NSC`,
+`.NSM`, and related `.NSx` types) is opened. No additional configuration required if `natural-lsp` is on your `PATH`.
+
+To point at a specific binary location, add to `.vscode/settings.json`:
+
+```json
+{
+  "naturalLsp.serverPath": "/path/to/natural-lsp"
+}
+```
+
+### Neovim (nvim-lspconfig)
+
+```lua
+require('lspconfig').configs['natural_lsp'] = {
+  default_config = {
+    cmd = { 'natural-lsp', '--stdio' },
+    filetypes = { 'natural' },
+    root_dir = require('lspconfig.util').root_pattern(
+      '.natural-lsp.toml', '.git'
+    ),
+  }
+}
+require('lspconfig').natural_lsp.setup({})
+```
+
+### Zed
+
+```json
+{
+  "lsp": {
+    "natural-lsp": {
+      "binary": {
+        "path": "natural-lsp",
+        "arguments": [
+          "--stdio"
+        ]
+      }
+    }
+  },
+  "languages": {
+    "Natural": {
+      "language_servers": [
+        "natural-lsp"
+      ]
+    }
+  }
+}
+```
+
+### Helix (`languages.toml`)
+
+```toml
+[[language]]
+name = "natural"
+scope = "source.natural"
+file-types = ["NSP", "NSN", "NSS", "NSC", "NSM", "NSL", "NSG", "NSA", "NSH", "NSD"]
+language-servers = ["natural-lsp"]
+
+[language-server.natural-lsp]
+command = "natural-lsp"
+args = ["--stdio"]
+```
+
+### JetBrains IDEs (IntelliJ, PyCharm, …)
+
+JetBrains does not auto-discover LSP servers the way VS Code does. The recommended route is the free
+**[LSP4IJ](https://github.com/redhat-developer/lsp4ij)** plugin, which works in all JetBrains IDEs — including the
+Community editions:
+
+1. Install **LSP4IJ** from the JetBrains Marketplace.
+2. Add a new language server (*New Language Server → Command*) with the command:
+
+   ```
+   natural-lsp --stdio
+   ```
+
+3. Associate it with the Natural file types (`.NSP`, `.NSN`, `.NSS`, `.NSC`, `.NSM`, `.NSL`, `.NSG`, `.NSA`, `.NSH`,
+   `.NSD`).
+
+The native JetBrains LSP API (`com.intellij.platform.lsp`) is an alternative, but it requires a paid/Ultimate-tier IDE
+and a custom plugin — LSP4IJ is the simpler, more portable path.
+
+---
+
+## Workspace configuration
+
+The server locates the workspace root by walking up from the opened file looking for a `.natural-lsp.toml` sentinel
+file. Place this file at your Natural codebase root:
+
+```toml
+# .natural-lsp.toml
+
+[workspace]
+# Object types to index (defaults shown). The default set spans the
+# constructs the analyzer resolves across files. Exact extensions depend on
+# how your objects were exported — adjust to match your tooling.
+extensions = [
+  ".NSP",  # program
+  ".NSN",  # subprogram
+  ".NSS",  # external subroutine
+  ".NSC",  # copycode (INCLUDE targets)
+  ".NSM",  # map
+  ".NSL",  # local data area
+  ".NSG",  # global data area
+  ".NSA",  # parameter data area
+  ".NSH",  # helproutine
+  ".NSD",  # DDM
+]
+
+# Directories to exclude from indexing
+exclude = ["archive", "backup", ".git"]
+
+# Maximum file size to index (bytes)
+max_file_size = 5_000_000
+
+[cache]
+# Where to write the workspace index cache
+# Defaults to .natural-lsp-cache/ at workspace root
+path = ".natural-lsp-cache"
+
+[analysis]
+# Treat CALLNAT #VARIABLE as an unresolved external dependency
+# rather than an error. Default: true
+flag_dynamic_calls = true
+
+# Minimum token length to consider a string literal a potential
+# module name in dynamic CALLNAT resolution heuristics
+dynamic_call_min_length = 6
+
+[resolution]
+# Natural resolves CALLNAT / PERFORM / FETCH targets by walking a steplib
+# chain — current library first, then each steplib in order, then SYSTEM —
+# NOT by file path. The same module name can exist in multiple libraries,
+# so the search order is what disambiguates.
+#
+# Map workspace directories to Natural libraries and declare each library's
+# steplib search order. If no libraries are declared, the server treats the
+# whole workspace as a single flat namespace and emits a diagnostic when a
+# name resolves ambiguously.
+[[resolution.library]]
+name = "MYAPP"
+path = "src/MYAPP"
+steplibs = ["COMMON", "SYSTEM"]
+
+[[resolution.library]]
+name = "COMMON"
+path = "src/COMMON"
+```
+
+---
+
+## Workspace indexing
+
+On first open, the server indexes the entire workspace. Progress is reported via `window/workDoneProgress` — your editor
+will show a status bar indicator:
+
+```
+Natural LSP: Indexing workspace… 1,243 / 2,891 files (43%)
+```
+
+The completed index is serialized to `.natural-lsp-cache/` (gitignored by default). Subsequent startups load from cache
+and re-analyze only files whose content hash has changed since the last run (content hashing rather than mtime keeps the
+cache valid across git checkouts; a cache-format version forces a full rebuild on upgrade). The figures below are
+**design targets**, not measured benchmarks — cold index time is expected to scale roughly linearly with codebase size:
+
+| Codebase size | First index | Subsequent startup |
+|---------------|-------------|--------------------|
+| 500 files     | ~3s         | <1s                |
+| 5,000 files   | ~25s        | <1s                |
+| 30,000 files  | ~3min       | <1s                |
+
+---
+
+## Supported Natural constructs
+
+### Call relationships
+
+| Construct            | Resolution                       | Edge type       |
+|----------------------|----------------------------------|-----------------|
+| `CALLNAT 'LITERAL'`  | Static — resolved to definition  | `CALLS`         |
+| `CALLNAT #VARIABLE`  | Dynamic — flagged as unresolved  | `CALLS_DYNAMIC` |
+| `FETCH 'LITERAL'`    | Static — navigation edge         | `NAVIGATES_TO`  |
+| `RUN 'LITERAL'`      | Static — navigation edge         | `NAVIGATES_TO`  |
+| `PERFORM subroutine` | Local scope first, then external | `PERFORMS`      |
+| `INCLUDE copycode`   | Resolved to copycode file        | `INCLUDES`      |
+
+### Data access
+
+| Construct                     | Extracted                                   |
+|-------------------------------|---------------------------------------------|
+| `READ` / `FIND` / `GET`       | File/DDM name, read relationship            |
+| `STORE` / `UPDATE` / `DELETE` | File/DDM name, write relationship           |
+| `DEFINE DATA`                 | Variable declarations, parameter interfaces |
+| `DEFINE WORK FILE`            | Work file definitions                       |
+
+### Program structure
+
+| Construct                            | Symbol kind   |
+|--------------------------------------|---------------|
+| Program file root                    | `Program`     |
+| `DEFINE SUBROUTINE`                  | `Subroutine`  |
+| `DEFINE DATA LOCAL/GLOBAL/PARAMETER` | `DataSection` |
+| `DEFINE MAP` / `.NSM` files          | `Map`         |
+| DDM references                       | `DDM`         |
+
+---
+
+## Architecture
+
+```
+cmd/natural-lsp/
+  main.go                  Binary entrypoint — stdio LSP server
+
+internal/
+  server/
+    server.go              LSP lifecycle: initialize, shutdown
+    handlers.go            textDocument/* and workspace/* dispatch
+    progress.go            window/workDoneProgress helpers
+
+  document/
+    store.go               In-memory document store (didOpen/didChange/didClose)
+    sync.go                File watcher for workspace files
+
+  workspace/
+    index.go               Cross-file symbol table
+    cache.go               Serialize/deserialize index to disk
+
+  analysis/
+    analyzer.go            Analyzer interface
+    natural/
+      analyzer.go          Regex-based extraction pipeline
+      symbols.go           Map FileAnalysis → LSP SymbolInformation
+      hover.go             Hover content builders
+      calls.go             CALLNAT / FETCH / RUN / PERFORM extraction
+      data.go              DEFINE DATA / READ / STORE extraction
+
+testdata/
+  workspace/               Sanitized Natural programs for integration tests
+  *.NSP                    Unit test fixtures per construct
+```
+
+---
+
+## Development
+
+```bash
+# Run unit tests
+go test ./...
+
+# Run integration tests (requires built binary)
+go build -o natural-lsp ./cmd/natural-lsp
+go test -tags integration ./...
+
+# Run with a local workspace
+./natural-lsp --stdio < /dev/null   # smoke test: should print initialize response shape
+
+# Build release binaries
+make release
+```
+
+### Adding a test case
+
+When you encounter a Natural construct that the analyzer handles incorrectly:
+
+1. Create a minimal `.NSP` file in `testdata/` that reproduces the issue
+2. Write a unit test in `internal/analysis/natural/analyzer_test.go` asserting the expected extraction
+3. Fix the analyzer
+4. The testdata file becomes a permanent regression fixture
+
+---
+
+## Relation to lsp-graph
+
+`natural-lsp` is a standalone LSP server — it works independently with any LSP-capable editor. It is also designed as a
+first-class language provider for [lsp-graph](https://github.com/dkrieg/lsp-graph), a multi-language workspace graph
+coordinator that unifies structural graphs from multiple LSP servers into a single queryable knowledge graph.
+
+In that context, `natural-lsp` handles Natural files while other servers (Broadcom `che-che4z-lsp-for-cobol` for COBOL,
+`sqls` for DB2 SQL, etc.) handle their respective languages. The coordinator derives cross-language edges — Natural
+`EXEC SQL` blocks resolved to DB2 table definitions, for example — that no single server could produce alone.
+
+---
+
+## Known limitations
+
+- **Library / steplib resolution** is configuration-driven (see `[resolution]`). Without a declared library map, the
+  workspace is treated as a single flat namespace, and modules sharing a name across libraries cannot be disambiguated.
+- **Dynamic `CALLNAT #VARIABLE`** calls are not resolved. They are surfaced as `CALLS_DYNAMIC` edges with the calling
+  context preserved for downstream analysis.
+- **Adabas verbs** (`READ`, `FIND`, `GET` against Adabas files) are extracted structurally but Adabas DDM metadata is
+  not resolved. IMS segment metadata requires external configuration.
+- **Natural preprocessor macros** and code generation constructs may not extract correctly.
+- **Column-sensitive syntax** (fixed-format Natural) is handled for common patterns; unusual legacy formatting may
+  produce incomplete extraction rather than errors.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+---
+
+## Contributing
+
+Issues and PRs welcome. If you encounter a Natural construct that the analyzer mishandles, opening an issue with a
+minimal reproducer is the most useful contribution. Testdata fixtures of sanitized (non-proprietary) Natural code that
+exercise edge cases are particularly valuable.

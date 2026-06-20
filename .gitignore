@@ -1,0 +1,7 @@
+# JetBrains IDE
+*.iml
+.idea/
+
+# Claude Code
+.claude/settings.local.json
+
