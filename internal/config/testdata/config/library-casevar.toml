@@ -1,0 +1,4 @@
+[[resolution.library]]
+name = "MyApp"
+path = "/natural/MyApp"
+steplibs = ["common", "System"]

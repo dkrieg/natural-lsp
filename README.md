@@ -222,8 +222,16 @@ and a custom plugin — LSP4IJ is the simpler, more portable path.
 
 ## Workspace configuration
 
-The server locates the workspace root by walking up from the opened file looking for a `.natural-lsp.toml` sentinel
-file. Place this file at your Natural codebase root:
+The server locates the workspace root by walking up from the opened file (or the LSP `initialize` workspace root)
+looking for a `.natural-lsp.toml` sentinel file. Place this file at your Natural codebase root.
+
+To generate a fully-commented starter config with every key shown at its default:
+
+```bash
+natural-lsp --init > .natural-lsp.toml
+```
+
+All keys are optional — the server applies defaults for any key you omit. The full schema:
 
 ```toml
 # .natural-lsp.toml
