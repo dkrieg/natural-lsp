@@ -78,6 +78,8 @@ then implements, reviews and remediates to a `PASS`, and opens the PR for you to
 
 A single binary (`cmd/natural-lsp`) runs as a stdio LSP server. The intended package boundaries:
 
+- `internal/model/` — the shared output contract (`model.go`: `ObjectType`, `Diagnostic`, `FileAnalysis`); consumed by
+  analysis, workspace, and server; free of backend internals.
 - `internal/server/` — LSP lifecycle and request dispatch (`textDocument/*`, `workspace/*`), work-done progress.
 - `internal/document/` — in-memory document store (didOpen/didChange/didClose) and the workspace file watcher.
 - `internal/workspace/` — the cross-file symbol table (`index.go`) and its on-disk cache (`cache.go`).
