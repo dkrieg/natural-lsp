@@ -50,6 +50,7 @@ func TestDefaults(t *testing.T) {
 		want := []string{
 			".NSP", ".NSN", ".NSS", ".NSC", ".NSM",
 			".NSL", ".NSG", ".NSA", ".NSH", ".NSD",
+			".NS4", ".NS7", ".NS3", ".NS8", ".NST",
 		}
 		if !reflect.DeepEqual(cfg.Workspace.Extensions, want) {
 			t.Errorf("Workspace.Extensions = %#v, want %#v", cfg.Workspace.Extensions, want)
@@ -840,5 +841,127 @@ func TestBootstrap(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLoad_ExtensionTypes_ValidEntry verifies that a valid [workspace.extension_types]
+// entry parses and the map contains the normalized key-value pair. Feature
+// 02-object-type-recognition, Task 7 (Behavior B).
+//
+// A valid entry like [workspace.extension_types] ".NAT" = "program" must result in
+// ExtensionTypes[".NAT"] == "program" (with key normalized to upper-case
+// dot-prefixed form on load).
+func TestLoad_ExtensionTypes_ValidEntry(t *testing.T) {
+	const fixture = "testdata/config/extension-types-valid.toml"
+
+	// Arrange: create the fixture.
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(tmpDir+"/"+sentinelName, []byte(
+		"[workspace.extension_types]\n"+
+			"\".NAT\" = \"program\"\n"+
+			"\".myext\" = \"subprogram\"\n",
+	), 0o644); err != nil {
+		t.Fatalf("WriteFile fixture: %v", err)
+	}
+
+	// Act.
+	cfg, problems, err := config.Load(tmpDir + "/" + sentinelName)
+
+	// Assert: parse succeeds, no problems, extension_types contains both entries
+	// with normalized keys (upper-case dot-prefixed).
+	if err != nil {
+		t.Fatalf("Load(%q) error = %v, want nil", fixture, err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %#v, want none", problems)
+	}
+	if got, want := cfg.Workspace.ExtensionTypes[".NAT"], "program"; got != want {
+		t.Errorf("ExtensionTypes[\".NAT\"] = %q, want %q", got, want)
+	}
+	if got, want := cfg.Workspace.ExtensionTypes[".MYEXT"], "subprogram"; got != want {
+		t.Errorf("ExtensionTypes[\".MYEXT\"] = %q, want %q", got, want)
+	}
+}
+
+// TestLoad_ExtensionTypes_InvalidValue verifies that an invalid object-type
+// value in [workspace.extension_types] is rejected, the entry is dropped, and a
+// Problem is reported (CR-6 fail-safe). Feature 02-object-type-recognition,
+// Task 7 (Behavior B).
+//
+// A bad value like [workspace.extension_types] ".NAT" = "widget" (where "widget" is not
+// a recognized object type) must result in: the entry absent from ExtensionTypes,
+// and one Problem added with Key "workspace.extension_types".
+func TestLoad_ExtensionTypes_InvalidValue(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(tmpDir+"/"+sentinelName, []byte(
+		"[workspace.extension_types]\n"+
+			"\".NAT\" = \"widget\"\n",
+	), 0o644); err != nil {
+		t.Fatalf("WriteFile fixture: %v", err)
+	}
+
+	// Act.
+	cfg, problems, err := config.Load(tmpDir + "/" + sentinelName)
+
+	// Assert: parse succeeds, entry is dropped, and one Problem is reported.
+	if err != nil {
+		t.Fatalf("Load error = %v, want nil", err)
+	}
+
+	// Verify the bad entry is not in the map.
+	if len(cfg.Workspace.ExtensionTypes) != 0 {
+		t.Errorf("ExtensionTypes = %#v, want empty (invalid entry dropped)", cfg.Workspace.ExtensionTypes)
+	}
+
+	// Verify exactly one Problem is reported with Key "workspace.extension_types".
+	var found int
+	for _, p := range problems {
+		if p.Key == "workspace.extension_types" {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Errorf("problems with Key %q = %d, want 1 (problems = %#v)", "workspace.extension_types", found, problems)
+	}
+}
+
+// TestSample_IncludesExtensionTypes verifies that Sample() output includes a
+// commented-out [workspace.extension_types] example block. Feature
+// 02-object-type-recognition, Task 7 (Behavior B).
+func TestSample_IncludesExtensionTypes(t *testing.T) {
+	sample := config.Sample()
+
+	// The sample must contain the [workspace.extension_types] section (as a comment).
+	if !strings.Contains(sample, "[workspace.extension_types]") {
+		t.Errorf("Sample() does not contain [workspace.extension_types] section:\n%s", sample)
+	}
+
+	// It must also include an example mapping.
+	if !strings.Contains(sample, "\".NAT\"") {
+		t.Errorf("Sample() does not contain example \".NAT\" key:\n%s", sample)
+	}
+}
+
+// TestDefaults_IncludesExtendedExtensions verifies that Defaults().Workspace.Extensions
+// includes all 15 extensions: the 10 core types (.NSP .NSN .NSS .NSC .NSM .NSL .NSG
+// .NSA .NSH .NSD) plus the 5 extended types (.NS4 .NS7 .NS3 .NS8 .NST). Feature
+// 02-object-type-recognition, Task 7 (Behavior A).
+func TestDefaults_IncludesExtendedExtensions(t *testing.T) {
+	cfg := config.Defaults()
+
+	wantExtensions := []string{
+		".NSP", ".NSN", ".NSS", ".NSC", ".NSM",
+		".NSL", ".NSG", ".NSA", ".NSH", ".NSD",
+		".NS4", ".NS7", ".NS3", ".NS8", ".NST",
+	}
+
+	// Assert: length matches.
+	if len(cfg.Workspace.Extensions) != len(wantExtensions) {
+		t.Errorf("len(Workspace.Extensions) = %d, want %d", len(cfg.Workspace.Extensions), len(wantExtensions))
+	}
+
+	// Assert: all expected extensions are present.
+	if !reflect.DeepEqual(cfg.Workspace.Extensions, wantExtensions) {
+		t.Errorf("Workspace.Extensions = %#v, want %#v", cfg.Workspace.Extensions, wantExtensions)
 	}
 }

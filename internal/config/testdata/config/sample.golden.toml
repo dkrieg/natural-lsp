@@ -4,11 +4,18 @@
 
 [workspace]
 # Ordered set of Natural object-file extensions to index.
-extensions = [".NSP", ".NSN", ".NSS", ".NSC", ".NSM", ".NSL", ".NSG", ".NSA", ".NSH", ".NSD"]
+extensions = [".NSP", ".NSN", ".NSS", ".NSC", ".NSM", ".NSL", ".NSG", ".NSA", ".NSH", ".NSD", ".NS4", ".NS7", ".NS3", ".NS8", ".NST"]
 # Workspace-relative directory names skipped during indexing.
 exclude = ["archive", "backup", ".git"]
 # Upper bound, in bytes, on a file the indexer will read; larger files are skipped.
 max_file_size = 5000000
+
+# Map additional file extensions to their object type classifications.
+# Valid types: program, subprogram, externalsubroutine, copycode, map,
+# localdataarea, globaldataarea, parameterdataarea, helproutine, ddm, class,
+# function, dialog, adapter, text.
+# [workspace.extension_types]
+# ".NAT" = "program"
 
 [cache]
 # Workspace-relative directory where the serialized index cache is written.

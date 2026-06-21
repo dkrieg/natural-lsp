@@ -1,0 +1,6 @@
+* A minimal Data Definition Module for fixture testing.
+* DDMs describe the layout of an Adabas file or other external data source.
+DB: 1 FILE: 1 DEFAULT SEQUENCE: AA
+T L DB Name                          F Leng  S D  Remark
+- 1 AA ADABAS-FILE-KEY               A    8  N D  Descriptor
+- 1 AB ADABAS-FILE-NAME              A   30  N

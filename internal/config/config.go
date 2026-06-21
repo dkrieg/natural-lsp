@@ -42,8 +42,9 @@ type Config struct {
 // lines 231–252).
 type WorkspaceConfig struct {
 	// Extensions is the ordered set of Natural object-file extensions to
-	// index. TOML key: extensions. Default: the ten-element documented set
-	// (.NSP .NSN .NSS .NSC .NSM .NSL .NSG .NSA .NSH .NSD).
+	// index. TOML key: extensions. Default: the fifteen-element documented set
+	// including core types (.NSP .NSN .NSS .NSC .NSM .NSL .NSG .NSA .NSH .NSD)
+	// and extended types (.NS4 .NS7 .NS3 .NS8 .NST).
 	Extensions []string `toml:"extensions"`
 
 	// Exclude is the list of workspace-relative directory names skipped
@@ -56,6 +57,12 @@ type WorkspaceConfig struct {
 	// beyond the int32 range remain representable). TOML key: max_file_size.
 	// Default: 5_000_000.
 	MaxFileSize int64 `toml:"max_file_size"`
+
+	// ExtensionTypes maps additional file extensions to their object type
+	// classifications. TOML table: [extension_types]. Entries are validated:
+	// invalid values fall back to being dropped and reported as a Problem
+	// (CR-6). Default: empty.
+	ExtensionTypes map[string]string `toml:"extension_types"`
 }
 
 // CacheConfig configures the on-disk workspace index cache. TOML table:
@@ -120,6 +127,27 @@ type Library struct {
 
 // sentinelName is the marker file whose presence identifies a workspace root.
 const sentinelName = ".natural-lsp.toml"
+
+// validExtensionTypeValues is the set of known model.ObjectType stable string
+// values accepted in [workspace.extension_types]. Defined at package level to
+// avoid rebuilding the map on every Validate call.
+var validExtensionTypeValues = map[string]bool{
+	"program":            true,
+	"subprogram":         true,
+	"externalsubroutine": true,
+	"copycode":           true,
+	"map":                true,
+	"localdataarea":      true,
+	"globaldataarea":     true,
+	"parameterdataarea":  true,
+	"helproutine":        true,
+	"ddm":                true,
+	"class":              true,
+	"function":           true,
+	"dialog":             true,
+	"adapter":            true,
+	"text":               true,
+}
 
 // FindRoot locates the workspace root by walking up parent directories from
 // start, looking for the .natural-lsp.toml sentinel file (sentinelName).
@@ -226,9 +254,11 @@ func Defaults() Config {
 			Extensions: []string{
 				".NSP", ".NSN", ".NSS", ".NSC", ".NSM",
 				".NSL", ".NSG", ".NSA", ".NSH", ".NSD",
+				".NS4", ".NS7", ".NS3", ".NS8", ".NST",
 			},
-			Exclude:     []string{"archive", "backup", ".git"},
-			MaxFileSize: 5_000_000,
+			Exclude:        []string{"archive", "backup", ".git"},
+			MaxFileSize:    5_000_000,
+			ExtensionTypes: make(map[string]string),
 		},
 		Cache: CacheConfig{Path: ".natural-lsp-cache"},
 		Analysis: AnalysisConfig{
@@ -375,6 +405,13 @@ func Sample() string {
 	fmt.Fprintf(&b, "exclude = %s\n", tomlStringArray(d.Workspace.Exclude))
 	b.WriteString("# Upper bound, in bytes, on a file the indexer will read; larger files are skipped.\n")
 	fmt.Fprintf(&b, "max_file_size = %d\n", d.Workspace.MaxFileSize)
+	b.WriteString("\n")
+	b.WriteString("# Map additional file extensions to their object type classifications.\n")
+	b.WriteString("# Valid types: program, subprogram, externalsubroutine, copycode, map,\n")
+	b.WriteString("# localdataarea, globaldataarea, parameterdataarea, helproutine, ddm, class,\n")
+	b.WriteString("# function, dialog, adapter, text.\n")
+	b.WriteString("# [workspace.extension_types]\n")
+	b.WriteString("# \".NAT\" = \"program\"\n")
 	b.WriteString("\n")
 
 	b.WriteString("[cache]\n")
@@ -561,6 +598,31 @@ func Validate(cfg Config) (Config, []Problem) {
 			FallenBackTo: fmt.Sprintf("%d", fallback),
 		})
 		cfg.Analysis.DynamicCallMinLength = fallback
+	}
+
+	// workspace.extension_types: validate each entry's value against the known
+	// ObjectType set. Invalid entries are dropped and reported; valid entries are
+	// kept with normalized (upper-cased, dot-prefixed) keys.
+	if len(cfg.Workspace.ExtensionTypes) > 0 {
+		validated := make(map[string]string)
+		for key, value := range cfg.Workspace.ExtensionTypes {
+			// Normalize the key: upper-case and ensure leading dot
+			normalizedKey := strings.ToUpper(key)
+			if !strings.HasPrefix(normalizedKey, ".") {
+				normalizedKey = "." + normalizedKey
+			}
+			// Validate the value
+			if !validExtensionTypeValues[strings.ToLower(value)] {
+				problems = append(problems, Problem{
+					Key:          "workspace.extension_types",
+					Message:      fmt.Sprintf("invalid object type %q for extension %q; entry dropped", value, key),
+					FallenBackTo: "entry omitted",
+				})
+				continue
+			}
+			validated[normalizedKey] = value
+		}
+		cfg.Workspace.ExtensionTypes = validated
 	}
 
 	return cfg, problems

@@ -136,7 +136,7 @@ code --install-extension natural-lsp-vscode.vsix
 ```
 
 The extension handles launching the server automatically when a Natural source file (`.NSP`, `.NSN`, `.NSS`, `.NSC`,
-`.NSM`, and related `.NSx` types) is opened. No additional configuration required if `natural-lsp` is on your `PATH`.
+`.NSM`, `.NS4`, `.NS7`, and other `.NSx` types) is opened. No additional configuration required if `natural-lsp` is on your `PATH`.
 
 To point at a specific binary location, add to `.vscode/settings.json`:
 
@@ -237,10 +237,11 @@ All keys are optional — the server applies defaults for any key you omit. The 
 # .natural-lsp.toml
 
 [workspace]
-# Object types to index (defaults shown). The default set spans the
-# constructs the analyzer resolves across files. Exact extensions depend on
-# how your objects were exported — adjust to match your tooling.
+# Object types to index (defaults shown). The default set covers all 15
+# recognized Natural constructs. Exact extensions depend on how your objects
+# were exported — adjust to match your tooling.
 extensions = [
+  # Core types
   ".NSP",  # program
   ".NSN",  # subprogram
   ".NSS",  # external subroutine
@@ -251,7 +252,21 @@ extensions = [
   ".NSA",  # parameter data area
   ".NSH",  # helproutine
   ".NSD",  # DDM
+  # Extended types
+  ".NS4",  # class (NaturalX)
+  ".NS7",  # function (user-defined)
+  ".NS3",  # dialog (Natural for Windows)
+  ".NS8",  # adapter (Natural Ajax)
+  ".NST",  # text
 ]
+
+# Map non-standard extensions to their construct type. Useful when files were
+# exported with a different suffix (e.g. legacy tools using .NAT for programs).
+# Valid values: program, subprogram, externalsubroutine, copycode, map,
+#   localdataarea, globaldataarea, parameterdataarea, helproutine, ddm,
+#   class, function, dialog, adapter, text
+# [extension_types]
+# ".NAT" = "program"
 
 # Directories to exclude from indexing
 exclude = ["archive", "backup", ".git"]

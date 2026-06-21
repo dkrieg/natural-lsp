@@ -4,14 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Early implementation — feature 01 (workspace & configuration) shipped; remaining features are stubs.**
-`internal/config` is fully implemented: workspace-root discovery (`.natural-lsp.toml` sentinel walk-up),
-config loading with decode-onto-defaults semantics, per-field validation with CR-6 fail-safe (bad value →
-default + actionable `Problem`, never crash), directory-exclusion predicate (`IsExcluded`), skip-reason
-surface (`SkipReason`), library-map parsing (declared order preserved), analysis-options parsing, and a
-`Sample()` generator for `--init`. All other `internal/` packages (`server`, `document`, `workspace`,
-`analysis`) remain documented stubs. The README describes the full *target* architecture and feature set;
-update the "Project state" note here as each feature lands.
+**Early implementation — features 01 and 02 shipped; remaining features are stubs.**
+
+`internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
+sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
+fail-safe (bad value → default + actionable `Problem`, never crash), directory-exclusion predicate
+(`IsExcluded`), skip-reason surface (`SkipReason`), library-map parsing (declared order preserved),
+analysis-options parsing, custom extension-type mapping (`[extension_types]` table), and a `Sample()`
+generator for `--init`. Default indexed set: all 15 Natural extensions (10 core + 5 extended; see below).
+
+`internal/model` and `internal/analysis/natural` have object-type recognition (feature 02):
+`model.ObjectType` (16 constants with stable string values for `lsp-graph` interop), `model.Diagnostic`
+(analyzer-side signal for unrecognized files — feature-03 indexer will wire it to `SkipReason`/logs),
+and `model.FileAnalysis.ObjectType`/`Diagnostics` fields. The `analysis/natural` backend classifies
+every file by extension (case-insensitive, custom-mapping-aware) via `Analyze(path, content)`. Regression
+fixtures for all 15 types live under `testdata/objecttype/`. All other `internal/` packages (`server`,
+`document`, `workspace`) remain documented stubs.
 
 `natural-lsp` is the first open-source Language Server Protocol implementation for **Software AG Natural**, a 4GL widely
 deployed on IBM z/OS mainframes. It indexes a Natural codebase and serves navigation, references, hover, document
