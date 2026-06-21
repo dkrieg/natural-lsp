@@ -1,0 +1,3 @@
+* A minimal Natural program for fixture testing
+WRITE 'HELLO'
+END

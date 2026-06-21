@@ -1,0 +1,4 @@
+* A minimal Natural copycode fragment for fixture testing.
+* Copycodes are textual fragments INCLUDEd at compile time; they carry no
+* END statement of their own.
+MOVE 0 TO #COUNTER

@@ -1,0 +1,4 @@
+* A minimal Natural subprogram for fixture testing
+DEFINE DATA PARAMETER
+END-DEFINE
+END

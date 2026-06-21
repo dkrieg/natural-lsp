@@ -10,7 +10,7 @@ holds verified facts with sources. Read this index first, then the relevant topi
 
 | File | Covers | Overall status |
 |------|--------|----------------|
-| [file-extensions.md](file-extensions.md) | `.NSx` object types and what each maps to | verified (2026-06-20) |
+| [file-extensions.md](file-extensions.md) | `.NSx` object types and what each maps to | verified (2026-06-21) |
 | [calls-and-resolution.md](calls-and-resolution.md) | CALLNAT / PERFORM / FETCH / RUN / INCLUDE, steplib resolution | verified (2026-06-20) |
 | [data-definition.md](data-definition.md) | DEFINE DATA, LDA/GDA/PDA, level structure | verified (2026-06-20); array/REDEFINE grammar partial |
 | [modes-and-dialects.md](modes-and-dialects.md) | structured vs reporting mode, mainframe vs Linux/NaturalONE | verified (2026-06-20); column rules unverified |
@@ -40,6 +40,12 @@ holds verified facts with sources. Read this index first, then the relevant topi
 
 ## Changelog
 
+- 2026-06-21 — file-extensions: re-verified full source table against NaturalONE editors "General
+  Information" page. ADDED standalone-vs-fragment column (copycode/data-areas/DDM/text = fragments).
+  ADDED source-vs-generated `NS*`/`NG*` distinction (NSP→NGP, map source→`.NGM`; LSP indexes `NS*` only).
+  CONFIRMED `.NAT` is NOT an official Natural extension (only on third-party file sites). CONFIRMED
+  `.NSX/.NSV/.NSE/.NSK/.NSB` do not exist as object types; `NSF` = product (Natural SAF Security), not an
+  extension; `.SAG` = work-file binary extension, not source.
 - 2026-06-20 — ADDED topic `example-projects.md`: catalog of public Natural source corpora and
   fixture candidates. Verified existence + inspected file counts via GitHub API / live docs.
   Strongest fixture sources: MarkusAmshove/natls (MIT, ~186 `.NSx` fixtures in standard library
