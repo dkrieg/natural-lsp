@@ -6,7 +6,7 @@ description: >-
   Analyzer-seam purity, and deterministic extraction output. Use after `tdd-green`; the security focus
   is this project's robustness model, not web-app OWASP.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: opus
+model: sonnet
 ---
 
 # TDD Refactor Phase — Improve Quality & Robustness

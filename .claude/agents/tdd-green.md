@@ -5,7 +5,7 @@ description: >-
   without over-engineering or breaking the Analyzer-seam boundary. Use after `tdd-red` has produced a
   failing test; verifies with `go test` (and `-race` for concurrent code). Hands off to `tdd-refactor`.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: opus
+model: haiku
 ---
 
 # TDD Green Phase — Make the Test Pass Quickly

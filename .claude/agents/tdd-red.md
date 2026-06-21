@@ -6,7 +6,7 @@ description: >-
   a red-green-refactor cycle — especially analyzer/extraction work, where "red" means a new minimal
   `testdata/` fixture plus a failing assertion. Hands off to `tdd-green`.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: opus
+model: haiku
 ---
 
 # TDD Red Phase — Write a Failing Test First

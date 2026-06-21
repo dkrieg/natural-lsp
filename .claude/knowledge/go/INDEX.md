@@ -18,6 +18,7 @@ this index first, then the relevant topics.
 | [stdlib-for-lsp-server.md](stdlib-for-lsp-server.md) | stdio framing, encoding/json, signals, slog; json/v2 (experimental) | verified (2026-06-20) |
 | [lsp-go-ecosystem.md](lsp-go-ecosystem.md) | Go LSP/JSON-RPC libraries and trade-offs; LSP 3.18 coverage | verified (2026-06-20) |
 | [filesystem-and-watching.md](filesystem-and-watching.md) | WalkDir, io/fs, fsnotify, content hashing | verified (2026-06-20) |
+| [config-and-toml.md](config-and-toml.md) | `pelletier/go-toml/v2` (TOML decoder, strict mode); `go mod tidy` retaining a not-yet-imported dep via the `tools`-tag blank-import pattern | verified (2026-06-21) |
 
 ## Open questions (to verify on next relevant task)
 
@@ -60,6 +61,11 @@ this index first, then the relevant topics.
 
 ## Changelog
 
+- 2026-06-21 — T0 of feature 01: adopted `github.com/pelletier/go-toml/v2 v2.4.0` (project's first
+  third-party dep; ADR-013). New `config-and-toml.md` records the decoder facts (strict mode via
+  `DisallowUnknownFields`, BurntSushi/toml unmaintained) and the verified `go mod tidy` retention
+  pattern (a `//go:build tools` blank import keeps an unimported require through tidy while staying
+  out of normal builds).
 - 2026-06-20 — Second sweep: closed both prior open questions and folded in three routed testing items.
   - **json/v2 resolved (`unverified` → verified):** `encoding/json/v2` is still experimental in Go
     1.26, exists only under `GOEXPERIMENT=jsonv2`, and its godoc says "most users should use
