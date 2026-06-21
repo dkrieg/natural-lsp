@@ -1,0 +1,2 @@
+[analysis]
+dynamic_call_min_length = 0

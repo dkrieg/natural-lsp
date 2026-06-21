@@ -4,10 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Pre-implementation / design stage.** As of this writing the repository contains no Go source — only `README.md`
-(the design spec and source of truth), `go.mod`, and `LICENSE`. The README describes the *target* architecture and
-feature set, not shipped behavior. When building, treat the README's "Architecture" section as the intended package
-layout and keep new code consistent with it.
+**Early implementation — feature 01 (workspace & configuration) shipped; remaining features are stubs.**
+`internal/config` is fully implemented: workspace-root discovery (`.natural-lsp.toml` sentinel walk-up),
+config loading with decode-onto-defaults semantics, per-field validation with CR-6 fail-safe (bad value →
+default + actionable `Problem`, never crash), directory-exclusion predicate (`IsExcluded`), skip-reason
+surface (`SkipReason`), library-map parsing (declared order preserved), analysis-options parsing, and a
+`Sample()` generator for `--init`. All other `internal/` packages (`server`, `document`, `workspace`,
+`analysis`) remain documented stubs. The README describes the full *target* architecture and feature set;
+update the "Project state" note here as each feature lands.
 
 `natural-lsp` is the first open-source Language Server Protocol implementation for **Software AG Natural**, a 4GL widely
 deployed on IBM z/OS mainframes. It indexes a Natural codebase and serves navigation, references, hover, document
@@ -33,7 +37,9 @@ just release vX.Y.Z                          # cross-build all platforms into di
 # Underlying go commands, for ad-hoc use:
 go build -o natural-lsp ./cmd/natural-lsp   # build the binary
 go test -run TestName ./internal/analysis/natural   # single test
-./natural-lsp --stdio < /dev/null           # smoke test: prints initialize response shape
+./natural-lsp --stdio < /dev/null           # smoke test: resolves workspace root, loads config, then exits (LSP serving not yet implemented)
+./natural-lsp --init                        # write a fully-commented sample .natural-lsp.toml to stdout
+./natural-lsp --version                     # print version and exit
 ```
 
 ## Development workflow

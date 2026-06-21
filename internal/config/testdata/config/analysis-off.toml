@@ -1,0 +1,3 @@
+[analysis]
+flag_dynamic_calls = false
+dynamic_call_min_length = 8
