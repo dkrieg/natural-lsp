@@ -42,6 +42,8 @@ Product features go through a lifecycle, each phase driven by a slash command (d
 `.claude/`): `/plan-feature` → `/implement-feature` → `/review-feature` ⇄ `/address-findings` →
 `/finalize-feature`. Each feature is a directory under `docs/plans/features/<feature>/` holding
 `plan.md` (the spec — user stories + acceptance criteria) and `tasks.md` (the planner's decomposition).
+To run the whole chain in one go, use **`/ship-feature <feature>`** — it pauses once for plan approval,
+then implements, reviews and remediates to a `PASS`, and opens the PR for you to merge.
 
 - **Feature branches, never `main`.** Implement every product feature on a `feat/<feature>` branch off
   `main` — the task plan (`tasks.md`), the code, and the doc updates all live on that branch. Do not
