@@ -3,7 +3,7 @@
 **Status:** Planned
 **PRD requirements:** FR-33, FR-34
 **Priority / phase:** P0 (open document handling) · P1 (external file watching)
-**Depends on:** [03 Server lifecycle](03-server-lifecycle-and-protocol.md)
+**Depends on:** [03 Server lifecycle](../03-server-lifecycle-and-protocol/plan.md)
 
 ## Summary
 
@@ -21,7 +21,7 @@ hover match what I see.
 - [ ] On open, the document's current content becomes the source of truth for that file (over the
       on-disk copy).
 - [ ] On change, the in-memory content updates and dependent analysis is refreshed (incremental
-      re-analysis specified in [05](05-workspace-indexing-and-cache.md)).
+      re-analysis specified in [05](../05-workspace-indexing-and-cache/plan.md)).
 - [ ] On close, the server reverts to the on-disk content for that file.
 - [ ] Editor features queried against an open, unsaved document reflect the unsaved content.
 

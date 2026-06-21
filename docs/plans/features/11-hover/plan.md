@@ -3,8 +3,8 @@
 **Status:** Planned
 **PRD requirements:** FR-28
 **Priority / phase:** P1
-**Depends on:** [06](06-call-and-dependency-resolution.md),
-[07](07-data-access-extraction.md), [08](08-program-structure-extraction.md)
+**Depends on:** [06](../06-call-and-dependency-resolution/plan.md),
+[07](../07-data-access-extraction/plan.md), [08](../08-program-structure-extraction/plan.md)
 
 ## Summary
 
@@ -29,7 +29,7 @@ parameters.
 
 **Acceptance criteria:**
 - [ ] Hovering a PERFORM target shows the subroutine's signature/parameter interface (from
-      [07](07-data-access-extraction.md) parameter extraction).
+      [07](../07-data-access-extraction/plan.md) parameter extraction).
 - [ ] The hover reflects inline-before-external resolution (it describes the subroutine that would
       actually be performed).
 

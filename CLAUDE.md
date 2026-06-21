@@ -18,14 +18,45 @@ outline, and workspace symbols to any LSP-capable editor.
 Module is `natural-lsp` (`go.mod`), targeting Go 1.26. Note the README's `go install` path uses
 `github.com/dkrieg/natural-lsp/cmd/natural-lsp` — reconcile the module path before publishing.
 
+Task runner is **`just`** (install: `brew install just`; `just --list` shows all recipes). The same
+gate — **`just verify`** — runs in the pre-push hook, in `/finalize-feature`, and in CI, so a local
+pass means CI should pass.
+
 ```bash
+just verify                                 # full gate: gofmt + vet + build + unit (-race) + integration (same as CI)
+just test                                   # unit tests with the race detector
+just test-integration                       # integration tests (builds binary, runs the `integration` tag)
+just build                                  # build the server binary
+just install-hooks                          # enable the pre-push hook (runs `just verify` before every push)
+just release vX.Y.Z                          # cross-build all platforms into dist/ (releases are cut via the manual Release workflow)
+
+# Underlying go commands, for ad-hoc use:
 go build -o natural-lsp ./cmd/natural-lsp   # build the binary
-go test ./...                               # unit tests
 go test -run TestName ./internal/analysis/natural   # single test
-go build -o natural-lsp ./cmd/natural-lsp && go test -tags integration ./...   # integration tests (need built binary)
-make release                                # release binaries
 ./natural-lsp --stdio < /dev/null           # smoke test: prints initialize response shape
 ```
+
+## Development workflow
+
+Product features go through a lifecycle, each phase driven by a slash command (defined under
+`.claude/`): `/plan-feature` → `/implement-feature` → `/review-feature` ⇄ `/address-findings` →
+`/finalize-feature`. Each feature is a directory under `docs/plans/features/<feature>/` holding
+`plan.md` (the spec — user stories + acceptance criteria) and `tasks.md` (the planner's decomposition).
+
+- **Feature branches, never `main`.** Implement every product feature on a `feat/<feature>` branch off
+  `main` — the task plan (`tasks.md`), the code, and the doc updates all live on that branch. Do not
+  commit feature code directly to `main`. (Repo-infrastructure changes — `.claude/` tooling, CI, chores
+  — are exempt and may go straight to `main`.) A reviewed feature lands via a **pull request that a
+  human merges**: `/finalize-feature` opens the PR and stops there. After the PR merges, delete the
+  branch and return to `main`.
+- **Review is a loop.** If `/review-feature` returns `FAIL` (or `CONCERNS` worth addressing), run
+  `/address-findings` — each finding becomes a regression-first fix through the TDD loop — and re-review
+  until the verdict is `PASS`. Only a clean `PASS` unlocks `/finalize-feature`.
+- **Docs track as-built.** By the time a feature merges, `CLAUDE.md` and `README.md` must already match
+  what shipped — the "Project state" note below, the command list, and the architecture/feature set.
+  `/finalize-feature` performs that sync before opening the PR, and the `review-docs` reviewer flags
+  drift during `/review-feature`. Update the "Project state" note as real source lands (it currently
+  says pre-implementation).
 
 ## Architecture
 

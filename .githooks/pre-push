@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Pre-push gate: run the same checks CI runs, so we never push a build destined to fail.
+# Enable with: `just install-hooks` (sets core.hooksPath=.githooks).
+set -euo pipefail
+
+if ! command -v just >/dev/null 2>&1; then
+  echo "pre-push: 'just' is not installed (brew install just) — skipping local gate; CI will still run it." >&2
+  exit 0
+fi
+
+echo "pre-push: running 'just verify' (unit + integration)…" >&2
+just verify

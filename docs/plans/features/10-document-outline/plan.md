@@ -3,7 +3,7 @@
 **Status:** Planned
 **PRD requirements:** FR-27
 **Priority / phase:** P0
-**Depends on:** [08](08-program-structure-extraction.md)
+**Depends on:** [08](../08-program-structure-extraction/plan.md)
 
 ## Summary
 

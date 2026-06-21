@@ -8,11 +8,16 @@ Use the feature-planner subagent to turn a feature plan into an implementable, t
 Feature: $ARGUMENTS
 
 If no feature is given above, ask which feature plan under `docs/plans/features/` to plan before
-proceeding.
+proceeding. **Validate that `docs/plans/features/<feature>/plan.md` exists** — if it doesn't, list the
+available feature directories under `docs/plans/features/` and stop; do not invent a plan.
+
+Before planning, **ensure you are on the feature branch** per `CLAUDE.md`'s branching policy: if on
+`main`, create and switch to `feat/<feature>` so the plan (and the later code) lands on the branch, not
+`main`.
 
 Instruct the planner to:
 
-1. Read the feature plan under `docs/plans/features/<feature>/`, the FR-/NFR-IDs it references in
+1. Read the feature plan `docs/plans/features/<feature>/plan.md`, the FR-/NFR-IDs it references in
    `docs/plans/natural-lsp-prd.md`, and the architecture constraints in `CLAUDE.md` / `README.md`.
    Apply the `feature-planning` skill.
 2. Decompose into dependency-ordered tasks, each a red → green → refactor slice naming the `testdata/`

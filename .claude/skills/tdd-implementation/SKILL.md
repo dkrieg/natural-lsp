@@ -13,6 +13,9 @@ You (the top-level agent) drive implementation of a **planned** feature. You spa
 sequence per task and enforce the discipline between phases — **the agents do the work; you sequence and
 gate them.** Read `CLAUDE.md` for context.
 
+All work happens on the feature's `feat/<feature>` branch (per `CLAUDE.md`'s branching policy), never on
+`main` — ensure you are on it before the first task; `/implement-feature` does this for you.
+
 ## Inputs
 
 - `docs/plans/features/<feature>/tasks.md` — the ordered task list from `feature-planner`, the source
@@ -56,6 +59,14 @@ until the previous task's DoD is met and the suite is green.
 When all tasks (or the requested subset) are done and green, summarize what was implemented and which
 FR-IDs are now covered, and recommend running **`/review-feature`** for the dimensions listed in the
 plan's "Reviews required" section. Implementation does **not** self-certify — review is independent.
+
+## Remediation mode
+
+`/address-findings` reuses this same loop to fix what `/review-feature` flagged. The only difference is
+where tasks come from: each actionable finding is appended to `tasks.md` as a **regression-first** task
+whose RED step writes a failing test that reproduces the finding (the test that should have caught it).
+Drive those tasks through the identical red → green → refactor gates. A finding is not resolved until a
+test that would have caught it is green.
 
 ## Boundary
 

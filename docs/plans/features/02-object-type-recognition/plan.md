@@ -3,7 +3,7 @@
 **Status:** Planned
 **PRD requirements:** FR-7, FR-8, FR-9
 **Priority / phase:** P0 (core types) · P2 (extended types)
-**Depends on:** [01 Workspace & configuration](01-workspace-and-configuration.md)
+**Depends on:** [01 Workspace & configuration](../01-workspace-and-configuration/plan.md)
 
 ## Summary
 
@@ -24,7 +24,7 @@ navigation and resolution operate on the right objects.
 - [ ] Classification is driven by object type and normalizes case (object types are recognized
       regardless of letter case).
 - [ ] A file whose type is recognized but whose contents are unreadable/malformed is classified and
-      skipped gracefully (does not abort indexing — see [03](03-server-lifecycle-and-protocol.md)).
+      skipped gracefully (does not abort indexing — see [03](../03-server-lifecycle-and-protocol/plan.md)).
 - [ ] Each classification is backed by a fixture under `testdata/` demonstrating the mapping.
 
 ### Story 2 — Keep the indexed set consistent with consumers (FR-9)

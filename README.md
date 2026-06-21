@@ -109,7 +109,7 @@ natural-lsp --version
 
 ### Build from source
 
-Requires Go 1.22+.
+Requires Go 1.26+.
 
 ```bash
 git clone https://github.com/dkrieg/natural-lsp
@@ -406,19 +406,50 @@ testdata/
 
 ## Development
 
+### Required software
+
+All tooling is cross-platform — install via your OS package manager or the official instructions linked
+below. Versions are specified, not install commands, so this is OS-independent.
+
+| Tool | Version | Purpose | Install |
+|------|---------|---------|---------|
+| [Go](https://go.dev) | 1.26 or newer | build and test the server | <https://go.dev/doc/install> |
+| [just](https://just.systems) | 1.0 or newer | task runner for the dev commands below | <https://just.systems/man/en/packages.html> |
+| [Git](https://git-scm.com) | any recent | version control and the pre-push hook | <https://git-scm.com/downloads> |
+| [actionlint](https://github.com/rhysd/actionlint) | optional | lint the GitHub Actions workflow locally | <https://github.com/rhysd/actionlint/blob/main/docs/install.md> |
+
+After cloning, enable the pre-push gate once:
+
 ```bash
-# Run unit tests
-go test ./...
+just install-hooks   # configures the pre-push hook to run `just verify`
+```
 
-# Run integration tests (requires built binary)
-go build -o natural-lsp ./cmd/natural-lsp
-go test -tags integration ./...
+### Common tasks
 
-# Run with a local workspace
+```bash
+just --list             # list all recipes
+just verify             # full gate: gofmt + vet + build + unit (-race) + integration tests
+just test               # unit tests with the race detector
+just test-integration   # integration tests (builds the binary, runs the `integration` build tag)
+just build              # build the server binary
 ./natural-lsp --stdio < /dev/null   # smoke test: should print initialize response shape
+```
 
-# Build release binaries
-make release
+`just verify` is the **single gate** that runs locally (via the pre-push hook) and in CI — so if it
+passes locally, CI should pass. There is no need to memorize the underlying `go` commands; `just --list`
+is the entry point.
+
+### Releases
+
+Releases are cut by maintainers from the GitHub **Actions → Release → Run workflow** button (a manual
+`workflow_dispatch`). Enter the version tag (e.g. `v1.2.3`); the workflow runs the full `just verify`
+gate, cross-compiles every platform via `just release`, then creates the git tag and a GitHub Release
+with the binaries and `checksums.txt` attached. Dispatch it from the `main` commit you intend to release.
+
+To produce the same artifacts locally (into `dist/`):
+
+```bash
+just release v1.2.3
 ```
 
 ### Adding a test case

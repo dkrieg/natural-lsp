@@ -3,13 +3,13 @@
 **Status:** Planned
 **PRD requirements:** FR-23
 **Priority / phase:** P0
-**Depends on:** [02](02-object-type-recognition.md)
+**Depends on:** [02](../02-object-type-recognition/plan.md)
 
 ## Summary
 
 Produces a structural model of each object — its root, subroutines, data sections, maps, and DDM
-references — with source positions. This model is the backbone for the [document outline](10-document-outline.md),
-[workspace symbol search](09-navigation-and-symbol-search.md), and [hover](11-hover.md).
+references — with source positions. This model is the backbone for the [document outline](../10-document-outline/plan.md),
+[workspace symbol search](../09-navigation-and-symbol-search/plan.md), and [hover](../11-hover/plan.md).
 
 ## User stories
 
@@ -32,7 +32,7 @@ something to show.
 
 **Acceptance criteria:**
 - [ ] An object with some unrecognized lines still yields structure for the parts that are recognized.
-- [ ] Unrecognized statement-like lines are surfaced as diagnostics (see [13](13-diagnostics.md)),
+- [ ] Unrecognized statement-like lines are surfaced as diagnostics (see [13](../13-diagnostics/plan.md)),
       not dropped, and do not prevent extraction of the rest of the structure.
 
 ## Out of scope

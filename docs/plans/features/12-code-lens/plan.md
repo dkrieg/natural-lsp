@@ -3,8 +3,8 @@
 **Status:** Planned
 **PRD requirements:** FR-29
 **Priority / phase:** P2
-**Depends on:** [06](06-call-and-dependency-resolution.md),
-[07](07-data-access-extraction.md)
+**Depends on:** [06](../06-call-and-dependency-resolution/plan.md),
+[07](../07-data-access-extraction/plan.md)
 
 ## Summary
 
@@ -28,7 +28,7 @@ importance at a glance.
 mutation quickly.
 
 **Acceptance criteria:**
-- [ ] A code lens summarizes the files/DDMs an object writes (from [07](07-data-access-extraction.md)).
+- [ ] A code lens summarizes the files/DDMs an object writes (from [07](../07-data-access-extraction/plan.md)).
 - [ ] Activating the lens reveals or navigates to the write sites.
 
 ### Story 3 — Non-intrusive rendering

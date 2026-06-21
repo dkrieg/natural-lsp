@@ -5,3 +5,10 @@
 # Claude Code
 .claude/settings.local.json
 
+# Go build artifacts
+/natural-lsp
+/dist/
+
+# Workspace index cache (content-hashed, rebuilt on demand)
+.natural-lsp-cache/
+

@@ -5,8 +5,8 @@
 NFR-7; metrics M-3, M-4, M-6
 **Priority / phase:** P0 (static calls, dynamic modeling, subroutine scope, INCLUDE) · P1 (steplib
 resolution, navigation statements) · P2 (runtime name substitution)
-**Depends on:** [01](01-workspace-and-configuration.md), [02](02-object-type-recognition.md),
-[05](05-workspace-indexing-and-cache.md)
+**Depends on:** [01](../01-workspace-and-configuration/plan.md), [02](../02-object-type-recognition/plan.md),
+[05](../05-workspace-indexing-and-cache/plan.md)
 
 ## Summary
 
@@ -18,7 +18,7 @@ Two ideas run through every story:
   cross-file resolution binds them to definitions using the library/steplib semantics.
 - **Two kinds of gap, never silent.** A reference whose target can't be determined statically is a
   *modeled outcome* (a dynamic/unresolved relationship). A statement-like line the analyzer can't
-  parse is a *tool limitation* and becomes a [diagnostic](13-diagnostics.md). They are reported
+  parse is a *tool limitation* and becomes a [diagnostic](../13-diagnostics/plan.md). They are reported
   through different channels.
 
 ## User stories
@@ -66,7 +66,7 @@ and drive incremental re-analysis.
 - [ ] Copycode targets are treated as literal names (not variables); an INCLUDE is always a resolvable
       reference (subject to availability and the substitution case in Story 8).
 - [ ] Changing a copycode file re-evaluates the files that INCLUDE it (links to
-      [05](05-workspace-indexing-and-cache.md) incremental re-analysis).
+      [05](../05-workspace-indexing-and-cache/plan.md) incremental re-analysis).
 
 ### Story 5 — Navigation statements (FETCH / RUN) (FR-14, FR-15)
 **As a** developer, **I want** program-transfer statements treated as navigable relationships,
@@ -93,7 +93,7 @@ distinct from module calls **so that** control-flow transfers are visible.
       not via the chain.
 - [ ] With **no** library map, the workspace is treated as a single flat namespace, and a name that
       matches objects in more than one location is reported as an ambiguous-resolution diagnostic
-      (see [13](13-diagnostics.md)) rather than silently picking one.
+      (see [13](../13-diagnostics/plan.md)) rather than silently picking one.
 
 ### Story 7 — Distinguish unresolvable from unrecognized (FR-17, NFR-6, M-6)
 **As a** user, **I want** "can't resolve this reference" and "can't parse this line" reported

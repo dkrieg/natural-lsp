@@ -4,13 +4,13 @@
 **PRD requirements:** FR-19, FR-20, FR-21, FR-22
 **Priority / phase:** P0 (read relationships) · P1 (write relationships, data definitions) ·
 P2 (work files)
-**Depends on:** [02](02-object-type-recognition.md), [05](05-workspace-indexing-and-cache.md)
+**Depends on:** [02](../02-object-type-recognition/plan.md), [05](../05-workspace-indexing-and-cache/plan.md)
 
 ## Summary
 
 Extracts how each object touches data: which files/DDMs it reads and writes, and what it declares in
-its data-definition blocks (including parameter interfaces). This feeds [hover](11-hover.md),
-[outline](10-document-outline.md), and references. Physical Adabas/IMS metadata is out of scope —
+its data-definition blocks (including parameter interfaces). This feeds [hover](../11-hover/plan.md),
+[outline](../10-document-outline/plan.md), and references. Physical Adabas/IMS metadata is out of scope —
 extraction is structural (names and relationships present in the source).
 
 ## User stories
@@ -44,7 +44,7 @@ outline and hover can show structure and signatures.
 - [ ] Parameter interfaces are captured so they can back subroutine/module signatures in hover.
 - [ ] Mandatory block terminators and ordering rules are respected such that a well-formed block is
       fully extracted; a malformed block degrades gracefully (no crash; see
-      [13](13-diagnostics.md)).
+      [13](../13-diagnostics/plan.md)).
 - [ ] Fixtures cover each data-section kind.
 
 ### Story 4 — Work-file definitions (FR-22)

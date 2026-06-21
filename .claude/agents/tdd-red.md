@@ -35,7 +35,7 @@ spawning another.
 This project is **specification-driven**, not issue-driven. The source of truth for a behavior is, in
 order:
 
-- The relevant **feature plan** under `docs/plans/features/` — its **acceptance criteria** are your
+- The relevant **feature plan** `docs/plans/features/<feature>/plan.md` — its **acceptance criteria** are your
   test list, and its referenced **FR-IDs** (from `docs/plans/natural-lsp-prd.md`) name the behavior.
 - The **PRD** (`docs/plans/natural-lsp-prd.md`) for the functional/non-functional requirement itself.
 - If you are working from a branch or issue, map it back to the feature plan / FR-ID — the plan, not

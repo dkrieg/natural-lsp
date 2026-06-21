@@ -3,8 +3,8 @@
 **Status:** Planned
 **PRD requirements:** FR-32, FR-35, FR-36, FR-37, FR-38, FR-39, FR-40; NFR-1–5, NFR-8
 **Priority / phase:** P0 (build, incremental, progress) · P1 (persistent cache)
-**Depends on:** [01](01-workspace-and-configuration.md), [02](02-object-type-recognition.md),
-[04](04-document-lifecycle-and-sync.md)
+**Depends on:** [01](../01-workspace-and-configuration/plan.md), [02](../02-object-type-recognition/plan.md),
+[04](../04-document-lifecycle-and-sync/plan.md)
 
 ## Summary
 

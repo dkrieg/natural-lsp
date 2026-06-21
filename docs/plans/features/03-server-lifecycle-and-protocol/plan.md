@@ -48,7 +48,7 @@ that** the server stays useful.
 
 **Acceptance criteria:**
 - [ ] On shutdown/exit, in-flight work is stopped and any cache writes are completed or safely
-      abandoned without corrupting the cache (see [05](05-workspace-indexing-and-cache.md)).
+      abandoned without corrupting the cache (see [05](../05-workspace-indexing-and-cache/plan.md)).
 - [ ] The process exits with a success status on a normal shutdown sequence and non-zero on a
       protocol violation.
 

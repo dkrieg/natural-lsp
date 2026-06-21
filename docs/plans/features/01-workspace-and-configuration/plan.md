@@ -10,7 +10,7 @@
 Establishes how the server finds a Natural codebase and how its behavior is configured. The workspace
 root is located by a sentinel file, which also carries all configuration. Every setting has a
 documented default so the server is usable with little or no explicit configuration. The library map
-defined here is *consumed* by [call & dependency resolution](06-call-and-dependency-resolution.md).
+defined here is *consumed* by [call & dependency resolution](../06-call-and-dependency-resolution/plan.md).
 
 ## User stories
 
@@ -42,7 +42,7 @@ stays fast and relevant.
 - [ ] The indexed object-type extension set is configurable; only matching files are indexed.
 - [ ] Directory exclusions are honored; excluded directories are never read or indexed.
 - [ ] A maximum indexable file size is enforced; files above it are skipped and the skip is reported
-      (see [diagnostics](13-diagnostics.md) / logs), not silently dropped.
+      (see [diagnostics](../13-diagnostics/plan.md) / logs), not silently dropped.
 - [ ] The cache location is configurable (CR-3).
 
 ### Story 4 — Declare libraries and steplib order (FR-4, CR-5)

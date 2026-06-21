@@ -3,8 +3,8 @@
 **Status:** Planned
 **PRD requirements:** FR-30, FR-31; supports FR-17; NFR-6, NFR-14; metric M-6
 **Priority / phase:** P0 (unrecognized-syntax diagnostics) · P1 (ambiguous-resolution diagnostics)
-**Depends on:** [06](06-call-and-dependency-resolution.md),
-[08](08-program-structure-extraction.md)
+**Depends on:** [06](../06-call-and-dependency-resolution/plan.md),
+[08](../08-program-structure-extraction/plan.md)
 
 ## Summary
 

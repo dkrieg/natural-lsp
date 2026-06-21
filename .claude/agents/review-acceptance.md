@@ -20,7 +20,7 @@ something you read or ran.
 
 ## What you check
 
-1. **Recover the criteria.** Read `docs/plans/features/<feature>/tasks.md` and the feature plan; list
+1. **Recover the criteria.** Read `docs/plans/features/<feature>/plan.md` and its `tasks.md`; list
    every acceptance criterion with its FR/NFR-ID.
 2. **Trace each criterion to evidence:** the code that implements it **and** a test that proves it.
 3. **Judge the tests, don't just count them.** A test must actually assert the criterion's behavior

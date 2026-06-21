@@ -15,7 +15,8 @@ that, not for your own understanding.
 
 ## Inputs (authoritative, in order)
 
-- The **feature plan** under `docs/plans/features/<feature>/` — its acceptance criteria are the spec.
+- The **feature plan** `docs/plans/features/<feature>/plan.md` — its acceptance criteria are the spec.
+  (Each feature is a directory holding `plan.md` and the `tasks.md` you produce.)
 - The **PRD** `docs/plans/natural-lsp-prd.md` — the FR-/NFR-IDs the plan references.
 - `CLAUDE.md` and `README.md` — architecture/layout constraints (the **Analyzer seam**, the
   `internal/{config,server,document,workspace,model,analysis}` layout, steplib resolution, file
@@ -69,7 +70,8 @@ that, not for your own understanding.
 8. **Flag the cross-cutting reviews** the feature will need (handed to `review-orchestration`):
    concurrency if it touches the indexer/watcher, protocol conformance if it adds an LSP method,
    robustness if it parses new input, performance if it's in the indexing hot path. Add `review-seam`
-   whenever a shared contract changed.
+   whenever a shared contract changed, and `review-docs` when the feature changes capability, commands,
+   or architecture (so the `CLAUDE.md`/`README.md` sync at `/finalize-feature` is anticipated).
 9. **Surface decisions** for the user rather than guessing.
 
 ## Output

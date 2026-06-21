@@ -22,9 +22,10 @@ rather than restating it here.
 
 ## What you do
 
-1. **Gather the spec.** Read the feature plan under `docs/plans/features/<feature>/`, the FR-/NFR-IDs it
-   references in `docs/plans/natural-lsp-prd.md`, and the architecture constraints in `CLAUDE.md` /
-   `README.md`. Consult `.claude/knowledge/` for relevant verified facts and ADRs.
+1. **Gather the spec.** Read the feature plan `docs/plans/features/<feature>/plan.md` (if it doesn't
+   exist, stop and say so — don't invent one), the FR-/NFR-IDs it references in
+   `docs/plans/natural-lsp-prd.md`, and the architecture constraints in `CLAUDE.md` / `README.md`.
+   Consult `.claude/knowledge/` for relevant verified facts and ADRs.
 2. **Survey the current code.** Before decomposing, Grep/read the `internal/...` packages the feature
    will touch and inventory what already exists — the `Analyzer`/`internal/model` surface, existing
    extraction helpers, the index/resolution API, existing tests and `testdata/`. Plan against the code

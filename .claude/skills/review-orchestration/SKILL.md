@@ -32,6 +32,7 @@ Run a reviewer when its trigger matches the change. **Always run `review-accepta
 | `review-robustness` | the analyzer/IO path or any new input parsing | graceful degradation (FR-43), fuzzing, input bounds |
 | `review-seam` | imports across the `internal/analysis` boundary, or `internal/model` types | Analyzer-seam and model purity, package boundaries |
 | `review-lsp-protocol` | a `textDocument/*` or `workspace/*` method, capabilities, ranges, or position encoding | LSP 3.x conformance |
+| `review-docs` | a feature changes capability, commands, architecture, or the indexed feature set (most completed features) | `CLAUDE.md` / `README.md` match as-built (flags drift; the fix lands in `/finalize-feature`) |
 
 Performance is **not** a routine pass: only escalate (to `go-expert` for a hot-path profile) when the
 change is in the indexing path and an NFR is at risk.
@@ -56,5 +57,10 @@ verdict (`PASS` / `CONCERNS` / `FAIL`). Produce one report:
   (multiple reviewers often flag the same line from different angles — merge them).
 - **Coverage note:** any dimension that couldn't complete, and why.
 
-Do **not** fix anything in this flow — report. Fixes are a separate TDD loop
-(`tdd-red` → `tdd-green` → `tdd-refactor`).
+Do **not** fix anything in this flow — report. Code fixes are a separate TDD loop
+(`tdd-red` → `tdd-green` → `tdd-refactor`); documentation drift flagged by `review-docs` is fixed in
+`/finalize-feature`.
+
+**Review is a loop.** On a `FAIL` (or `CONCERNS` the user wants addressed), route to `/address-findings`
+— each finding becomes a regression-first fix — then re-run this review. Repeat until the verdict is
+`PASS` before `/finalize-feature` runs. A clean `PASS` is the only thing that unlocks finalize.
