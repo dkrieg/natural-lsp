@@ -1,12 +1,13 @@
 # natural-lsp
 
-A Language Server Protocol implementation
-for [Software AG Natural](https://www.softwareag.com/en_corporate/platform/adabas-natural.html) — the first open-source
-LSP server for the Natural programming language.
+A Language Server Protocol implementation for [Software AG Natural](https://www.softwareag.com/en_corporate/platform/adabas-natural.html) —
+a Go-based LSP server focused on cross-file impact analysis, steplib-aware call resolution, and lsp-graph integration.
 
-Natural is a 4GL language widely deployed on IBM z/OS mainframes, typically alongside COBOL, Adabas, and IMS. Despite
-managing significant business logic at major enterprises, Natural has had no LSP server — meaning no jump-to-definition,
-no cross-file reference search, no structured hover information in any editor. This project changes that.
+Natural is a 4GL language widely deployed on IBM z/OS mainframes, typically alongside COBOL, Adabas, and IMS.
+[natls](https://github.com/MarkusAmshove/natls) (Java, MIT) is the existing parser-based LSP server for Natural.
+`natural-lsp` is a Go alternative with a different center of gravity: config-driven library mapping independent of
+NaturalONE project files, explicit `CALLS_DYNAMIC` edge modeling for unresolvable calls, a git-safe content-hash cache,
+and a clean extracted call/data graph designed for [lsp-graph](https://github.com/dkrieg/lsp-graph) integration.
 
 It operates on **filesystem-based Natural sources** — the `.NSx` object files used by NaturalONE / SPoD — rather than
 objects stored only in the mainframe Natural/Adabas library system. Natural that lives solely on the mainframe must be
@@ -51,6 +52,9 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/definition`
 - `textDocument/references`
 - `textDocument/hover`
+- `textDocument/completion` (module names, subroutine names, DDM field names)
+- `textDocument/signatureHelp` (parameter interfaces at call sites)
+- `textDocument/callHierarchy` (incoming/outgoing call panels)
 - `textDocument/documentSymbol`
 - `workspace/symbol`
 - `textDocument/codeLens` (call counts, table write summaries)
@@ -58,26 +62,22 @@ The capabilities below define the **target** feature set for the first stable re
 
 ---
 
-## Why regex-based extraction
+## Parser-based extraction
 
-There is no mature, complete grammar for Natural in any parser ecosystem. Authoring one that handles production
-enterprise Natural — irregular column rules, `DEFINE DATA` variants, inline maps, structured vs. reporting mode,
-multi-dialect pragmas — is a months-long investment with significant edge-case exposure before it returns a single
-useful result.
+`natural-lsp` uses a hand-written lexer and recursive-descent parser for Natural, modeled on
+[natls](https://github.com/MarkusAmshove/natls) (the Java reference implementation). The parser produces a proper AST
+that enables completion, signature help, call hierarchy, real syntax diagnostics, and accurate symbol tables — features
+that regex extraction cannot deliver reliably.
 
-`natural-lsp` instead uses regex-based extraction tuned to the constructs that appear in real production code. The
-trade-off is deliberate: it reaches *usable* coverage of common patterns quickly, rather than complete coverage slowly.
-Two distinct kinds of "gap" are handled separately, and neither is dropped silently:
+Two kinds of analysis gap are handled separately, and neither is dropped silently:
 
 - **Unresolvable references** — e.g. `CALLNAT #VARIABLE`, whose target cannot be determined statically — are a *modeled
   outcome*, not a failure. They surface as explicit `CALLS_DYNAMIC` edges with caller context preserved.
-- **Unrecognized syntax** — a line the extractor matches no pattern for — is a *parser limitation*, surfaced as an LSP
-  diagnostic so it is observable. This visibility is something the regex pipeline has to do on purpose: unlike a
-  grammar's error nodes, an unmatched regex is otherwise just a no-op, so the analyzer explicitly flags statement-like
-  lines it failed to extract.
+- **Parse errors** — source the parser cannot interpret — are surfaced as LSP diagnostics so they are visible in the
+  editor, not silently discarded.
 
-The analyzer sits behind an interface so the extraction backend can later be replaced — a hand-written parser or a
-tree-sitter grammar, should one mature — without touching the LSP layer.
+The parser sits behind the `Analyzer` interface so the backend can evolve (e.g. to a tree-sitter grammar) without
+touching the LSP layer.
 
 ---
 

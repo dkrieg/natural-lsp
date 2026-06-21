@@ -8,14 +8,20 @@
 
 ## 1. Overview
 
-`natural-lsp` is the first open-source Language Server Protocol (LSP) implementation for **Software AG
-Natural**, a 4GL language widely deployed on IBM z/OS mainframes alongside COBOL, Adabas, and IMS.
-Despite holding significant business logic at major enterprises, Natural has had no LSP server — no
-jump-to-definition, no cross-file reference search, no structured hover — in any editor.
+`natural-lsp` is a Go-based Language Server Protocol (LSP) server for **Software AG Natural**, a 4GL
+language widely deployed on IBM z/OS mainframes alongside COBOL, Adabas, and IMS. An existing
+open-source LSP server for Natural — [natls](https://github.com/MarkusAmshove/natls) (Java, MIT) —
+delivers broad editor intelligence via a full recursive-descent parser and is the reference
+implementation studied during the design of this server. `natural-lsp` is a Go alternative with a
+hand-written lexer + recursive-descent parser, delivering the same breadth of editor features while
+adding config-driven NaturalONE-independent library mapping, explicit `CALLS_DYNAMIC` edge modeling,
+a git-safe content-hash cache, and a clean extracted graph for
+[lsp-graph](https://github.com/dkrieg/lsp-graph) integration.
 
 This product delivers a single server binary that indexes a filesystem-based Natural codebase and
-serves navigation, references, hover, document outline, and workspace-symbol features to any
-LSP-capable editor, plus first-party editor clients for the two most common environments.
+serves navigation, completion, references, hover, call hierarchy, document outline, and
+workspace-symbol features to any LSP-capable editor, plus first-party editor clients for the two
+most common environments.
 
 This document defines **what** the product must do. It intentionally avoids prescribing **how**
 features are implemented.
@@ -30,8 +36,9 @@ features are implemented.
   search) inside their existing editors.
 - Resolve relationships across files — calls, includes, and data access — reliably enough to trust
   for code comprehension and impact analysis.
-- Reach *usable* coverage of the Natural constructs that appear in real production code quickly,
-  rather than complete coverage slowly.
+- Deliver comprehensive coverage of the Natural constructs that appear in real production code via a
+  hand-written lexer and recursive-descent parser, using [natls](https://github.com/MarkusAmshove/natls)
+  as the reference implementation for statement coverage and parser structure.
 - Make the boundaries of analysis observable: when something cannot be resolved, the product must
   say so explicitly rather than fail silently.
 - Run fast and predictably on large enterprise codebases (tens of thousands of objects).
@@ -39,8 +46,10 @@ features are implemented.
 
 ### 2.2 Non-goals
 
-- **Not** a Natural compiler, runtime, interpreter, or linter for language correctness.
+- **Not** a Natural compiler, runtime, or interpreter.
 - **Not** a code formatter, refactoring engine, or code-generation tool.
+- Not a full static-analysis linter (style rules, dead-code detection, etc.) — syntax diagnostics and
+  ambiguous-resolution diagnostics are in scope, but broad correctness checking is not.
 - **Not** a connection to live mainframe Natural/Adabas libraries — the product operates on exported
   filesystem objects only.
 - **Not** a batch/bulk export or reporting tool — analysis is interactive and editor-driven.
@@ -144,9 +153,9 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
 - **FR-16 (P1)** — Resolve calls using the **steplib chain** ordering when a library map is present
   (current library → ordered steplibs → system), and correctly handle statements that explicitly
   target a specific library outside the normal chain.
-- **FR-17 (P1)** — Correctly distinguish unresolvable references (a modeled outcome) from
-  unrecognized syntax (a tool limitation); the two must be reported through different channels (see
-  FR-30, FR-31).
+- **FR-17 (P1)** — Correctly distinguish unresolvable references (a modeled outcome, e.g.
+  `CALLNAT #VARIABLE`) from parse errors (a source-level problem); the two must be reported through
+  different channels (see FR-30, FR-31).
 - **FR-18 (P2)** — Account for runtime name-substitution constructs (e.g. language-dependent
   placeholders inside literal target names) so that such names are not mis-resolved to a
   non-existent target.
@@ -178,12 +187,25 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
   call count), subroutine signatures on invocation targets, and DDM field names/types/file
   associations on data-access statements.
 - **FR-29 (P2)** — **Code lens** summaries (e.g. inbound call counts, table-write summaries).
-- **FR-30 (P0)** — **Diagnostics** that surface statement-like lines the analyzer could not extract
-  (tool-limitation visibility), distinct from modeled unresolved references.
+- **FR-30 (P0)** — **Syntax diagnostics** surfaced as LSP diagnostics when the parser cannot
+  interpret source (parse errors), distinct from modeled unresolved references (FR-11).
 - **FR-31 (P1)** — **Diagnostics** for ambiguous name resolution when operating without a library map
   (per FR-5).
 - **FR-32 (P0)** — **Indexing progress reporting** during first-run/full indexing, surfaced through
   the editor's standard progress mechanism.
+- **FR-47 (P1)** — **Completion** (`textDocument/completion`) — context-aware completions for
+  `CALLNAT`/`PERFORM`/`INCLUDE`/`FETCH` targets (module names from the workspace index), subroutine
+  names within scope, and DDM field names at data-access statements.
+- **FR-48 (P1)** — **Signature help** (`textDocument/signatureHelp`) — display the parameter
+  interface (PDA or inline `DEFINE DATA PARAMETER`) of a `CALLNAT` or `PERFORM` target when the
+  cursor is on the call site.
+- **FR-49 (P1)** — **Call hierarchy** (`textDocument/callHierarchy`) — incoming and outgoing call
+  panels showing callers and callees of a program, subprogram, or subroutine, backed by the
+  cross-file call graph from FR-10–16.
+- **FR-50 (P2)** — **Folding ranges** (`textDocument/foldingRange`) — fold `DEFINE DATA` sections,
+  `DEFINE SUBROUTINE` bodies, loops (`FOR`/`FIND`/`READ`), and `DECIDE` blocks.
+- **FR-51 (P2)** — **Inlay hints** (`textDocument/inlayHint`) — inline annotations for parameter
+  names at `CALLNAT`/`PERFORM` call sites and DDM field types at data-access statements.
 
 ### 6.7 Document lifecycle & freshness
 
@@ -288,7 +310,8 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
 ### 8.5 Maintainability & extensibility
 
 - **NFR-15 (P0)** — The extraction backend must be replaceable without changing editor-facing
-  behavior, so the analysis approach can evolve over time.
+  behavior — the `Analyzer` interface seam allows the hand-written parser to be replaced with a
+  tree-sitter grammar or other backend as the ecosystem matures.
 - **NFR-16 (P1)** — Extracted structure (calls, data access, external dependencies) must be clean and
   well-formed enough to be consumed by external tooling, not only the editor.
 
@@ -334,12 +357,15 @@ navigation questions, with limits made visible.
 ### Phase 1 — v1.0 stable (P1): "trustworthy at scale, multi-editor"
 
 Make resolution library-aware, add write/data-definition extraction and hover, persist the index,
-and broaden editor support.
+broaden editor support, and deliver the parser-enabled interactive features.
 
 - Library map and steplib-aware resolution; ambiguity diagnostics (FR-4, FR-5, FR-16, FR-31, CR-5).
 - Navigation-statement resolution, static and dynamic (FR-14, FR-15).
 - Write relationships, data-definition/parameter interfaces (FR-20, FR-21).
 - Hover (FR-28).
+- Completion: module names, subroutine names, DDM field names (FR-47).
+- Signature help for CALLNAT/PERFORM (FR-48).
+- Call hierarchy: incoming and outgoing call panels (FR-49).
 - External file-change watching (FR-34).
 - Persistent, content-hash-invalidated, version-gated cache (FR-37–40).
 - JetBrains client and documented config for other editors (FR-45, FR-46).
@@ -354,6 +380,8 @@ and broaden editor support.
 - Code-lens summaries (FR-29).
 - Work-file extraction (FR-22).
 - Runtime name-substitution handling in literal targets (FR-18).
+- Folding ranges (FR-50).
+- Inlay hints (FR-51).
 
 ---
 
