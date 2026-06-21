@@ -110,8 +110,9 @@ configuration" sections before changing related code.
 - **Filesystem-scoped to NaturalONE / SPoD `.NSx` files.** The server operates on exported object files, not objects
   living only in the mainframe Natural/Adabas library system. Each extension maps to a construct and several features
   depend on indexing the right ones: `.NSP` program, `.NSN` subprogram, `.NSS` external subroutine, `.NSC` copycode
-  (INCLUDE targets), `.NSM` map, `.NSL`/`.NSG`/`.NSA` data areas, `.NSH` helproutine, `.NSD` DDM. Keep the indexed
-  extension set in sync with the features that consume them.
+  (INCLUDE targets), `.NSM` map, `.NSL`/`.NSG`/`.NSA` data areas, `.NSH` helproutine, `.NSD` DDM. Extended types:
+  `.NS4` class, `.NS7` function, `.NS3` dialog, `.NS8` adapter, `.NST` text. All 15 are in the default indexed set.
+  Keep the indexed extension set in sync with the features that consume them.
 
 - **Natural is case-insensitive** for keywords and identifiers — extraction and cross-file resolution must normalize
   case. Statements can span multiple lines, which stresses line-oriented regex.

@@ -76,24 +76,22 @@ const (
 	// an executable object.
 	ObjectDDM ObjectType = "ddm"
 
-	// ObjectClass is a Natural class (.NSC in NaturalONE object-oriented
-	// extensions).
+	// ObjectClass is a NaturalX class (.NS4).
 	ObjectClass ObjectType = "class"
 
-	// ObjectFunction is a Natural function (.NSF) — a callable unit that
-	// returns a value directly in an expression.
+	// ObjectFunction is a Natural user-defined function (.NS7) — a callable
+	// unit that returns a value directly in an expression.
 	ObjectFunction ObjectType = "function"
 
-	// ObjectDialog is a Natural dialog (.NSD in NaturalONE UI extensions).
+	// ObjectDialog is a Natural for Windows dialog (.NS3).
 	ObjectDialog ObjectType = "dialog"
 
-	// ObjectAdapter is a Natural adapter (.NSA in NaturalONE service-layer
-	// extensions).
+	// ObjectAdapter is a Natural Ajax adapter (.NS8).
 	ObjectAdapter ObjectType = "adapter"
 
-	// ObjectText is a plain-text member (.NSTor similar) stored alongside
-	// Natural source objects. It contains no executable or structural content
-	// and is indexed for completeness only.
+	// ObjectText is a plain-text member (.NST) stored alongside Natural source
+	// objects. It contains no executable or structural content and is indexed
+	// for completeness only.
 	ObjectText ObjectType = "text"
 
 	// ObjectUnknown is assigned when the file extension is not recognized or

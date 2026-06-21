@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -602,14 +603,44 @@ func Validate(cfg Config) (Config, []Problem) {
 
 	// workspace.extension_types: validate each entry's value against the known
 	// ObjectType set. Invalid entries are dropped and reported; valid entries are
-	// kept with normalized (upper-cased, dot-prefixed) keys.
+	// kept with normalized (upper-cased, dot-prefixed) keys. Collisions are detected
+	// and reported: when two or more keys normalize to the same extension, the
+	// first-seen (in sorted key order) is kept and later duplicates are dropped.
 	if len(cfg.Workspace.ExtensionTypes) > 0 {
+		// Collect keys and sort them for deterministic iteration (first-seen wins).
+		keys := make([]string, 0, len(cfg.Workspace.ExtensionTypes))
+		for key := range cfg.Workspace.ExtensionTypes {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
 		validated := make(map[string]string)
-		for key, value := range cfg.Workspace.ExtensionTypes {
-			// Normalize the key: upper-case and ensure leading dot
-			normalizedKey := strings.ToUpper(key)
+		for _, key := range keys {
+			value := cfg.Workspace.ExtensionTypes[key]
+			// Normalize the key: trim whitespace, upper-case and ensure leading dot
+			trimmedKey := strings.TrimSpace(key)
+			normalizedKey := strings.ToUpper(trimmedKey)
 			if !strings.HasPrefix(normalizedKey, ".") {
 				normalizedKey = "." + normalizedKey
+			}
+			// Drop degenerate keys (empty, whitespace-only, or bare dot) — they can
+			// never match a real file extension. Consistent with normalizeExtensions.
+			if normalizedKey == "." {
+				problems = append(problems, Problem{
+					Key:          "workspace.extension_types",
+					Message:      fmt.Sprintf("degenerate extension key %q (normalized to %q); entry dropped", key, normalizedKey),
+					FallenBackTo: "entry omitted",
+				})
+				continue
+			}
+			// Check for collision: if this normalized key was already seen, drop it and report.
+			if _, exists := validated[normalizedKey]; exists {
+				problems = append(problems, Problem{
+					Key:          "workspace.extension_types",
+					Message:      fmt.Sprintf("duplicate extension %q (normalized from %q) already mapped; entry dropped", normalizedKey, key),
+					FallenBackTo: "entry omitted",
+				})
+				continue
 			}
 			// Validate the value
 			if !validExtensionTypeValues[strings.ToLower(value)] {
@@ -620,7 +651,7 @@ func Validate(cfg Config) (Config, []Problem) {
 				})
 				continue
 			}
-			validated[normalizedKey] = value
+			validated[normalizedKey] = strings.ToLower(value)
 		}
 		cfg.Workspace.ExtensionTypes = validated
 	}

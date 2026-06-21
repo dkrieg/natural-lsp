@@ -191,7 +191,7 @@ require('lspconfig').natural_lsp.setup({})
 [[language]]
 name = "natural"
 scope = "source.natural"
-file-types = ["NSP", "NSN", "NSS", "NSC", "NSM", "NSL", "NSG", "NSA", "NSH", "NSD"]
+file-types = ["NSP", "NSN", "NSS", "NSC", "NSM", "NSL", "NSG", "NSA", "NSH", "NSD", "NS4", "NS7", "NS3", "NS8", "NST"]
 language-servers = ["natural-lsp"]
 
 [language-server.natural-lsp]
@@ -213,7 +213,7 @@ Community editions:
    ```
 
 3. Associate it with the Natural file types (`.NSP`, `.NSN`, `.NSS`, `.NSC`, `.NSM`, `.NSL`, `.NSG`, `.NSA`, `.NSH`,
-   `.NSD`).
+   `.NSD`, `.NS4`, `.NS7`, `.NS3`, `.NS8`, `.NST`).
 
 The native JetBrains LSP API (`com.intellij.platform.lsp`) is an alternative, but it requires a paid/Ultimate-tier IDE
 and a custom plugin — LSP4IJ is the simpler, more portable path.
@@ -265,7 +265,7 @@ extensions = [
 # Valid values: program, subprogram, externalsubroutine, copycode, map,
 #   localdataarea, globaldataarea, parameterdataarea, helproutine, ddm,
 #   class, function, dialog, adapter, text
-# [extension_types]
+# [workspace.extension_types]
 # ".NAT" = "program"
 
 # Directories to exclude from indexing

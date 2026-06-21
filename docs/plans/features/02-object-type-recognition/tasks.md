@@ -335,3 +335,98 @@ table and any default/optional-set wording match what landed (informed by Task 7
 - **Custom extension mappings ship in Task 7 via `WorkspaceConfig.ExtensionTypes`.** The classifier
   (Task 2) accepts custom mappings as a parameter; the backend (Task 3) passes the config-derived map
   at initialization. CR-6 fail-safe: unknown ObjectType value → Problem + entry dropped, never crash.
+
+---
+
+## Remediation tasks (from /review-feature round 1)
+
+### R1 — Store `ExtensionTypes` values in canonical lowercase (M1)
+
+**Finding (major):** `config.go:615,623` — values are validated case-insensitively but stored verbatim.
+A config entry `".NAT" = "PROGRAM"` passes validation yet is stored as `"PROGRAM"`, which won't equal
+`model.ObjectProgram` (`"program"`) when the map is handed to `natural.New`. Phantom type, silent wrong
+behavior.
+
+- **RED:** Test in `internal/config/config_test.go` — `TestValidate_ExtensionTypes_ValueNormalized`:
+  parse TOML with `".NAT" = "PROGRAM"` → assert `ExtensionTypes[".NAT"] == "program"` (lowercase), no Problem.
+  Also `".NSX" = "SubProgram"` → `"subprogram"`. Fails now because values are stored verbatim.
+- **GREEN:** In `Validate()`, change `validated[normalizedKey] = value` to `validated[normalizedKey] = strings.ToLower(value)`.
+- **DoD:** Test passes; existing `TestLoad_ExtensionTypes_ValidEntry` still green; `gofmt`/`vet` clean.
+- **Agents:** `tdd-red` → `tdd-green` → `tdd-refactor`
+- **Depends on:** none.
+
+---
+
+### R2 — Detect colliding normalized keys in `ExtensionTypes` (M2)
+
+**Finding (major):** `config.go:606–626` — two TOML keys that normalize to the same extension
+(e.g. `".nat"` and `".NAT"`) silently overwrite each other non-deterministically (map iteration order).
+No `Problem` is emitted. Breaches CR-6 "every degradation is observable, never silent."
+
+- **RED:** Test in `internal/config/config_test.go` — `TestValidate_ExtensionTypes_CollisionReported`:
+  parse TOML with both `".nat" = "program"` and `".NAT" = "map"` → assert exactly one `Problem` with
+  `Key == "workspace.extension_types"` and the message names the collision; assert `ExtensionTypes` has
+  exactly one entry for `".NAT"` (deterministic winner). Fails now because no Problem is emitted.
+- **GREEN:** Before writing to `validated`, check `if _, exists := validated[normalizedKey]; exists` →
+  emit a Problem and skip (first-seen wins). Also sort keys before iterating so behavior is deterministic.
+- **DoD:** Collision test passes; first-seen entry survives; no-collision cases still pass; deterministic
+  across runs; `gofmt`/`vet` clean.
+- **Agents:** `tdd-red` → `tdd-green` → `tdd-refactor`
+- **Depends on:** R1.
+
+---
+
+### R3 — Drop degenerate `ExtensionTypes` keys (m2)
+
+**Finding (minor):** `config.go:606–626` — empty, whitespace-only, or bare-dot keys are accepted and
+stored as `.`/`. ` etc., which can never match a real file extension. Inconsistent with
+`normalizeExtensions` which explicitly drops these forms.
+
+- **RED:** Test — `TestValidate_ExtensionTypes_DegenerateKeysDropped`: parse TOML with `"" = "program"`,
+  `"  " = "subprogram"`, `"." = "copycode"` → assert all three are absent from `ExtensionTypes` and a
+  `Problem` is emitted per dropped key. Fails now because all three are accepted.
+- **GREEN:** After normalization, check `if normalizedKey == "." || strings.TrimSpace(normalizedKey) == "."` 
+  (i.e. the key had no meaningful extension component) → emit a Problem and skip.
+- **DoD:** Degenerate-key test passes; valid keys unaffected; `gofmt`/`vet` clean.
+- **Agents:** `tdd-red` → `tdd-green` → `tdd-refactor`
+- **Depends on:** R2.
+
+---
+
+### R4 — Fix wrong extension citations in `model.ObjectType` doc comments (m1)
+
+**Finding (minor):** `model.go:79–97` — extended `ObjectType` constant doc comments cite wrong
+extensions: class→`.NSC` (should be `.NS4`), function→`.NSF` (should be `.NS7`), dialog→`.NSD`
+(should be `.NS3`), adapter→`.NSA` (should be `.NS8`), text has typo "`.NSTor`" (should be `.NST`).
+`.NSC`/`.NSD`/`.NSA` are existing core types — the comments are actively misleading.
+
+- **RED:** Test in `internal/model/model_test.go` — `TestObjectTypeExtensionComments`: a table-driven
+  test that verifies the doc comment string for each extended constant contains the correct extension
+  and not an incorrect one. Use `go/doc` or `go/ast` to extract comment text, OR (simpler) assert via
+  a string-search on a read of `model.go` that `.NS4` appears near `ObjectClass`, `.NS7` near
+  `ObjectFunction`, etc., and that the wrong extensions (`.NSC` near `ObjectClass`, `.NSF` near
+  `ObjectFunction`, `.NSD` near `ObjectDialog`, `.NSA` near `ObjectAdapter`) do NOT appear in those
+  contexts. Fails now because the comments are wrong.
+  **Note:** if a source-text test is too fragile, this may be a doc-only fix with the "test" being the
+  existing `TestObjectTypeConstants` — in that case, note the decision and fix the comments directly.
+- **GREEN:** Correct the five doc comments in `model.go` to use `.NS4/.NS7/.NS3/.NS8/.NST`; fix typo.
+- **DoD:** Comments match verified KB; no wrong cross-references remain; `gofmt`/`vet` clean.
+- **Agents:** `tdd-red` → `tdd-green` → `tdd-refactor`
+- **Depends on:** none (parallel with R1/R2/R3).
+
+---
+
+### R5 — Fix doc/README stale references (M3, m3, m4) — doc-only
+
+**Finding (major/minor):** Three doc locations are wrong:
+- `README.md:265` — `[extension_types]` should be `[workspace.extension_types]` (M3, user-facing)
+- `README.md:194,215–216` — Helix/JetBrains editor snippets still list 10 extensions; missing `.NS4 .NS7 .NS3 .NS8 .NST` (m3)
+- `CLAUDE.md:112–113` — Architecture "Filesystem-scoped" note lists only 10 extensions (m4)
+
+- **No production-code RED/GREEN required** — doc-only fix. The "test" is `TestSample_IncludesExtensionTypes`
+  (already passing, verifies the Go `Sample()` function) plus manual verification that the README/CLAUDE.md
+  text matches `Sample()` output and `builtInExtensions`. Fix the three locations directly.
+- **DoD:** README `[workspace.extension_types]` correct; Helix + JetBrains snippets include 15 extensions;
+  CLAUDE.md architecture note includes all 15 types; `just verify` green.
+- **Agents:** none (doc-only; verified by `review-docs` in re-review).
+- **Depends on:** none.

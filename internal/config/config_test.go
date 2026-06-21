@@ -965,3 +965,273 @@ func TestDefaults_IncludesExtendedExtensions(t *testing.T) {
 		t.Errorf("Workspace.Extensions = %#v, want %#v", cfg.Workspace.Extensions, wantExtensions)
 	}
 }
+
+// TestValidate_ExtensionTypes_ValueNormalized verifies that extension-type values
+// in [workspace.extension_types] are case-normalized to lowercase before storage.
+// Natural is case-insensitive; stored values must match the lowercase canonical
+// forms so they can be reliably compared to model.ObjectType constants (which are
+// lowercase strings). Feature 02-object-type-recognition, Remediation R1.
+//
+// A mixed-case config entry like [workspace.extension_types] ".NAT" = "PROGRAM"
+// must normalize both key (to upper-cased, dot-prefixed ".NAT") and value (to
+// lowercase "program") so ExtensionTypes[".NAT"] == "program", not "PROGRAM".
+// Similarly ".NSX" = "SubProgram" normalizes to "subprogram"; an invalid value
+// like ".NSZ" = "UNKNOWN_TYPE" is rejected and the entry absent, with one Problem
+// reported (CR-6).
+func TestValidate_ExtensionTypes_ValueNormalized(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(tmpDir+"/"+sentinelName, []byte(
+		"[workspace.extension_types]\n"+
+			"\".NAT\" = \"PROGRAM\"\n"+
+			"\".NSX\" = \"SubProgram\"\n"+
+			"\".NSZ\" = \"UNKNOWN_TYPE\"\n",
+	), 0o644); err != nil {
+		t.Fatalf("WriteFile fixture: %v", err)
+	}
+
+	// Act.
+	cfg, problems, err := config.Load(tmpDir + "/" + sentinelName)
+
+	// Assert: parse succeeds.
+	if err != nil {
+		t.Fatalf("Load error = %v, want nil", err)
+	}
+
+	// Assert: ".NAT" = "PROGRAM" normalizes to "program" (lowercase).
+	if got, want := cfg.Workspace.ExtensionTypes[".NAT"], "program"; got != want {
+		t.Errorf("ExtensionTypes[\".NAT\"] = %q, want %q (mixed-case value must normalize to lowercase)", got, want)
+	}
+
+	// Assert: ".NSX" = "SubProgram" normalizes to "subprogram" (lowercase).
+	if got, want := cfg.Workspace.ExtensionTypes[".NSX"], "subprogram"; got != want {
+		t.Errorf("ExtensionTypes[\".NSX\"] = %q, want %q (mixed-case value must normalize to lowercase)", got, want)
+	}
+
+	// Assert: ".NSZ" = "UNKNOWN_TYPE" is rejected and entry absent.
+	if _, exists := cfg.Workspace.ExtensionTypes[".NSZ"]; exists {
+		t.Errorf("ExtensionTypes contains invalid entry .NSZ (should be rejected); got %#v", cfg.Workspace.ExtensionTypes)
+	}
+
+	// Assert: exactly one Problem reported for the invalid value.
+	var found int
+	for _, p := range problems {
+		if p.Key == "workspace.extension_types" {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Errorf("problems with Key %q = %d, want 1 (problems = %#v)", "workspace.extension_types", found, problems)
+	}
+}
+
+// TestValidate_ExtensionTypes_CollisionReported verifies that when two or more
+// TOML keys in [workspace.extension_types] normalize to the same extension (e.g.
+// ".nat" and ".NAT" both become ".NAT"), exactly one Problem is emitted for the
+// collision and the duplicate is rejected. First-seen wins: in sorted order of
+// the original keys, the first key's value is kept; later duplicates are dropped.
+// Feature 02-object-type-recognition, Remediation R2 (CR-6 fail-safe).
+//
+// TOML key normalization is case-insensitive and enforces a leading dot. Two
+// keys like ".nat" = "program" and ".NAT" = "map" both normalize to ".NAT", so
+// one is a duplicate. Go map iteration is random, but key normalization is
+// deterministic: sorted order of the original string keys is used to ensure
+// first-seen wins (alphabetically, ".NAT" < ".nat", so ".NAT"'s value "map" is
+// kept and ".nat"'s value "program" is the duplicate that must trigger a Problem).
+func TestValidate_ExtensionTypes_CollisionReported(t *testing.T) {
+	tests := []struct {
+		name             string
+		tomlContent      string
+		wantCollisionKey string // the normalized key that was collided on
+		wantKeptValue    string // the value from the first-seen (sorted) key
+		wantDroppedValue string // the value from the colliding (second) key
+		wantProblemCount int    // should be exactly 1 for each collision
+	}{
+		{
+			// ".NAT" (upper) < ".nat" (lower) in ASCII order (dot=46, N=78, n=110).
+			// ".NAT" is seen first in sorted order, so ".NAT"'s value "map" is kept
+			// and ".nat"'s value "program" is the duplicate.
+			name: "collision on .nat / .NAT uses first-seen-in-sorted-order",
+			tomlContent: "[workspace.extension_types]\n" +
+				"\".nat\" = \"program\"\n" +
+				"\".NAT\" = \"map\"\n",
+			wantCollisionKey: ".NAT",
+			wantKeptValue:    "map",     // from ".NAT" (first in sorted order)
+			wantDroppedValue: "program", // from ".nat" (second in sorted order)
+			wantProblemCount: 1,
+		},
+		{
+			// "nat" < ".NAT" in ASCII order (n=110 > dot=46).
+			// ".NAT" is seen first in sorted order, so ".NAT"'s value "ddm" is kept
+			// and "nat"'s value "subprogram" is the duplicate.
+			name: "collision on nat / .NAT uses first-seen-in-sorted-order",
+			tomlContent: "[workspace.extension_types]\n" +
+				"\"nat\" = \"subprogram\"\n" +
+				"\".NAT\" = \"ddm\"\n",
+			wantCollisionKey: ".NAT",
+			wantKeptValue:    "ddm",        // from ".NAT" (first in sorted order: dot < n)
+			wantDroppedValue: "subprogram", // from "nat" (second in sorted order)
+			wantProblemCount: 1,
+		},
+		{
+			// No collision: only ".NAT" is present, no duplicate key after normalization.
+			name: "no collision: single extension present",
+			tomlContent: "[workspace.extension_types]\n" +
+				"\".NAT\" = \"program\"\n",
+			wantCollisionKey: ".NAT",
+			wantKeptValue:    "program",
+			wantDroppedValue: "", // no collision
+			wantProblemCount: 0,  // no Problem
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			if err := os.WriteFile(tmpDir+"/"+sentinelName, []byte(tc.tomlContent), 0o644); err != nil {
+				t.Fatalf("WriteFile fixture: %v", err)
+			}
+
+			// Act.
+			cfg, problems, err := config.Load(tmpDir + "/" + sentinelName)
+
+			// Assert: parse succeeds.
+			if err != nil {
+				t.Fatalf("Load error = %v, want nil", err)
+			}
+
+			// Assert: the collision key's value is the first-seen (sorted) one.
+			if got, want := cfg.Workspace.ExtensionTypes[tc.wantCollisionKey], tc.wantKeptValue; got != want {
+				t.Errorf("ExtensionTypes[%q] = %q, want %q (should keep first-seen value in sorted key order)",
+					tc.wantCollisionKey, got, want)
+			}
+
+			// Assert: exactly the expected number of Problems.
+			var collisionProblems int
+			for _, p := range problems {
+				if p.Key == "workspace.extension_types" {
+					collisionProblems++
+				}
+			}
+			if collisionProblems != tc.wantProblemCount {
+				t.Errorf("problems with Key %q = %d, want %d (problems = %#v)",
+					"workspace.extension_types", collisionProblems, tc.wantProblemCount, problems)
+			}
+
+			// Assert: if there was a collision, verify the dropped value doesn't appear elsewhere
+			// (as a regression check that the duplicate was truly dropped, not stored with a different key).
+			if tc.wantDroppedValue != "" {
+				for key, value := range cfg.Workspace.ExtensionTypes {
+					if value == tc.wantDroppedValue && key != tc.wantCollisionKey {
+						t.Errorf("ExtensionTypes[%q] = %q (the dropped collision value should not appear elsewhere; got %#v)",
+							key, value, cfg.Workspace.ExtensionTypes)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_ExtensionTypes_DegenerateKeysDropped verifies that degenerate
+// keys in [workspace.extension_types] (empty strings, whitespace-only, or
+// dot-only entries) are rejected, absent from ExtensionTypes, and reported as
+// Problems (CR-6 fail-safe). Feature 02-object-type-recognition, Remediation R3.
+//
+// A "degenerate" key is one whose normalized form after strings.TrimSpace +
+// strings.ToUpper + ensuring leading dot results in just "." (no extension
+// component beyond the dot). Such entries can never match a real file extension
+// and must be dropped with a reported Problem per CR-6.
+//
+// Test cases:
+// 1. "" = "program" → absent from ExtensionTypes, one Problem with Key "workspace.extension_types"
+// 2. "  " = "subprogram" → absent, one Problem
+// 3. "." = "copycode" → absent, one Problem
+// 4. Regression: ".NAT" = "program" present alongside degenerate ones; only valid keys kept.
+func TestValidate_ExtensionTypes_DegenerateKeysDropped(t *testing.T) {
+	tests := []struct {
+		name                string
+		tomlContent         string
+		wantValidKey        string // expected valid key that should be kept (if any)
+		wantValidValue      string // expected value for the valid key
+		wantProblemCountMin int    // at least this many problems expected (1 per degenerate key)
+	}{
+		{
+			name: "empty string key is dropped with problem",
+			tomlContent: "[workspace.extension_types]\n" +
+				"\"\" = \"program\"\n",
+			wantValidKey:        "",
+			wantValidValue:      "",
+			wantProblemCountMin: 1,
+		},
+		{
+			name: "whitespace-only key is dropped with problem",
+			tomlContent: "[workspace.extension_types]\n" +
+				"\"  \" = \"subprogram\"\n",
+			wantValidKey:        "",
+			wantValidValue:      "",
+			wantProblemCountMin: 1,
+		},
+		{
+			name: "dot-only key is dropped with problem",
+			tomlContent: "[workspace.extension_types]\n" +
+				"\".\" = \"copycode\"\n",
+			wantValidKey:        "",
+			wantValidValue:      "",
+			wantProblemCountMin: 1,
+		},
+		{
+			name: "valid key kept alongside degenerate ones",
+			tomlContent: "[workspace.extension_types]\n" +
+				"\"\" = \"program\"\n" +
+				"\".NAT\" = \"program\"\n" +
+				"\"  \" = \"subprogram\"\n" +
+				"\".\" = \"copycode\"\n",
+			wantValidKey:        ".NAT",
+			wantValidValue:      "program",
+			wantProblemCountMin: 3, // three degenerate keys should be reported
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			if err := os.WriteFile(tmpDir+"/"+sentinelName, []byte(tc.tomlContent), 0o644); err != nil {
+				t.Fatalf("WriteFile fixture: %v", err)
+			}
+
+			// Act.
+			cfg, problems, err := config.Load(tmpDir + "/" + sentinelName)
+
+			// Assert: parse succeeds.
+			if err != nil {
+				t.Fatalf("Load error = %v, want nil", err)
+			}
+
+			// Assert: degenerate keys are absent — ExtensionTypes should not contain ".", "..", etc.
+			for key := range cfg.Workspace.ExtensionTypes {
+				trimmedKey := strings.Trim(key, ".")
+				if trimmedKey == "" {
+					t.Errorf("ExtensionTypes contains degenerate key %q; degenerate keys must be dropped (got %#v)", key, cfg.Workspace.ExtensionTypes)
+				}
+			}
+
+			// Assert: if a valid key was expected, it is present with the correct value.
+			if tc.wantValidKey != "" {
+				if got, want := cfg.Workspace.ExtensionTypes[tc.wantValidKey], tc.wantValidValue; got != want {
+					t.Errorf("ExtensionTypes[%q] = %q, want %q (valid key must be kept)", tc.wantValidKey, got, want)
+				}
+			}
+
+			// Assert: at least the expected number of Problems with Key "workspace.extension_types".
+			var degenerateProblems int
+			for _, p := range problems {
+				if p.Key == "workspace.extension_types" {
+					degenerateProblems++
+				}
+			}
+			if degenerateProblems < tc.wantProblemCountMin {
+				t.Errorf("problems with Key %q = %d, want >= %d (degenerate keys must be reported; problems = %#v)",
+					"workspace.extension_types", degenerateProblems, tc.wantProblemCountMin, problems)
+			}
+		})
+	}
+}
