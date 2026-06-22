@@ -1,7 +1,8 @@
 # Go version & tooling
 
-**Status:** verified (2026-06-20) — Go 1.26 release confirmed against go.dev release history and the
-1.26 release notes; the command set is from the repo's CLAUDE.md.
+**Status:** verified (2026-06-21) — Go 1.26 release re-confirmed against go.dev release history (1.26.4
+still latest; no 1.27 yet) and the 1.26 release notes; the command set is from the repo's CLAUDE.md.
+Added the module `go`-directive max rule and its interaction with the LSP dependency choice.
 
 ## Facts (verified)
 
@@ -35,9 +36,14 @@
 ## Open question
 
 - Identify any genuine Go 1.26-only feature the project relies on (vs. just the go.mod floor). Nothing
-  in the 1.26 notes is obviously required; if none materializes, document that the floor is a choice
+  in the 1.26 notes is obviously required by *our* code; if none materializes, the floor is a choice
   and could be lowered (e.g. to 1.25, which has `slog`, generics, `errgroup` patterns, etc.) for
-  broader buildability. Revisit if `encoding/json/v2` is adopted (see `stdlib-for-lsp-server.md`).
+  broader buildability. **New data point (2026-06-21):** if the project adopts Option A in
+  `lsp-go-ecosystem.md`, the floor stops being a free choice — `go.lsp.dev/protocol` v1.0.0's `go.mod`
+  declares `go 1.26`, which would force the module's floor to ≥ 1.26 (Go's module graph takes the max
+  `go` directive). So "lower the floor to 1.25" is only available under Option B (hand-rolled LSP) or
+  with a dependency that has a lower floor. Revisit if `encoding/json/v2` is adopted (see
+  `stdlib-for-lsp-server.md`).
 
 ## Sources
 
@@ -46,3 +52,9 @@
   1.26.4 = 2026-06-02, 1.25.0 = 2025-08-12).
 - Go 1.26 release notes: https://go.dev/doc/go1.26 (verified 2026-06-20: `new(expr)`, self-referential
   generics, stdlib additions).
+- Module `go`-directive max rule (verified 2026-06-21): https://go.dev/ref/mod#go-mod-file-go — since
+  Go 1.21 a module's `go` directive must be ≥ the `go` directive of every (direct or indirect)
+  dependency; the build fails otherwise. `go.lsp.dev/protocol` v1.0.0 declares `go 1.26`
+  (https://github.com/go-language-server/protocol/blob/main/go.mod).
+- Go release history re-confirmed 2026-06-21: 1.26.4 (2026-06-02) still the latest patch; no Go 1.27
+  release or beta yet (https://go.dev/doc/devel/release).

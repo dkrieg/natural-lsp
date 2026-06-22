@@ -186,7 +186,7 @@ real-world Natural looks like.
   NaturalONE LUW free-format layout. Confirms why the analyzer should not encode mainframe column
   rules yet (open question in INDEX).
 - Dynamic calls (`CALLNAT #VAR`) and `&`/`*LANGUAGE` substitution are rare in public samples — these
-  `CALLS_DYNAMIC` paths will mostly need hand-built fixtures.
+  dynamic/unresolvable call scenarios will mostly need hand-built fixtures.
 
 ## Sources
 

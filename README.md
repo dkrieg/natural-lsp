@@ -490,8 +490,8 @@ When you encounter a Natural construct that the analyzer handles incorrectly:
 
 - **Library / steplib resolution** is configuration-driven (see `[resolution]`). Without a declared library map, the
   workspace is treated as a single flat namespace, and modules sharing a name across libraries cannot be disambiguated.
-- **Dynamic `CALLNAT #VARIABLE`** calls are not resolved. They are surfaced as `CALLS_DYNAMIC` edges with the calling
-  context preserved for downstream analysis.
+- **Dynamic `CALLNAT #VARIABLE`** calls cannot be statically resolved. The call site is retained so they appear in
+  find-references and outline rather than disappearing silently.
 - **Adabas verbs** (`READ`, `FIND`, `GET` against Adabas files) are extracted structurally but Adabas DDM metadata is
   not resolved. IMS segment metadata requires external configuration.
 - **Natural preprocessor macros** and code generation constructs may not extract correctly.

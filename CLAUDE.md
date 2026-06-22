@@ -14,7 +14,7 @@ analysis-options parsing, custom extension-type mapping (`[extension_types]` tab
 generator for `--init`. Default indexed set: all 15 Natural extensions (10 core + 5 extended; see below).
 
 `internal/model` and `internal/analysis/natural` have object-type recognition (feature 02):
-`model.ObjectType` (16 constants with stable string values for `lsp-graph` interop), `model.Diagnostic`
+`model.ObjectType` (16 constants with stable string values), `model.Diagnostic`
 (analyzer-side signal for unrecognized files — feature-03 indexer will wire it to `SkipReason`/logs),
 and `model.FileAnalysis.ObjectType`/`Diagnostics` fields. The `analysis/natural` backend classifies
 every file by extension (case-insensitive, custom-mapping-aware) via `Analyze(path, content)`. Regression
@@ -128,7 +128,5 @@ configuration" sections before changing related code.
 When the analyzer mishandles a construct: add a minimal reproducer `.NSP` (or relevant `.NSx`) under `testdata/`, write
 a failing unit test in `internal/analysis/natural/`, then fix the analyzer. The testdata file stays as a permanent
 regression fixture. Use only sanitized, non-proprietary Natural code.
-
-## Relation to lsp-graph
 
 Standalone LSP server usable with any LSP editor.

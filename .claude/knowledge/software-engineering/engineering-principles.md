@@ -1,6 +1,6 @@
 # Engineering principles
 
-**Status:** verified (2026-06-20) — the named principles below are grounded in recognized primary
+**Status:** verified (2026-06-20; re-reviewed 2026-06-21, no change) — the named principles below are grounded in recognized primary
 sources (cited under Sources): Martin's SOLID, the Go proverbs / Effective Go for the Go lens, and the
 project's own NFRs. Apply them *through the lens of idiomatic Go* (the `go-development` skill), which
 deliberately differs from OO-centric phrasings (e.g. Go favors small consumer-defined interfaces and

@@ -72,6 +72,36 @@ END-DEFINE
 - **VIEW (DDM access):** `level name VIEW OF ddm-name` followed by the DDM fields to use; this is a
   read edge to a DDM (`.NSD`).
 
+## Cross-check against natls — verified (2026-06-21)
+
+natls's parser (natparse) fully parses the `DEFINE DATA` body including arrays and the REDEFINE
+*clause*, with dedicated parser errors for each — corroborating that these are in-scope grammar (not
+just our partial-verify guesses):
+- Array bounds: `NPP009 INVALID_ARRAY_BOUND`, `NPP010 INCOMPLETE_ARRAY_DEFINITION`,
+  `NPP017 ARRAY_DIMENSION_MUST_BE_CONST_OR_INIT`. Unbounded arrays use `*` (real fixture: `(A10/*)`).
+- REDEFINE clause: `NPP014 NO_TARGET_VARIABLE_FOR_REDEFINE_FOUND`,
+  `NPP015 REDEFINE_LENGTH_EXCEEDS_TARGET_LENGTH`, `NPP022/023/024` (REDEFINE target can't be an X-array
+  / dynamic / contain a dynamic). So `REDEFINE` *inside* `DEFINE DATA` is fully supported.
+- `FILLER nX` carving: `NPP021 FILLER_MISSING_X`.
+- Dynamic length: `NPP004 INVALID_DATA_TYPE_FOR_DYNAMIC_LENGTH`, `NPP008 DYNAMIC_AND_FIXED_LENGTH`.
+- Scope checks: `NPP018 BY_VALUE_NOT_ALLOWED_IN_SCOPE`, `NPP019 OPTIONAL_NOT_ALLOWED_IN_SCOPE`,
+  `NPP050 INVALID_SCOPE_FOR_FILE_TYPE` (e.g. PARAMETER scope where the file type forbids it).
+- `IUsingNode` exposes `isLocalUsing()/isGlobalUsing()/isParameterUsing()` — i.e. `... USING name` is a
+  resolvable module reference to the LDA/GDA/PDA, the read/include edge we extract.
+
+**Important "REDEFINE" disambiguation:** natls's `docs/implemented-statements.md` lists `REDEFINE` as a
+"reporting-mode-only, not planned" *statement*. That is the standalone reporting-mode `REDEFINE`
+statement, NOT the `REDEFINE` clause inside `DEFINE DATA` (which natparse parses fully, per the errors
+above). Don't conflate the two.
+
+**Regional decimal separator gotcha:** numeric length specs can use a COMMA as the decimal point
+depending on regional settings, e.g. `(N12,7)` = 12 integer + 7 fractional digits (seen in natls
+fixtures), equivalent to `(N12.7)`. The parser must accept both `.` and `,` as the decimal separator.
+natls notes it currently hardcodes separator assumptions (a known limitation). The parser also
+disambiguates the comma in `(1:5,2:5)` (two array dimensions) from a decimal comma.
+
+Source: natls `ParserError.java` and `IUsingNode.java`; see natls-prior-art.md.
+
 ## PARAMETER data and callable interface
 
 - A subprogram's / external subroutine's callable signature is its `DEFINE DATA PARAMETER` block (or a
@@ -89,3 +119,5 @@ END-DEFINE
 - CONTEXT variables: https://documentation.softwareag.com/natural/nat827mf/sm/defineda_cv.htm
 - Format codes / packed limits (Natural & Adabas field defs):
   https://documentation.softwareag.com/natural/nsn828/ug/fields9.htm
+- natls parser errors (array/REDEFINE/scope grammar):
+  https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/parsing/ParserError.java

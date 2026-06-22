@@ -54,6 +54,38 @@ Notes:
 - `.NSD` (DDM) is the local-file representation of a DDM in NaturalONE, created/edited with the DDM Editor.
 - Extensions/object types are dialect-stable across recent NaturalONE versions (8.x–9.x).
 
+## Cross-check against natls (prior-art parser-based LSP) — verified (2026-06-21)
+
+natls's `NaturalFileType` enum maps the same 11 core extensions (NSD/NSN/NSP/NSS/NSH/NSG/NSL/NSA/NSM/
+NSC/NS7) identically to the table above — independent corroboration. It does NOT yet handle `.NS4`
+(class), `.NS8` (adapter), `.NST` (text), or `.NS3` (dialog) — they are TODO comments in its source
+(along with an unassigned "RESOURCE" type). Even a mature hand-written parser punts on these, so they
+are genuinely lower-priority for our analyzer. Two useful per-type predicates from natls source:
+
+- **Can carry `DEFINE DATA`:** Subprogram, Program, (external) Subroutine, Helproutine, LDA, PDA, GDA,
+  Function, **Map**. NOT: DDM, Copycode.
+- **Can have a statement body:** Subprogram, Program, Subroutine, Helproutine, Function, Copycode, Map.
+  NOT: the data areas (LDA/GDA/PDA), DDM.
+
+### Referable name ≠ filename for `.NSS` and `.NS7` — verified (2026-06-21)
+
+How a module is referred to (what `PERFORM` / function-call resolution keys on):
+- Subprogram, DDM, LDA, PDA, GDA, Program, Copycode, Map, Helproutine → **the file base name**.
+- **External Subroutine (`.NSS`)** → the identifier after `DEFINE SUBROUTINE` in the body — this CAN
+  differ from the filename and CAN exceed 8 characters. (natls fixture `EXTSUB.NSS` defines
+  `EXTERNAL-SUB`.)
+- **Function (`.NS7`)** → the identifier after `DEFINE FUNCTION` in the body.
+
+So to resolve `PERFORM` and function calls, the analyzer must read the `DEFINE SUBROUTINE` /
+`DEFINE FUNCTION` name from the file, not trust the filename. (For all other types the filename is the
+referable name.) Source: natls `NaturalProjectFileIndexer.getReferableName`; see natls-prior-art.md.
+
+### DDM (`.NSD`) is NOT Natural source — verified (2026-06-21)
+
+A `.NSD` file is a tabular field listing (columns `T L DB Name F Leng S D Remark`), not Natural
+statements — it needs a separate, columnar parser. natls has a dedicated DDM parser
+(`parsing/ddm/`). Do not run the statement extractor over `.NSD` files.
+
 ## Gotchas for the analyzer
 
 - Object *type* must be derived from the extension, not from filename or content — the same base name
@@ -74,3 +106,7 @@ Notes:
   https://documentation.softwareag.com/naturalONE/natONE913/index.htm
 - DDM in NaturalONE: https://documentation.softwareag.com/naturalONE/natONE913/natux/pg/pg_obj_ddm.htm
 - DDM Editor: https://documentation.softwareag.com/naturalONE/natONE911/core/using/use-edis-ddm.htm
+- natls `NaturalFileType` (11-type enum, canHaveDefineData/canHaveBody):
+  https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/natural/project/NaturalFileType.java
+- natls `NaturalProjectFileIndexer` (referable-name derivation):
+  https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/natural/project/NaturalProjectFileIndexer.java

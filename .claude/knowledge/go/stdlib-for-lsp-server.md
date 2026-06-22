@@ -24,6 +24,13 @@
     build on `GOEXPERIMENT=jsonv2` would make the binary non-buildable with a default toolchain and
     pin us to an unstable API; the lenient `encoding/json` behavior already documented here is
     sufficient for LSP message bodies. Revisit only if json/v2 is promoted in a later release.
+    - **Cross-reference (2026-06-21):** the "do not adopt json/v2" decision is undercut *transitively*
+      if the project picks Option A in `lsp-go-ecosystem.md`. `go.lsp.dev/protocol` v1.0.0 depends on
+      `github.com/go-json-experiment/json` (the standalone json/v2 module — distinct from the
+      `GOEXPERIMENT=jsonv2` stdlib gate, so it does build with a default toolchain) and serializes via
+      its `MarshalJSONTo`/`UnmarshalJSONFrom` API. Choosing that LSP library therefore means accepting
+      json/v2's unstable API as a runtime dependency anyway. Avoiding json/v2 entirely is an argument
+      for the hand-rolled Option B. See `lsp-go-ecosystem.md`.
 - **`log/slog`** (stdlib since Go 1.21): structured logging. Write the handler to **stderr**
   (`slog.NewJSONHandler(os.Stderr, ...)` or text) — never stdout, which carries the LSP stream. Good
   for the "observable, never silent" requirement (skips, recoverable errors, ambiguity).
