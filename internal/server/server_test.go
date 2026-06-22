@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -754,8 +755,7 @@ func TestLifecycle(t *testing.T) {
 			}
 
 			// Assert: for the normal sequence case, verify clean shutdown
-			// Context cancellation of the internal background goroutines is verified
-			// via integration in feature 05 when background work is actually scheduled.
+			// Background context cancellation at shutdown is covered by TestShutdownCancelsBgContext.
 			// Here we only verify Run returns nil on a normal shutdown sequence (already checked above).
 		})
 	}
@@ -903,6 +903,87 @@ func TestShutdownCancelsBgContext(t *testing.T) {
 	// Cleanup: close the blockForever channel to let Run proceed (will get error reading)
 	// Actually, we can't close blockForever because it's already blocked. The test is done;
 	// let the goroutine leak (acceptable for a test).
+}
+
+// TestContextCancellationExitsCleanly pins the behavior of Run when the passed context
+// is cancelled during or before reading (FR-43, R8 remediation).
+//
+// The bug: Run's read loop continues indefinitely when ctx.Err() is returned by
+// stream.Read, because the loop does:
+//
+//	msg, _, err := stream.Read(ctx)
+//	if err != nil {
+//	    if err == io.EOF {
+//	        return nil
+//	    }
+//	    logger.Error("malformed JSON-RPC message; skipping", "err", err)
+//	    continue   // ← loops forever on ctx.Err()
+//	}
+//
+// When the caller's ctx is cancelled (e.g., SIGTERM via signal.NotifyContext),
+// stream.Read returns ctx.Err() immediately on every call, and the loop spins
+// indefinitely, flooding stderr and never exiting.
+//
+// Expected behavior: When ctx is cancelled, Run must return nil (clean exit)
+// promptly — within a reasonable timeout like 500ms.
+//
+// The test:
+// 1. Creates a reader that blocks forever (never delivers bytes, never returns EOF)
+// 2. Starts Run in a goroutine with a cancellable context
+// 3. Cancels the context after a tiny sleep to let Run start reading
+// 4. Asserts that Run returns nil within 500ms (demonstrating the bug: it will NOT)
+func TestContextCancellationExitsCleanly(t *testing.T) {
+	// Arrange: create a reader that blocks forever
+	blockingReader, _ := io.Pipe()
+	// Note: the write end of the pipe is never written to; the read end will block forever
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Create a cancellable context
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Channel to capture Run's return value
+	runErrChan := make(chan error, 1)
+
+	// Act: start Run in a goroutine
+	go func() {
+		cfg := config.Defaults()
+		az := &stubAnalyzer{}
+		runErrChan <- Run(
+			ctx,
+			blockingReader,
+			&outBuf,
+			"0.0.0-test",
+			"/workspace",
+			cfg,
+			az,
+			logger,
+		)
+	}()
+
+	// Give Run time to enter the read loop and start blocking on stream.Read(ctx)
+	time.Sleep(5 * time.Millisecond)
+
+	// Cancel the context while Run is blocked in stream.Read
+	cancel()
+
+	// Assert: Run must return nil promptly (within 500ms).
+	// With the current buggy code, stream.Read(ctx) returns ctx.Err() immediately,
+	// the loop continues forever, and this will timeout → test fails RED.
+	select {
+	case runErr := <-runErrChan:
+		// Run returned; assert it returned nil (clean exit)
+		if runErr != nil {
+			t.Errorf("expected Run to return nil on context cancellation, got error: %v", runErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		// Run did not return within 500ms — it's spinning in the read loop
+		t.Errorf("Run did not exit within 500ms after context cancellation; " +
+			"the read loop is likely spinning on stream.Read(ctx).Err() (ctx.Err() returned indefinitely)")
+	}
 }
 
 // TestRequestPanicRecovery pins the behavior of panic recovery in the request dispatch

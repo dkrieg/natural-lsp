@@ -403,6 +403,62 @@ failing test that *would have caught* the finding.
 
 ---
 
+---
+
+## Remediation tasks (post-review-feature round 2)
+
+Findings from review verdict CONCERNS (round 2). R8 is MAJOR; R9–R11 are MINOR.
+
+### R8 — Fix busy-spin on context cancellation (MAJOR — New-M1 from review-lsp-protocol)
+
+- **Finding:** `internal/server/server.go` read loop (`for { stream.Read(ctx); ... }`) `continue`s on
+  any non-EOF error. When `ctx` is cancelled (e.g. SIGTERM via `signal.NotifyContext` in `main.go`),
+  `stream.Read` returns `ctx.Err()` immediately on every iteration — the loop spins indefinitely,
+  flooding stderr. The server cannot be stopped cleanly by a real editor or OS signal.
+- **RED:** A test that cancels the server's context mid-serve and asserts `Run` returns `nil` (clean exit)
+  rather than spinning. Use a blocking reader (`blockingReader`) so the only way out is context
+  cancellation. Fails today because `continue` loops forever.
+- **GREEN:** In the read loop error branch, check `errors.Is(err, context.Canceled) ||
+  errors.Is(err, context.DeadlineExceeded)` → `return nil`. Also check `errors.Is(err,
+  io.ErrUnexpectedEOF)` → `return fmt.Errorf("stream closed: %w", err)` (unrecoverable transport error,
+  not a per-message parse failure). Only `continue` on body-decode errors where the frame was fully
+  consumed and the stream position is known.
+- **DoD:** New test `TestContextCancellationExitsCleanly` passes; `go test -race ./internal/server/`
+  green; server exits cleanly on context cancel in existing tests; `gofmt`/`vet` clean.
+- **TDD agents:** `tdd-red` → `tdd-green` → `tdd-refactor`.
+- **Depends on:** none.
+
+### R9 — Fix stale comment in TestLifecycle NormalSequence (MINOR — m3 from review-acceptance)
+
+- **Finding:** `server_test.go` `TestLifecycle` NormalSequence comment says bg-context cancellation is
+  "deferred to feature 05" but `TestShutdownCancelsBgContext` already covers it. The comment is
+  misleading.
+- **RED:** No test needed — it is a comment. Update the comment directly to reference
+  `TestShutdownCancelsBgContext`. Confirm the build and test suite stay green.
+- **DoD:** Comment updated; `go test ./internal/server/` green.
+- **TDD agents:** `tdd-green` only (comment fix, no behavior change).
+- **Depends on:** none.
+
+### R10 — Remove orphaned testdata fixture (MINOR — m2 from review-acceptance)
+
+- **Finding:** `testdata/degradation/notnatural.txt` exists but no test references it. It was originally
+  planned as a fixture for T5's unrecognized-extension path, but `TestProcessFiles` uses inline bytes.
+- **RED:** No test needed — the file is simply unused. Remove it to avoid future confusion.
+- **DoD:** File removed; `go test ./...` green.
+- **TDD agents:** `tdd-green` only (file removal, no behavior change).
+- **Depends on:** none.
+
+### R11 — Remove dead `Server` struct (MINOR — m4 from review-acceptance)
+
+- **Finding:** `internal/server/server.go` declares `type Server struct { // TODO: fields to be added as
+  features land }` which is never instantiated. `Run` is a package function. Dead code.
+- **RED:** No test needed — build/vet gate. Remove the struct and confirm the build stays green.
+- **DoD:** `Server` struct removed; `go build ./...` green; `gofmt`/`vet` clean.
+- **TDD agents:** `tdd-green` only (dead-code removal, no behavior change).
+- **Depends on:** none.
+
+---
+
 ## Open questions
 
 1. **Cancellation in this release (from plan):** Should `$/cancelRequest` (`-32800

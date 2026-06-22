@@ -6,6 +6,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,6 +43,12 @@ func (rwc *readWriteCloser) Write(p []byte) (int, error) {
 }
 
 func (rwc *readWriteCloser) Close() error {
+	// Close the underlying reader if it supports it (e.g. io.PipeReader, os.File).
+	// This is essential for unblocking any goroutine blocked in a Read call on rwc.r
+	// when the stream is closed due to context cancellation.
+	if c, ok := rwc.r.(io.Closer); ok {
+		return c.Close()
+	}
 	return nil
 }
 
@@ -51,11 +58,6 @@ const (
 	stateInitialized = 1 // After initialize and initialized notification
 	stateShutdown    = 2 // After shutdown request
 )
-
-// Server implements an LSP server over a JSON-RPC 2.0 connection (feature 03).
-type Server struct {
-	// TODO: fields to be added as features land
-}
 
 // handleInitialize processes an LSP "initialize" request, negotiates
 // positionEncoding (UTF-8 preferred, UTF-16 default per ADR-008), and returns
@@ -142,6 +144,28 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 	stream := jsonrpc2.NewHeaderStream(conn)
 	defer stream.Close()
 
+	// done is closed when Run returns so the context-watcher goroutine below always
+	// exits — whether Run returns normally (EOF/exit notification) or via a ctx
+	// cancellation. Registered after defer stream.Close() so it fires first (LIFO),
+	// letting the watcher exit before the stream is cleaned up.
+	done := make(chan struct{})
+	defer close(done)
+
+	// Context-watcher: close the stream when ctx is cancelled so that any
+	// blocking bufio.Reader.Read inside headerStream.ReadFrame is unblocked.
+	// headerStream.ReadFrame only checks ctx.Err() before entering bufio.Reader —
+	// it has no way to interrupt a blocking I/O mid-read. Closing the underlying
+	// connection causes the blocked Read to return an error, which propagates up
+	// through ReadFrame and back to the loop below as a non-nil error.
+	go func() {
+		select {
+		case <-ctx.Done():
+			stream.Close()
+		case <-done:
+			// Run returned normally; defer stream.Close() handles cleanup.
+		}
+	}()
+
 	// sendError encodes and writes a JSON-RPC error response. Write failures are
 	// logged rather than returned: the connection is likely broken, and the next
 	// stream.Read will surface the same failure on the read path.
@@ -154,11 +178,31 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 	}
 
 	for {
-		// Read one JSON-RPC message from the framed stream.
+		// Read one JSON-RPC message from the framed stream. When the context is
+		// cancelled, the context-watcher goroutine above closes the stream, which
+		// unblocks the blocking bufio.Reader inside headerStream and causes Read
+		// to return an error (io.EOF or io.ErrClosedPipe). The error cases below
+		// then route context cancellation to a clean nil return.
 		msg, _, err := stream.Read(ctx)
 		if err != nil {
 			if err == io.EOF {
 				return nil
+			}
+			// Context cancellation or deadline exceeded: clean exit (explicit signal).
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil // clean shutdown via context cancellation (e.g. SIGTERM)
+			}
+			// The context-watcher goroutine closes the stream when ctx is cancelled,
+			// unblocking any pending bufio.Read. That close may race with the read and
+			// return a connection-closed error (e.g. io.ErrClosedPipe) before the next
+			// Read attempt has a chance to see ctx.Err(). Check the context here so we
+			// don't log a spurious error or treat a clean shutdown as a protocol fault.
+			if ctx.Err() != nil {
+				return nil
+			}
+			// Stream position is unknown; unrecoverable
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return fmt.Errorf("stream closed unexpectedly: %w", err)
 			}
 			logger.Error("malformed JSON-RPC message; skipping", "err", err)
 			continue
@@ -201,7 +245,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 			continue
 		}
 
-		var result []byte
+		var respResult []byte
 
 		// Panic recovery wraps only the dispatch switch — deliberately not the
 		// response write below. Panics from stream.Write propagate to the caller
@@ -227,7 +271,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid initialize params: %v", err))
 					return
 				}
-				result, err = handleInitialize(params, version)
+				respResult, err = handleInitialize(params, version)
 				if err != nil {
 					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
 					return
@@ -240,7 +284,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				}
 				state = stateShutdown
 				bgCancel() // ADR-012: cancel background work at shutdown
-				result = []byte(`null`)
+				respResult = []byte(`null`)
 
 			case "test/panic":
 				// TEST-ONLY INFRASTRUCTURE: this case exists solely to let
@@ -263,8 +307,8 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 
 		// Build and send the success response (unless panic or error handler already sent a response).
 		// If panic was recovered, the handler above already sent InternalError via sendError.
-		if result != nil {
-			response := jsonrpc2.NewResponse(call.ID(), jsonrpc2.RawMessage(result), nil)
+		if respResult != nil {
+			response := jsonrpc2.NewResponse(call.ID(), jsonrpc2.RawMessage(respResult), nil)
 			_, err := stream.Write(ctx, response)
 			if err != nil {
 				return fmt.Errorf("write response: %w", err)
