@@ -64,6 +64,18 @@ this index first, then the relevant topics.
 
 ## Changelog
 
+- 2026-06-22 — FR-34 (external file watching) prep. Two topics updated, both verified against the
+  module cache / repo:
+  - `lsp-go-ecosystem.md`: documented the exact `go.lsp.dev/protocol` v1.0.0 watched-files types
+    (`DidChangeWatchedFilesParams`/`FileEvent`/`FileChangeType` for A2; `RegistrationParams`/
+    `Registration`/`DidChangeWatchedFilesRegistrationOptions`/`FileSystemWatcher`/`WatchKind`/
+    `GlobPattern`/`Pattern` for dynamic registration). Key fact: **there is no static
+    ServerCapabilities flag** for didChangeWatchedFiles — the spec only supports dynamic
+    `client/registerCapability`, gated on the client's `DynamicRegistration=true`. Also noted the
+    `internal/server` hand-rolled single-reader dispatch loop complicates outbound registration.
+  - `filesystem-and-watching.md`: **correction** — fsnotify is NOT yet in go.mod/go.sum/module cache
+    (contradicts CLAUDE-context); add via `go get` when first imported. Added the concrete recursive
+    watch recipe, Op-bitmask gotcha, and bgCtx/`Close()`/drain lifecycle pattern.
 - 2026-06-21 — Full verification sweep (go-improve). Headline finding in `lsp-go-ecosystem.md`:
   - **Resolved the `go.lsp.dev/protocol` transitive-footprint open question — and found a json/v2
     dependency.** v1.0.0's `go.mod` declares `go 1.26` and has 4 direct requires; the package imports

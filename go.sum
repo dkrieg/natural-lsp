@@ -1,3 +1,5 @@
+github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
+github.com/fsnotify/fsnotify v1.10.1/go.mod h1:TLheqan6HD6GBK6PrDWyDPBaEV8LspOxvPSjC+bVfgo=
 github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6 h1:nxP4pPoyqOAgX8lYDFCfl3DyKeXErCvSvhcyzwGV9CE=
 github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6/go.mod h1:tphK2c80bpPhMOI4v6bIc2xWywPfbqi1Z06+RcrMkDg=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
@@ -10,3 +12,5 @@ go.lsp.dev/protocol v1.0.0 h1:VPdqJRn0rTxN2UAsmmY06m3fF1r/DX7qyhCzBKVqgGs=
 go.lsp.dev/protocol v1.0.0/go.mod h1:RBDw4rB1ErrHqHE22shl0Bg+zg8JpDLk0S/dqZgJx9M=
 go.lsp.dev/uri v1.0.0 h1:RamHOroOvgymLg/w8E4KNbR8Hj57gj0Vm4TnTP+LcSk=
 go.lsp.dev/uri v1.0.0/go.mod h1:06a0ghafs4PuqkLsJGUmlgPHw6+kH79edRXjOT/rA8s=
+golang.org/x/sys v0.45.0 h1:dO4czNzziLiiXplLQgBCEpCvXQ3dnkn0SdaZSYdQ+FY=
+golang.org/x/sys v0.45.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=

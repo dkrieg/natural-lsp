@@ -8,6 +8,7 @@
 # Go build artifacts
 /natural-lsp
 /dist/
+*.test
 
 # Workspace index cache (content-hashed, rebuilt on demand)
 .natural-lsp-cache/
