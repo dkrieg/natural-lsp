@@ -33,8 +33,31 @@ func TestStdioHandshake(t *testing.T) {
 	tempDir := t.TempDir()
 	binaryPath := filepath.Join(tempDir, "natural-lsp")
 
+	// Locate the module root by walking up from the test's working directory
+	// (go test sets cwd to the package directory) until go.mod is found.
+	// This works in both local dev and CI without hardcoded paths.
+	moduleRoot, err := func() (string, error) {
+		dir, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		for {
+			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+				return dir, nil
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return "", fmt.Errorf("go.mod not found")
+			}
+			dir = parent
+		}
+	}()
+	if err != nil {
+		t.Fatalf("could not locate module root: %v", err)
+	}
+
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/natural-lsp")
-	buildCmd.Dir = "/Users/daniel/Projects/natural-lsp"
+	buildCmd.Dir = moduleRoot
 	if output, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build binary: %v\noutput: %s", err, output)
 	}
