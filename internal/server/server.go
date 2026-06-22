@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/go-json-experiment/json/jsontext"
@@ -17,6 +19,8 @@ import (
 	"go.lsp.dev/protocol"
 	"natural-lsp/internal/analysis"
 	"natural-lsp/internal/config"
+	"natural-lsp/internal/document"
+	"natural-lsp/internal/model"
 )
 
 // bgCtxHook is a test-only hook called after creating the background context.
@@ -59,15 +63,39 @@ const (
 	stateShutdown    = 2 // After shutdown request
 )
 
+// buildWatchedFilesRegisterOptions serialises a DidChangeWatchedFilesRegistrationOptions
+// value — containing one FileSystemWatcher per indexed extension — into a jsontext.Value
+// suitable for Registration.RegisterOptions.
+//
+// The glob pattern "**/*<ext>" (e.g. "**/*.NSP") is a standard LSP glob that matches any
+// file with that extension in the workspace tree, at any nesting depth.  WatchKind is
+// omitted (zero) so the client defaults to create|change|delete (WatchKind 7 per spec).
+func buildWatchedFilesRegisterOptions(extensions []string) (protocol.LSPAny, error) {
+	watchers := make([]protocol.FileSystemWatcher, 0, len(extensions))
+	for _, ext := range extensions {
+		// ext already has a leading dot (e.g. ".NSP"); build "**/*.NSP".
+		watchers = append(watchers, protocol.FileSystemWatcher{
+			GlobPattern: protocol.Pattern("**/*" + ext),
+		})
+	}
+	opts := protocol.DidChangeWatchedFilesRegistrationOptions{Watchers: watchers}
+	var buf bytes.Buffer
+	if err := opts.MarshalJSONTo(jsontext.NewEncoder(&buf)); err != nil {
+		return nil, fmt.Errorf("marshal DidChangeWatchedFilesRegistrationOptions: %w", err)
+	}
+	return protocol.LSPAny(buf.Bytes()), nil
+}
+
 // handleInitialize processes an LSP "initialize" request, negotiates
 // positionEncoding (UTF-8 preferred, UTF-16 default per ADR-008), and returns
-// the marshalled InitializeResult bytes.
+// the marshalled InitializeResult bytes and a flag indicating whether the client
+// supports dynamic registration for workspace/didChangeWatchedFiles.
 //
 // Capabilities advertised here are intentionally minimal: only textDocumentSync
 // and positionEncoding. This is a deliberate allow-list locked by TestInitialize —
 // when features 09–13 add a provider (hover, definition, references, …) they MUST
 // update that test to extend the allow-list, making the addition explicit.
-func handleInitialize(params protocol.InitializeParams, version string) ([]byte, error) {
+func handleInitialize(params protocol.InitializeParams, version string) ([]byte, bool, error) {
 	// Negotiate position encoding: prefer UTF-8 if offered, else fall back to UTF-16.
 	posEncoding := protocol.PositionEncodingKindUTF16
 	if params.Capabilities.General != nil {
@@ -77,6 +105,16 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 				break
 			}
 		}
+	}
+
+	// Check whether the client supports dynamic registration for workspace/didChangeWatchedFiles (FR-34, A2).
+	// This flag will be used in the initialized handler to send client/registerCapability if needed.
+	clientSupportsWatchedFilesReg := false
+	if params.Capabilities.Workspace != nil &&
+		params.Capabilities.Workspace.DidChangeWatchedFiles != nil &&
+		params.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration != nil &&
+		*params.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration {
+		clientSupportsWatchedFilesReg = true
 	}
 
 	// Intentional minimal capability set — see comment above.
@@ -94,9 +132,9 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	var buf bytes.Buffer
 	enc := jsontext.NewEncoder(&buf)
 	if err := initResult.MarshalJSONTo(enc); err != nil {
-		return nil, fmt.Errorf("marshal initialize result: %w", err)
+		return nil, false, fmt.Errorf("marshal initialize result: %w", err)
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), clientSupportsWatchedFilesReg, nil
 }
 
 // Run serves a JSON-RPC connection from an in-memory or stdio reader/writer.
@@ -120,6 +158,11 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 	// Lifecycle state machine
 	state := statePreInit
 
+	// clientSupportsWatchedFilesReg tracks whether the client supports dynamic registration
+	// for workspace/didChangeWatchedFiles (parsed from initialize params, used in initialized handler).
+	// Initially false; set to true by handleInitialize if the client advertises support.
+	clientSupportsWatchedFilesReg := false
+
 	// bgCtx is the context for all background goroutines spawned by this server
 	// instance (indexer, watcher, etc.). It is derived from the caller's ctx so
 	// that external cancellation also propagates. bgCancel is called on shutdown
@@ -137,7 +180,25 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 		hook(bgCtx)
 	}
 
-	_ = bgCtx // bgCtx will be passed to background goroutines in future features
+	// Construct the document store (in-memory view of open documents).
+	// Wire the analyze function to perform file analysis with graceful degradation (FR-43).
+	store := document.New(root, func(relPath string, content []byte) model.FileAnalysis {
+		result := analyzeOne(cfg, az, relPath, content, logger)
+		return result.FileAnalysis
+	}, logger)
+
+	// Start the filesystem watcher (FR-34) to detect externally-changed files.
+	// The watcher runs in a background goroutine and dispatches re-analysis via
+	// analyzeOne. Non-fatal failures are logged but don't abort the server (FR-43).
+	watcher, watchErr := document.NewWatcher(bgCtx, root, &cfg, func(relPath string, content []byte) model.FileAnalysis {
+		result := analyzeOne(cfg, az, relPath, content, logger)
+		return result.FileAnalysis
+	}, logger)
+	if watchErr != nil {
+		logger.Error("failed to start file watcher", "err", watchErr) // FR-43: non-fatal
+	} else {
+		defer watcher.Close()
+	}
 
 	// Wrap the reader and writer into a ReadWriteCloser for jsonrpc2.NewHeaderStream.
 	conn := &readWriteCloser{r: r, w: w}
@@ -210,21 +271,180 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 
 		// Route notifications (no id) before handling Calls (requests with id).
 		if notif, ok := msg.(*jsonrpc2.Notification); ok {
-			switch notif.Method() {
-			case "initialized":
-				// Transition to stateInitialized only from statePreInit.
-				// Receiving "initialized" after shutdown is a client misbehaviour;
-				// silently ignore it rather than crashing.
-				if state == statePreInit {
-					state = stateInitialized
-				}
-			case "exit":
+			// Check for "exit" before the panic recovery wrapper, since exit needs to return from the outer loop.
+			if notif.Method() == "exit" {
 				if state != stateShutdown {
 					return fmt.Errorf("exit without shutdown")
 				}
 				return nil
-			default:
-				// Unknown notifications are silently ignored (LSP §3.4).
+			}
+
+			// Panic recovery wraps the notification dispatch switch.
+			// Notifications have no id, so there is NO error response to send —
+			// recovery is log-and-continue only (FR-43, Task 7).
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("panic in notification dispatch", "method", notif.Method(), "panic", r)
+					}
+				}()
+
+				switch notif.Method() {
+				case "initialized":
+					// Transition to stateInitialized only from statePreInit.
+					// Receiving "initialized" after shutdown is a client misbehaviour;
+					// silently ignore it rather than crashing.
+					if state == statePreInit {
+						state = stateInitialized
+
+						// FR-34, A2: if the client supports dynamic registration for workspace/didChangeWatchedFiles,
+						// send a client/registerCapability request to register our interest in file change events.
+						// This is a call (not a notification) — the client's response will be handled below.
+						if clientSupportsWatchedFilesReg {
+							// Build registration options: one watcher per indexed extension so the
+							// client notifies the server of create/change/delete events for those files.
+							regOpts, optsErr := buildWatchedFilesRegisterOptions(cfg.Workspace.Extensions)
+							if optsErr != nil {
+								logger.Error("failed to build watchedFiles register options", "err", optsErr)
+								break
+							}
+							regParams := protocol.RegistrationParams{
+								Registrations: []protocol.Registration{
+									{
+										// Stable string ID — used if the server ever sends an
+										// unregisterCapability to revoke this registration.
+										ID:              "natural-lsp-watched-files",
+										Method:          "workspace/didChangeWatchedFiles",
+										RegisterOptions: regOpts,
+									},
+								},
+							}
+
+							// Serialize regParams to JSON.
+							var paramsBuf bytes.Buffer
+							paramsEnc := jsontext.NewEncoder(&paramsBuf)
+							if err := regParams.MarshalJSONTo(paramsEnc); err != nil {
+								logger.Error("failed to marshal registration params", "err", err)
+							} else {
+								// Use a stable string ID so the log message and any future
+								// unregisterCapability call are readable without a magic number.
+								regID := jsonrpc2.NewStringID("natural-lsp-watched-files-reg")
+								call := jsonrpc2.NewCall(regID, "client/registerCapability", jsonrpc2.RawMessage(paramsBuf.Bytes()))
+								if _, err := stream.Write(ctx, call); err != nil {
+									logger.Error("failed to send client/registerCapability", "err", err)
+									// non-fatal: FR-43
+								}
+							}
+						}
+					}
+				case "test/panic-notification":
+					// TEST-ONLY INFRASTRUCTURE: this case exists solely to let
+					// TestNotificationPanicRecovery exercise the panic-recovery path for
+					// notifications (FR-43, T7). It is intentional dead code in production and
+					// will be removed once Task 7 adds the panic recovery wrapper.
+					// A build tag is intentionally not used here: the hook is trivial,
+					// the comment makes its purpose clear, and segregating it behind
+					// a tag would add build complexity for no meaningful safety gain.
+					panic("test panic for FR-43 notification recovery")
+				case "textDocument/didOpen":
+					// Only handle didOpen in the fully initialized state (FR-33, Task 5).
+					// Notifications arriving before "initialized" or after "shutdown" are
+					// silently ignored per LSP §3.4 — no response is sent for notifications.
+					if state == stateInitialized {
+						var params protocol.DidOpenTextDocumentParams
+						dec := jsontext.NewDecoder(bytes.NewReader(notif.Params()))
+						if err := params.UnmarshalJSONFrom(dec); err != nil {
+							logger.Error("invalid textDocument/didOpen params", "err", err)
+						} else {
+							u := params.TextDocument.URI
+							store.Open(u, int(params.TextDocument.Version), []byte(params.TextDocument.Text))
+						}
+					}
+				case "textDocument/didChange":
+					// FR-33, Task 6: handle document content changes.
+					// Only in stateInitialized; notifications get no response.
+					if state == stateInitialized {
+						var params protocol.DidChangeTextDocumentParams
+						dec := jsontext.NewDecoder(bytes.NewReader(notif.Params()))
+						if err := params.UnmarshalJSONFrom(dec); err != nil {
+							logger.Error("invalid textDocument/didChange params", "err", err)
+						} else {
+							u := params.TextDocument.URI
+							// Handle each content change; full sync means we expect a single whole-document change
+							for _, change := range params.ContentChanges {
+								if whole, ok := change.(*protocol.TextDocumentContentChangeWholeDocument); ok {
+									store.Update(u, int(params.TextDocument.Version), []byte(whole.Text))
+								} else if _, ok := change.(*protocol.TextDocumentContentChangePartial); ok {
+									// Partial (range) edit under Full-sync policy: log and skip
+									logger.Error("received partial change under full-sync policy; skipping", "uri", u)
+								}
+							}
+						}
+					}
+				case "textDocument/didClose":
+					// FR-33, Task 6: handle document close.
+					// Only in stateInitialized; notifications get no response.
+					if state == stateInitialized {
+						var params protocol.DidCloseTextDocumentParams
+						dec := jsontext.NewDecoder(bytes.NewReader(notif.Params()))
+						if err := params.UnmarshalJSONFrom(dec); err != nil {
+							logger.Error("invalid textDocument/didClose params", "err", err)
+						} else {
+							store.Close(params.TextDocument.URI)
+						}
+					}
+				case "workspace/didChangeWatchedFiles":
+					// FR-34, Task 9 (A2): handle externally-changed files (client-pushed).
+					// Only in stateInitialized; notifications get no response.
+					if state == stateInitialized {
+						var params protocol.DidChangeWatchedFilesParams
+						dec := jsontext.NewDecoder(bytes.NewReader(notif.Params()))
+						if err := params.UnmarshalJSONFrom(dec); err != nil {
+							logger.Error("invalid workspace/didChangeWatchedFiles params", "err", err)
+						} else {
+							// Dispatch re-analysis for each changed file.
+							for _, event := range params.Changes {
+								// Get the file path from the URI.
+								absPath := event.URI.FsPath()
+								// Derive the relative path.
+								relPath, err := filepath.Rel(root, absPath)
+								if err != nil {
+									logger.Error("failed to compute relative path", "absPath", absPath, "root", root, "err", err)
+									continue
+								}
+								// Handle file change type:
+								// - FileChangeTypeDeleted (3): pass nil content to signal removal
+								// - Others: read the file and analyze (if it exists and is not too large)
+								if event.Type == protocol.FileChangeTypeDeleted {
+									analyzeOne(cfg, az, relPath, nil, logger)
+									continue
+								}
+								// For create/change events: read and analyze the file
+								content, err := os.ReadFile(absPath)
+								if err != nil {
+									logger.Error("failed to read file for re-analysis", "path", relPath, "err", err)
+									continue
+								}
+								analyzeOne(cfg, az, relPath, content, logger)
+							}
+						}
+					}
+				default:
+					// Unknown notifications are silently ignored (LSP §3.4).
+				}
+			}()
+			continue
+		}
+
+		// Handle Responses from the client (e.g. response to our client/registerCapability call).
+		if resp, ok := msg.(*jsonrpc2.Response); ok {
+			// A client error response to client/registerCapability means the registration
+			// was rejected; the server can continue but file-change notifications won't arrive
+			// for those paths, so log at Warn rather than silently absorbing it.
+			if resp.Err() != nil {
+				logger.Warn("client rejected server request", "id", resp.ID(), "err", resp.Err())
+			} else {
+				logger.Debug("client acknowledged server request", "id", resp.ID())
 			}
 			continue
 		}
@@ -232,7 +452,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 		// All other messages must be Calls (requests that require a response).
 		call, ok := msg.(*jsonrpc2.Call)
 		if !ok {
-			// Neither a Notification nor a Call — malformed; skip.
+			// Neither a Notification nor a Call nor a Response — malformed; skip.
 			logger.Error("unexpected JSON-RPC message type; skipping", "type", fmt.Sprintf("%T", msg))
 			continue
 		}
@@ -271,7 +491,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid initialize params: %v", err))
 					return
 				}
-				respResult, err = handleInitialize(params, version)
+				respResult, clientSupportsWatchedFilesReg, err = handleInitialize(params, version)
 				if err != nil {
 					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
 					return

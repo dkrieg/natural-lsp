@@ -37,6 +37,30 @@ across runs) recorded below.
   - Decision lens: SHA-256 if you want zero collision worry and a stable, auditable key; FNV-1a if
     profiling shows hashing is hot. Either is stable; record the pick as an ADR.
 
+## fsnotify dependency state & recursion recipe (verified 2026-06-22)
+
+- **NOT yet a dependency.** As of 2026-06-22 `github.com/fsnotify/fsnotify` is **absent** from
+  `go.mod` and `go.sum` and the module cache — it must be added (`go get`) when FR-34 first imports
+  it. (CLAUDE-context claims it is "already in go.sum"; that is incorrect.) Target v1.10.1; it
+  requires Go 1.23+ and the module is already on `go 1.26`.
+- **Recursive watch recipe** (no native recursion; confirmed v1.x):
+  1. `w, err := fsnotify.NewWatcher()`; `defer w.Close()`.
+  2. `filepath.WalkDir(root, ...)` and `w.Add(dir)` for every directory not excluded by config
+     `IsExcluded` (return `fs.SkipDir` to prune excluded subtrees).
+  3. In the event loop, on `event.Op&fsnotify.Create != 0` stat the path; if it is a new directory,
+     `w.Add` it (and walk it — files can land before the watch is registered, so re-scan its
+     contents). On dir removal/rename, fsnotify drops the watch automatically.
+  4. A periodic full rescan (e.g. 5 min) is a cheap belt-and-braces against missed/coalesced events,
+     especially across `git checkout`.
+- **Op is a bitmask** (`fsnotify.Create|Write|Remove|Rename|Chmod`); test with `&`, not `==`.
+  Editors commonly write-then-rename (atomic save) and many tools emit rename = Remove+Create, so
+  treat a path as "changed" and re-hash its content rather than trusting the Op kind.
+- **Lifecycle:** `Events` and `Errors` are unbuffered-ish channels closed by `w.Close()`. The
+  cleanest shutdown is: a goroutine `select`s over `bgCtx.Done()`, `w.Events`, `w.Errors`; on
+  `bgCtx.Done()` it calls `w.Close()` and returns. After `Close()`, `Events`/`Errors` are closed —
+  drain them (`for range`) or use the `ok` form (`ev, ok := <-w.Events`) so a closed channel exits
+  the loop rather than spinning on zero values.
+
 ## Resolved
 
 - **Recursive-watch strategy:** fsnotify has no native recursive watch, so explicitly `Add` each

@@ -253,3 +253,155 @@ func FuzzProcessFile(f *testing.F) {
 		}
 	})
 }
+
+// TestAnalyzeOne characterizes the extracted single-file FR-43-safe analysis helper
+// (Feature 04 Task 3). It verifies that analyzeOne correctly:
+//  1. Analyzes a recognized file with valid content → correct ObjectType, no SkipReason
+//  2. Skips oversized files → SkipTooLarge, zero FileAnalysis
+//  3. Skips excluded paths → SkipExcluded, zero FileAnalysis
+//  4. Classifies unrecognized extensions → ObjectUnknown, no skip (degradation, not skip)
+//  5. Recovers from analyzer panics → zero FileAnalysis, no panic escape
+//
+// Feature 04 Task 3; FR-43.
+func TestAnalyzeOne(t *testing.T) {
+	testCases := []struct {
+		name               string
+		relPath            string
+		content            []byte
+		maxFileSize        int64
+		excludePatterns    []string
+		shouldTriggerPanic bool // if true, use panicAnalyzer and relPath must be "panicking.NSP"
+		expectedObjectType model.ObjectType
+		expectedSkipReason config.SkipReason
+		expectLogOnEvent   bool // true if we expect a log line (skip or panic recovery)
+	}{
+		{
+			name:               "RecognizedFileWithValidContent",
+			relPath:            "src/good.NSP",
+			content:            []byte("* Good program\nWRITE 'HELLO'\nEND"),
+			maxFileSize:        5_000_000,
+			excludePatterns:    []string{},
+			shouldTriggerPanic: false,
+			expectedObjectType: model.ObjectProgram,
+			expectedSkipReason: "",
+			expectLogOnEvent:   false,
+		},
+		{
+			name:               "FilesExceedingMaxFileSize_FR43",
+			relPath:            "src/oversized.NSP",
+			content:            []byte("x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x"), // 59 bytes
+			maxFileSize:        50,
+			excludePatterns:    []string{},
+			shouldTriggerPanic: false,
+			expectedObjectType: model.ObjectUnknown, // not analyzed
+			expectedSkipReason: config.SkipTooLarge,
+			expectLogOnEvent:   true,
+		},
+		{
+			name:               "ExcludedPath_FR43",
+			relPath:            "archive/old.NSP",
+			content:            []byte("* Program\nEND"),
+			maxFileSize:        5_000_000,
+			excludePatterns:    []string{"archive"},
+			shouldTriggerPanic: false,
+			expectedObjectType: model.ObjectUnknown, // not analyzed
+			expectedSkipReason: config.SkipExcluded,
+			expectLogOnEvent:   true,
+		},
+		{
+			name:               "UnrecognizedExtension_Degradation",
+			relPath:            "data/readme.txt",
+			content:            []byte("plain text file"),
+			maxFileSize:        5_000_000,
+			excludePatterns:    []string{},
+			shouldTriggerPanic: false,
+			expectedObjectType: model.ObjectUnknown,
+			expectedSkipReason: "", // degradation: not skipped, just classified as unknown
+			expectLogOnEvent:   false,
+		},
+		{
+			name:               "AnalyzerPanic_Recovered_FR43",
+			relPath:            "panicking.NSP",
+			content:            []byte("* Program\nEND"),
+			maxFileSize:        5_000_000,
+			excludePatterns:    []string{},
+			shouldTriggerPanic: true,
+			expectedObjectType: model.ObjectUnknown, // fallback on recovery
+			expectedSkipReason: "",                  // not a skip, it's a recovery
+			expectLogOnEvent:   true,
+		},
+		{
+			name:               "ZeroMaxFileSize_NoLimit_FR43",
+			relPath:            "src/large.NSP",
+			content:            []byte("* Large program\nWRITE 'This file is large but MaxFileSize=0 means no limit'\nEND"),
+			maxFileSize:        0, // 0 = no limit (consistent with watcher in sync.go)
+			excludePatterns:    []string{},
+			shouldTriggerPanic: false,
+			expectedObjectType: model.ObjectProgram, // should be analyzed, not skipped
+			expectedSkipReason: "",                  // no skip when MaxFileSize == 0
+			expectLogOnEvent:   false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: set up config with max file size and exclude patterns
+			cfg := config.Defaults()
+			cfg.Workspace.MaxFileSize = tc.maxFileSize
+			cfg.Workspace.Exclude = tc.excludePatterns
+
+			// Create a test logger to capture log output
+			logBuf := &bytes.Buffer{}
+			logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+			// Create the analyzer stub (uses panicAnalyzer which panics for "panicking.NSP")
+			az := &panicAnalyzer{
+				underlyingResult: model.FileAnalysis{ObjectType: model.ObjectProgram},
+			}
+
+			// Act: call analyzeOne with the test file
+			result := analyzeOne(cfg, az, tc.relPath, tc.content, logger)
+
+			// Assert: check the result fields
+			if result.RelPath != tc.relPath {
+				t.Errorf("RelPath = %q, want %q", result.RelPath, tc.relPath)
+			}
+
+			if result.ObjectType != tc.expectedObjectType {
+				t.Errorf("ObjectType = %v, want %v", result.ObjectType, tc.expectedObjectType)
+			}
+
+			if result.SkipReason != tc.expectedSkipReason {
+				t.Errorf("SkipReason = %q, want %q", result.SkipReason, tc.expectedSkipReason)
+			}
+
+			// Assert: check for log output on skip/recovery events
+			logContent := logBuf.String()
+			if tc.expectLogOnEvent {
+				if logContent == "" {
+					t.Errorf("expected log line for skip/recovery, got none")
+				}
+				// Verify the path appears in the log
+				if !bytes.Contains([]byte(logContent), []byte(tc.relPath)) {
+					t.Errorf("expected relPath %q in log, got: %s", tc.relPath, logContent)
+				}
+			} else {
+				if logContent != "" {
+					t.Errorf("expected no log output, got: %s", logContent)
+				}
+			}
+
+			// Assert: verify FileAnalysis is empty when skipped
+			// (It's the zero value on skip or panic recovery)
+			if tc.expectedSkipReason != "" && result.FileAnalysis.ObjectType != "" {
+				t.Errorf("when skip reason is set, FileAnalysis should be zero value, got ObjectType %v", result.FileAnalysis.ObjectType)
+			}
+
+			// If panic was expected, verify it didn't escape (test passes = no panic)
+			if tc.shouldTriggerPanic {
+				// Test framework would catch a panic, so absence of panic here means recovery worked
+				_ = true
+			}
+		})
+	}
+}

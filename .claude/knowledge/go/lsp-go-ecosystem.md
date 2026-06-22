@@ -86,6 +86,41 @@ design-relevant caveat that changes the Option A recommendation. See "Transitive
   `internal/analysis`/`internal/model`. Record the final pick as an ADR in the software-engineering
   KB. `tliron/glsp` is not recommended (pre-1.0, framework-heavy for our method set).
 
+## `workspace/didChangeWatchedFiles` types in `go.lsp.dev/protocol` v1.0.0 (verified 2026-06-22)
+
+Confirmed against the module cache (`go.lsp.dev/protocol@v1.0.0`):
+
+- **A2 (client-pushed events)** notification: method `workspace/didChangeWatchedFiles`, params
+  `DidChangeWatchedFilesParams{ Changes []FileEvent }`. `FileEvent{ URI uri.URI; Type FileChangeType }`.
+  `FileChangeType` (uint32): `FileChangeTypeCreated=1`, `FileChangeTypeChanged=2`, `FileChangeTypeDeleted=3`.
+- **Static capability:** there is **no** `ServerCapabilities` field that statically advertises
+  watched-files interest — the LSP spec only supports dynamic registration for this method.
+  `ServerCapabilities.Workspace *WorkspaceOptions` covers workspace folders / file operations, not
+  didChangeWatchedFiles. So A2 must use **dynamic registration** (`client/registerCapability`).
+- **Dynamic registration (A2):** send an outbound `client/registerCapability` request after
+  `initialized`, with `RegistrationParams{ Registrations: []Registration{{ ID: "<uuid>",
+  Method: "workspace/didChangeWatchedFiles", RegisterOptions: <DidChangeWatchedFilesRegistrationOptions> }} }`.
+  `DidChangeWatchedFilesRegistrationOptions{ Watchers []FileSystemWatcher }`;
+  `FileSystemWatcher{ GlobPattern GlobPattern; Kind WatchKind }`.
+  `WatchKind` (uint32, bitmask): `WatchKindCreate=1`, `WatchKindChange=2`, `WatchKindDelete=4`
+  (omitted ⇒ 7 = all). `GlobPattern` is a union interface: a bare `Pattern` (`type Pattern string`,
+  e.g. `Pattern("**/*.{NSP,NSN,NSS,...}")`) or `*RelativePattern{ BaseURI, Pattern }`.
+- **Client capability gate:** only register if the client advertised
+  `ClientCapabilities.Workspace.DidChangeWatchedFiles` with `DynamicRegistration=true`
+  (`DidChangeWatchedFilesClientCapabilities`). Capture this from `InitializeParams` and skip
+  registration if absent — otherwise A2 silently does nothing and A1 (fsnotify) carries the load.
+- **This server hand-rolls dispatch.** `internal/server` does NOT implement the generated
+  `protocol.Server` interface; it reads `jsonrpc2.Call`/`jsonrpc2.Notification` off a
+  `jsonrpc2.HeaderStream` and `switch`es on `Method()`. Consequences for FR-34:
+  - To accept A2: add `case "workspace/didChangeWatchedFiles":` to the notification switch, decode
+    `DidChangeWatchedFilesParams`, feed events to the same coalescer as A1.
+  - To register A2: build the request via `jsonrpc2.NewCall(id, "client/registerCapability", params)`
+    and `stream.Write(ctx, ...)`, then read the matching response — but the current loop has a single
+    reader, so a clean outbound request/response needs care (either fire-and-forget the registration
+    notification-style and tolerate the client's response arriving in the loop, or refactor to a
+    `jsonrpc2.Conn` with a handler). Simplest robust path given the current architecture: prefer A1
+    as the primary watcher and treat A2 as best-effort.
+
 ## Sources
 
 - Module proxy (authoritative version/tag data, verified 2026-06-20):

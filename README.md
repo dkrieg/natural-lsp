@@ -14,10 +14,12 @@ objects stored only in the mainframe Natural/Adabas library system. Natural that
 exported to files before it can be indexed.
 
 > **Project status: early development.** The LSP lifecycle (`initialize`/`shutdown`/`exit`) and
-> `Content-Length` framing are implemented; the server responds to `initialize` with `textDocumentSync: Full`
-> and exits cleanly on shutdown or EOF. Navigation, hover, completion, and other feature providers are not yet
-> wired — this README describes the **target** feature set. There are no published binaries. Implemented
-> behavior will be marked as it lands.
+> `Content-Length` framing are implemented (features 01–03). `textDocument/didOpen`,
+> `textDocument/didChange`, `textDocument/didClose`, and `workspace/didChangeWatchedFiles` are wired to
+> an in-memory document store; an `fsnotify`-based workspace watcher re-analyzes files on disk change
+> (feature 04). Navigation, hover, completion, and other feature providers are not yet wired — this README
+> describes the **target** feature set. There are no published binaries. Implemented behavior will be
+> marked as it lands.
 
 ---
 
@@ -41,13 +43,14 @@ The capabilities below define the **target** feature set for the first stable re
 
 - Full symbol tree: `DEFINE DATA` sections, subroutines, maps, external calls
 
-**Workspace indexing**
+**Workspace indexing** *(detection and re-analysis shipped; cross-file resolution planned)*
 
-- Cross-file resolution of static `CALLNAT 'LITERAL'` calls
-- `INCLUDE` / copycode dependency tracking
-- Dynamic `CALLNAT #VARIABLE` calls flagged as unresolved with caller context preserved
-- Incremental re-analysis on file change — only changed files re-indexed
-- Persistent cache across sessions (sub-second startup after first index)
+- Open-document tracking via in-memory store (`textDocument/didOpen|didChange|didClose`) — **shipped**
+- On-disk file change detection via `fsnotify` + `workspace/didChangeWatchedFiles` — **shipped**
+- Cross-file resolution of static `CALLNAT 'LITERAL'` calls — *planned*
+- `INCLUDE` / copycode dependency tracking — *planned*
+- Dynamic `CALLNAT #VARIABLE` calls flagged as unresolved with caller context preserved — *planned*
+- Persistent cache across sessions (sub-second startup after first index) — *planned*
 
 **LSP protocol compliance**
 

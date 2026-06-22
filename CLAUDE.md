@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Early implementation — features 01, 02, and 03 shipped; remaining features are stubs.**
+**Early implementation — features 01, 02, 03, and 04 shipped; remaining features are stubs.**
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -28,8 +28,19 @@ with no feature providers yet. Graceful degradation (FR-43): oversized files are
 and analyzer panics are recovered per-file without aborting the batch — every skip/recovery is logged to
 stderr. Per-request panic recovery returns a JSON-RPC `InternalError` and keeps the loop alive. SIGTERM
 is handled via a context-watcher goroutine that closes the stream to unblock the blocking bufio reader.
-A `FuzzProcessFile` target guards the file-processing entry point (ADR-013). `internal/document/` and
-`internal/workspace/` remain documented stubs.
+A `FuzzProcessFile` target guards the file-processing entry point (ADR-013). Feature 04 added
+`textDocument/didOpen`, `textDocument/didChange` (Full-sync; partial-change attempts are logged and
+skipped), `textDocument/didClose`, and `workspace/didChangeWatchedFiles` handlers. After `initialized`,
+the server sends `client/registerCapability` for `workspace/didChangeWatchedFiles` when the client
+advertises `Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration`. A background `fsnotify`
+watcher (`document.NewWatcher`) is started at `initialized` and closed on shutdown.
+
+`internal/document/` (feature 04) is fully implemented. `Store` is a concurrency-safe in-memory map of
+open documents keyed by LSP URI; it re-analyzes content on `Open`/`Update` via an `AnalyzeFunc`
+injection (avoiding circular import with `internal/server`) and removes entries on `Close`, with panic
+recovery on every analysis call (FR-43). `Watcher` uses `fsnotify` v1.10.1 for recursive workspace
+watching — `filepath.WalkDir` + per-directory `Add`, extension filtering, and a 100 ms trailing-edge
+debounce — with per-call panic recovery. `internal/workspace/` remains a documented stub.
 
 `natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
 z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on
