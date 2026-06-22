@@ -3,15 +3,18 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/jsonrpc2"
 )
 
@@ -72,7 +75,7 @@ func TestStdioHandshake(t *testing.T) {
 
 	// Step 4: Drive initialize → initialized → shutdown → exit sequence
 
-	// Build and send initialize request (as raw JSON)
+	// Build and send initialize request (as Content-Length-framed JSON)
 	initID := jsonrpc2.NewNumberID(1)
 	initParamsJSON := jsonrpc2.RawMessage(`{
 		"processId": 1234,
@@ -85,26 +88,30 @@ func TestStdioHandshake(t *testing.T) {
 	}`)
 
 	initCall := jsonrpc2.NewCall(initID, "initialize", initParamsJSON)
+
+	// Encode as bare JSON and frame it with Content-Length header
 	initMsg, err := jsonrpc2.EncodeMessage(initCall)
 	if err != nil {
 		t.Fatalf("failed to encode initialize request: %v", err)
 	}
-
-	// Send initialize
+	framedInitRequest := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(initMsg))
+	if _, err := stdin.Write([]byte(framedInitRequest)); err != nil {
+		t.Fatalf("failed to write initialize request header: %v", err)
+	}
 	if _, err := stdin.Write(initMsg); err != nil {
-		t.Fatalf("failed to write initialize request: %v", err)
+		t.Fatalf("failed to write initialize request body: %v", err)
 	}
 
-	// Read initialize response (with timeout)
-	initResp, err := readMessageWithTimeout(stdout, 5*time.Second)
+	// Read initialize response (Content-Length-framed, with timeout)
+	initRespBody, err := readFramedMessageWithTimeout(stdout, 5*time.Second)
 	if err != nil {
 		t.Fatalf("failed to read initialize response: %v", err)
 	}
 
 	// Parse the response
-	initRespMsg, err := jsonrpc2.DecodeMessage(initResp)
+	initRespMsg, err := jsonrpc2.DecodeMessage(initRespBody)
 	if err != nil {
-		t.Fatalf("failed to decode initialize response: %v (response: %s)", err, string(initResp))
+		t.Fatalf("failed to decode initialize response: %v (response: %s)", err, string(initRespBody))
 	}
 
 	initRespCall, ok := initRespMsg.(*jsonrpc2.Response)
@@ -126,6 +133,9 @@ func TestStdioHandshake(t *testing.T) {
 	if initRespCall.Result() == nil {
 		t.Fatalf("initialize response has no result")
 	}
+
+	// Assert: successful parsing of framed response proves stdout uses Content-Length framing
+	// (readFramedMessage only succeeds if the header "Content-Length: N\r\n\r\n" is present)
 
 	// Parse the InitializeResult as a generic map (avoids TextDocumentSync union type issues)
 	var resultMap map[string]interface{}
@@ -195,36 +205,44 @@ func TestStdioHandshake(t *testing.T) {
 		}
 	}
 
-	// Send initialized notification
+	// Send initialized notification (Content-Length-framed)
 	initNotif := jsonrpc2.NewNotification("initialized", nil)
 	initNotifMsg, err := jsonrpc2.EncodeMessage(initNotif)
 	if err != nil {
 		t.Fatalf("failed to encode initialized notification: %v", err)
 	}
+	framedInitNotif := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(initNotifMsg))
+	if _, err := stdin.Write([]byte(framedInitNotif)); err != nil {
+		t.Fatalf("failed to write initialized notification header: %v", err)
+	}
 	if _, err := stdin.Write(initNotifMsg); err != nil {
-		t.Fatalf("failed to write initialized notification: %v", err)
+		t.Fatalf("failed to write initialized notification body: %v", err)
 	}
 
-	// Send shutdown request
+	// Send shutdown request (Content-Length-framed)
 	shutdownID := jsonrpc2.NewNumberID(2)
 	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", nil)
 	shutdownMsg, err := jsonrpc2.EncodeMessage(shutdownCall)
 	if err != nil {
 		t.Fatalf("failed to encode shutdown request: %v", err)
 	}
+	framedShutdownRequest := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(shutdownMsg))
+	if _, err := stdin.Write([]byte(framedShutdownRequest)); err != nil {
+		t.Fatalf("failed to write shutdown request header: %v", err)
+	}
 	if _, err := stdin.Write(shutdownMsg); err != nil {
-		t.Fatalf("failed to write shutdown request: %v", err)
+		t.Fatalf("failed to write shutdown request body: %v", err)
 	}
 
-	// Read shutdown response
-	shutdownResp, err := readMessageWithTimeout(stdout, 5*time.Second)
+	// Read shutdown response (Content-Length-framed)
+	shutdownRespBody, err := readFramedMessageWithTimeout(stdout, 5*time.Second)
 	if err != nil {
 		t.Fatalf("failed to read shutdown response: %v", err)
 	}
 
-	shutdownRespMsg, err := jsonrpc2.DecodeMessage(shutdownResp)
+	shutdownRespMsg, err := jsonrpc2.DecodeMessage(shutdownRespBody)
 	if err != nil {
-		t.Fatalf("failed to decode shutdown response: %v (response: %s)", err, string(shutdownResp))
+		t.Fatalf("failed to decode shutdown response: %v (response: %s)", err, string(shutdownRespBody))
 	}
 
 	shutdownRespCall, ok := shutdownRespMsg.(*jsonrpc2.Response)
@@ -242,14 +260,18 @@ func TestStdioHandshake(t *testing.T) {
 		t.Errorf("shutdown response has error: %v", shutdownRespCall.Err())
 	}
 
-	// Send exit notification
+	// Send exit notification (Content-Length-framed)
 	exitNotif := jsonrpc2.NewNotification("exit", nil)
 	exitMsg, err := jsonrpc2.EncodeMessage(exitNotif)
 	if err != nil {
 		t.Fatalf("failed to encode exit notification: %v", err)
 	}
+	framedExitNotif := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(exitMsg))
+	if _, err := stdin.Write([]byte(framedExitNotif)); err != nil {
+		t.Fatalf("failed to write exit notification header: %v", err)
+	}
 	if _, err := stdin.Write(exitMsg); err != nil {
-		t.Fatalf("failed to write exit notification: %v", err)
+		t.Fatalf("failed to write exit notification body: %v", err)
 	}
 
 	// Close stdin to signal end of input
@@ -272,9 +294,10 @@ func TestStdioHandshake(t *testing.T) {
 	}
 }
 
-// readMessageWithTimeout reads one complete JSON-RPC message from r with a timeout.
-// It uses a goroutine and time.After to prevent hanging.
-func readMessageWithTimeout(r io.Reader, timeout time.Duration) ([]byte, error) {
+// readFramedMessageWithTimeout reads one Content-Length-framed JSON-RPC message
+// from r with a timeout. It parses the "Content-Length: N\r\n\r\n" header,
+// then reads exactly N bytes of the JSON body.
+func readFramedMessageWithTimeout(r io.Reader, timeout time.Duration) ([]byte, error) {
 	type result struct {
 		data []byte
 		err  error
@@ -282,8 +305,7 @@ func readMessageWithTimeout(r io.Reader, timeout time.Duration) ([]byte, error) 
 
 	resultChan := make(chan result, 1)
 	go func() {
-		decoder := jsontext.NewDecoder(r)
-		data, err := decoder.ReadValue()
+		data, err := readFramedMessage(r)
 		resultChan <- result{data, err}
 	}()
 
@@ -291,13 +313,55 @@ func readMessageWithTimeout(r io.Reader, timeout time.Duration) ([]byte, error) 
 	case res := <-resultChan:
 		return res.data, res.err
 	case <-time.After(timeout):
-		return nil, ErrReadTimeout
+		return nil, &timeoutError{"read message timeout"}
 	}
 }
 
-// ErrReadTimeout is returned when readMessageWithTimeout exceeds its deadline.
-var ErrReadTimeout = &timeoutError{"read message timeout"}
+// readFramedMessage reads one Content-Length-framed JSON-RPC message.
+// It returns just the JSON body (not the header).
+func readFramedMessage(r io.Reader) ([]byte, error) {
+	// Read the header line: "Content-Length: N\r\n"
+	reader := bufio.NewReader(r)
+	headerLine, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read header line: %w", err)
+	}
 
+	// Remove trailing \r\n
+	headerLine = strings.TrimSuffix(headerLine, "\r\n")
+	headerLine = strings.TrimSuffix(headerLine, "\n")
+
+	// Parse "Content-Length: N"
+	if !strings.HasPrefix(headerLine, "Content-Length: ") {
+		return nil, fmt.Errorf("expected 'Content-Length: ...' header, got: %q", headerLine)
+	}
+	lengthStr := strings.TrimPrefix(headerLine, "Content-Length: ")
+	contentLen, err := strconv.Atoi(lengthStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Content-Length value: %q (%v)", lengthStr, err)
+	}
+
+	// Read the blank line ("\r\n" or just "\n")
+	blankLine, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read blank line: %w", err)
+	}
+	blankLine = strings.TrimSpace(blankLine)
+	if blankLine != "" {
+		return nil, fmt.Errorf("expected blank line after Content-Length header, got: %q", blankLine)
+	}
+
+	// Read exactly contentLen bytes of the JSON body
+	body := make([]byte, contentLen)
+	n, err := io.ReadFull(reader, body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w (read %d of %d bytes)", err, n, contentLen)
+	}
+
+	return body, nil
+}
+
+// ErrReadTimeout is the timeout error type for readFramedMessageWithTimeout.
 type timeoutError struct {
 	msg string
 }

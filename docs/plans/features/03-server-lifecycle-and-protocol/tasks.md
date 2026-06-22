@@ -310,6 +310,99 @@ red → green → refactor loop unless noted.
 
 ---
 
+## Remediation tasks (post-review-feature round 1)
+
+Findings from review verdict FAIL. Each task is one red→green→refactor cycle; the RED step writes a
+failing test that *would have caught* the finding.
+
+### R1 — LSP `Content-Length` base-protocol framing (BLOCKER — B1)
+
+- **Finding:** `internal/server/server.go` reads bare JSON via `jsontext.Decoder.ReadValue()` and
+  writes bare JSON-RPC envelopes. No `Content-Length: N\r\n\r\n` header block is emitted or parsed.
+  A real LSP client cannot communicate with this server (FR-41, NFR-11).
+- **RED:** A failing unit test that writes a `Content-Length`-framed request to the server and asserts
+  it receives a `Content-Length`-framed response — fails today because the server reads bare JSON.
+- **GREEN:** Wrap the reader/writer pair in `go.lsp.dev/jsonrpc2` header-stream framing (use
+  `jsonrpc2.NewHeaderStream` or equivalent from the library) and drive the serve loop through it.
+  The existing `TestInitialize` / `TestLifecycle` / `TestRequestPanicRecovery` tests must be updated
+  to also use framed encoding on the test-client side.
+- **DoD:** A new test `TestFramedTransport` passes; all existing server tests adapted to use framed
+  encoding; `go test -race ./internal/server/` green; `gofmt`/`vet` clean.
+- **TDD agents:** `tdd-red` → `tdd-green` → `tdd-refactor`.
+- **Depends on:** none.
+
+### R2 — Integration test must exercise real LSP wire format (MAJOR — M1)
+
+- **Finding:** `TestStdioHandshake` uses `jsonrpc2.EncodeMessage`/`jsontext.Decoder` (unframed) on
+  both ends. It validates the server's private dialect, not the LSP `Content-Length` wire format.
+- **RED:** Fails once R1 is applied (the server now requires framed input; the unframed test breaks).
+  If not already broken, write an assertion that the subprocess stdout starts with `Content-Length:`.
+- **GREEN:** Rewrite `TestStdioHandshake` to write `Content-Length: N\r\n\r\n{json}` frames to the
+  subprocess stdin and parse frames from stdout. Use `go.lsp.dev/jsonrpc2` header framing on the
+  test-client side.
+- **DoD:** `just test-integration` green; `TestStdioHandshake` reads and writes real LSP frames.
+- **TDD agents:** `tdd-red` → `tdd-green` → `tdd-refactor`.
+- **Depends on:** R1.
+
+### R3 — Assert JSON-RPC error codes in `TestLifecycle` (MAJOR — M2)
+
+- **Finding:** `TestLifecycle` declares `expectErrCode` but never decodes the response — a regression
+  in error codes would pass undetected (`server_test.go:436-507`).
+- **RED:** Extend `TestLifecycle`'s assertion loop to decode the response from `outBuf` for the
+  erroring-message cases and assert `resp.Err().Code == tc.expectErrCode`. The current test will fail
+  because the assertion doesn't exist.
+- **GREEN:** Add the response-decode + code-assertion to the test body. No production change expected.
+- **DoD:** `TestLifecycle` asserts `ServerNotInitialized` (-32002) and `InvalidRequest` (-32600) codes;
+  `-race` green.
+- **TDD agents:** `tdd-red` → `tdd-green` → `tdd-refactor`.
+- **Depends on:** R1 (framing changes how responses are read in tests).
+
+### R4 — Cancel background context on `shutdown`, not on loop exit (MAJOR — M3)
+
+- **Finding:** `bgCancel` is `defer`red at function scope, so it fires when `Run` returns (on `exit`
+  or EOF), not when `shutdown` is received. ADR-012 requires cancellation at `shutdown`
+  (`server.go:122,230-236`).
+- **RED:** A test that starts a goroutine listening on the server's background context, drives the
+  lifecycle to `shutdown` (but not yet `exit`), and asserts the background context is cancelled
+  before `exit` is sent. Fails today because `bgCancel` is deferred.
+- **GREEN:** Call `bgCancel()` explicitly in the `shutdown` handler; keep the `defer` as the
+  catch-all for error/EOF paths.
+- **DoD:** The new test passes; `bgCancel()` called at `shutdown` proven; `-race` green.
+- **TDD agents:** `tdd-red` → `tdd-green` → `tdd-refactor`.
+- **Depends on:** R1 (server transport changes).
+
+### R5 — Assert `-32603` code in `TestRequestPanicRecovery` (MINOR — m1)
+
+- **Finding:** `server_test.go:648` asserts `panicResp.Err() != nil` but not `-32603` (`InternalError`).
+- **RED:** Add `assert code == jsonrpc2.InternalError`; fails before adding the assertion.
+- **GREEN:** Add the code assertion. No production change.
+- **DoD:** Test explicitly asserts code `-32603`; `-race` green.
+- **TDD agents:** `tdd-red` → `tdd-green` (likely already satisfied by production code) → skip refactor.
+- **Depends on:** R1.
+
+### R6 — Remove dead `readAll` function (MINOR — m2)
+
+- **Finding:** `readAll` (`server.go:37-53`) is defined but never called. Dead code with a documented
+  goroutine-leak risk if ever wired naively.
+- **RED:** A `go vet` or compile-check test that would catch the unused function. In practice: remove it
+  and confirm the build stays green (no test needed for a removal — the build is the gate).
+- **GREEN:** Delete `readAll`.
+- **DoD:** `go build ./...` green; `readAll` absent; `gofmt`/`vet` clean.
+- **TDD agents:** `tdd-green` (removal; no red phase needed) → `tdd-refactor`.
+- **Depends on:** R1 (may be relevant if R1 introduces a new read helper).
+
+### R7 — Fix degradation log assertion to use `t.Errorf` (MINOR — m3)
+
+- **Finding:** `degradation_test.go:182-192` uses `t.Logf` on mismatch — the FR-43 "never silent"
+  guarantee is not actually pinned by the test.
+- **RED:** Change `t.Logf` to `t.Errorf` (the test should fail when path/reason is absent from logs).
+- **GREEN:** No production change — `degradation.go` already emits the correct log fields.
+- **DoD:** Test fails when logging is suppressed; `-race` green.
+- **TDD agents:** `tdd-red` → `tdd-green` → skip refactor.
+- **Depends on:** none.
+
+---
+
 ## Open questions
 
 1. **Cancellation in this release (from plan):** Should `$/cancelRequest` (`-32800

@@ -14,18 +14,16 @@ import (
 	"natural-lsp/internal/model"
 )
 
-// panicAnalyzer is a test analyzer that panics for paths ending in ".panic"
-// and succeeds for all others. Used to test panic recovery.
+// panicAnalyzer is a test analyzer that panics for paths containing "panicking"
+// and succeeds for all others. Used to test panic recovery in ProcessFiles.
 type panicAnalyzer struct {
 	underlyingResult model.FileAnalysis
 }
 
 func (pa *panicAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis, error) {
-	// Panic for paths ending in .panic to test recovery
-	if len(path) > 6 && path[len(path)-6:] == ".panic" {
+	if filepath.Base(path) == "panicking.NSP" {
 		panic(fmt.Sprintf("analyzer panic on path: %s", path))
 	}
-	// Return a fixed result for all other paths
 	return pa.underlyingResult, nil
 }
 
@@ -84,7 +82,7 @@ func TestProcessFiles(t *testing.T) {
 					expectLogOnSkip:    false,
 				},
 				{
-					relPath:            "panicking.panic",
+					relPath:            "panicking.NSP",
 					content:            []byte("triggers panic in analyzer"),
 					expectedObjectType: model.ObjectUnknown, // fallback on panic
 					expectedSkipReason: "",                  // treated as error recovery, not a skip
@@ -186,7 +184,7 @@ func TestProcessFiles(t *testing.T) {
 					}
 					// Check that the file path appears in the log
 					if !bytes.Contains([]byte(logContent), []byte(expectedFile.relPath)) {
-						t.Logf("file %s: log output = %q", expectedFile.relPath, logContent)
+						t.Errorf("file %s: log output = %q", expectedFile.relPath, logContent)
 						// Note: This may not always contain the exact path depending on log structure,
 						// but we expect it to be mentioned somewhere for observability
 					}

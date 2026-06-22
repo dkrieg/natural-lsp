@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +13,22 @@ import (
 )
 
 const sentinelName = ".natural-lsp.toml"
+
+// writeFramedMessage writes a Content-Length-framed JSON-RPC message to buf.
+// The format is: Content-Length: N\r\n\r\n<N bytes of JSON>
+func writeFramedMessage(buf *bytes.Buffer, msg jsonrpc2.Message) error {
+	encoded, err := jsonrpc2.EncodeMessage(msg)
+	if err != nil {
+		return err
+	}
+	contentLen := len(encoded)
+	_, err = buf.WriteString(fmt.Sprintf("Content-Length: %d\r\n\r\n", contentLen))
+	if err != nil {
+		return err
+	}
+	_, err = buf.Write(encoded)
+	return err
+}
 
 // TestVersionFlag verifies that the `--version` flag prints a version identifier
 // and exits with code 0, locking FR-42 (version reporting on CLI).
@@ -173,12 +190,10 @@ func TestStdioExitCodes_protocolViolation(t *testing.T) {
 	}
 
 	// Build a protocol-violation sequence: "exit" without prior "shutdown".
-	exitMsg, err := jsonrpc2.EncodeMessage(jsonrpc2.NewNotification("exit", nil))
-	if err != nil {
-		t.Fatalf("EncodeMessage exit: %v", err)
-	}
 	var inBuf bytes.Buffer
-	inBuf.Write(exitMsg)
+	if err := writeFramedMessage(&inBuf, jsonrpc2.NewNotification("exit", nil)); err != nil {
+		t.Fatalf("writeFramedMessage exit: %v", err)
+	}
 
 	var outBuf bytes.Buffer
 	var logBuf bytes.Buffer

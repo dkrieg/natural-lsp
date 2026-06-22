@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/jsonrpc2"
 	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
@@ -19,6 +21,198 @@ type stubAnalyzer struct{}
 
 func (sa *stubAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis, error) {
 	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
+}
+
+// TestFramedTransport tests that the server reads and writes LSP Content-Length
+// framed messages (FR-43, R1 remediation). Real LSP clients send messages with
+// Content-Length headers per the LSP specification; the server must parse and
+// respond with the same framing.
+//
+// The test writes a Content-Length-framed initialize request and reads back
+// a framed response. Today this test FAILS because:
+//   - The server uses bare jsontext.Decoder(r).ReadValue() in the Run loop
+//   - jsontext.Decoder tries to parse "Content-Length: ..." as JSON, which is invalid
+//   - The decoder hangs or times out waiting for valid JSON
+//   - No response is written; the test times out
+//
+// This is a BLOCKER: without Content-Length framing, real LSP clients cannot
+// communicate with the server. The fix is to wrap the reader/writer with
+// jsonrpc2.NewHeaderStream() which handles the framing protocol.
+func TestFramedTransport(t *testing.T) {
+	// Arrange: build an initialize request
+	id := jsonrpc2.NewNumberID(1)
+	params := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	call := jsonrpc2.NewCall(id, "initialize", params)
+
+	// Encode the request as bare JSON (what jsonrpc2.EncodeMessage produces)
+	bareJSON, err := jsonrpc2.EncodeMessage(call)
+	if err != nil {
+		t.Fatalf("failed to encode call: %v", err)
+	}
+
+	// Frame the request with Content-Length header per LSP spec:
+	// Content-Length: <n>\r\n
+	// \r\n
+	// <n bytes of JSON>
+	contentLen := len(bareJSON)
+	framedRequest := fmt.Sprintf("Content-Length: %d\r\n\r\n", contentLen)
+	requestData := append([]byte(framedRequest), bareJSON...)
+
+	// Create input buffer with the framed request
+	inBuf := bytes.NewBuffer(requestData)
+
+	// Create output buffer to capture the response
+	var outBuf bytes.Buffer
+
+	// Create a logger that writes to a separate buffer (not stdout)
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server with the in-memory streams
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err = Run(
+		context.Background(),
+		inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Assert: the response output must be Content-Length-framed
+	responseOutput := outBuf.String()
+	if !strings.HasPrefix(responseOutput, "Content-Length:") {
+		t.Errorf("response is not framed with Content-Length header; got: %q (first 100 chars: %q)",
+			responseOutput, truncate(responseOutput, 100))
+	}
+
+	// Assert: the header must be parseable
+	lines := strings.Split(responseOutput, "\r\n")
+	if len(lines) < 3 {
+		t.Fatalf("response header too short; expected at least 3 lines (header, blank, body), got %d", len(lines))
+	}
+
+	// Parse the Content-Length value
+	contentLengthLine := lines[0]
+	if !strings.HasPrefix(contentLengthLine, "Content-Length: ") {
+		t.Errorf("first line is not Content-Length header; got: %q", contentLengthLine)
+		return
+	}
+
+	lengthStr := strings.TrimPrefix(contentLengthLine, "Content-Length: ")
+	declaredLen, err := strconv.Atoi(lengthStr)
+	if err != nil {
+		t.Errorf("Content-Length value is not a valid number: %q (error: %v)", lengthStr, err)
+		return
+	}
+
+	// Assert: the declared length matches the actual body length
+	// The body starts after the blank line (line at index 1)
+	bodyStart := len(contentLengthLine) + 2 + 2 // header + \r\n + \r\n
+	bodyBytes := responseOutput[bodyStart:]
+	if len(bodyBytes) != declaredLen {
+		t.Errorf("Content-Length mismatch: declared %d bytes, but got %d bytes of body",
+			declaredLen, len(bodyBytes))
+	}
+
+	// Assert: the body is valid JSON-RPC
+	respMsg, err := jsonrpc2.DecodeMessage([]byte(bodyBytes))
+	if err != nil {
+		t.Fatalf("response body is not valid JSON-RPC: %v (body: %q)", err, bodyBytes)
+	}
+
+	// Assert: the response is a Response (not a Notification or Call)
+	resp, ok := respMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response, got %T", respMsg)
+	}
+
+	// Assert: response id matches request id
+	if resp.ID() != id {
+		t.Errorf("response id = %v, want %v", resp.ID(), id)
+	}
+
+	// Assert: response has a result (initialize succeeds)
+	if resp.Err() != nil {
+		t.Errorf("response has error: %v; want result", resp.Err())
+	}
+	if resp.Result() == nil {
+		t.Errorf("response has no result; want InitializeResult")
+	}
+}
+
+// truncate is a helper to shorten strings for test output
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// writeFramedMessage writes a Content-Length-framed JSON-RPC message to buf.
+// The format is: Content-Length: N\r\n\r\n<N bytes of JSON>
+func writeFramedMessage(buf *bytes.Buffer, msg jsonrpc2.Message) error {
+	encoded, err := jsonrpc2.EncodeMessage(msg)
+	if err != nil {
+		return err
+	}
+	contentLen := len(encoded)
+	_, err = buf.WriteString(fmt.Sprintf("Content-Length: %d\r\n\r\n", contentLen))
+	if err != nil {
+		return err
+	}
+	_, err = buf.Write(encoded)
+	return err
+}
+
+// parseFramedResponse extracts one framed JSON-RPC response from buf and returns the body bytes.
+// It assumes buf starts with a valid Content-Length header and returns the JSON body.
+// After calling this, buf is advanced past the response (including header).
+func parseFramedResponse(buf *bytes.Buffer) ([]byte, error) {
+	output := buf.String()
+	// Find the blank line that separates header from body
+	idx := strings.Index(output, "\r\n\r\n")
+	if idx == -1 {
+		return nil, fmt.Errorf("no blank line separating header and body")
+	}
+	headerEnd := idx + 4 // account for "\r\n\r\n"
+
+	// Parse Content-Length from the header
+	headerLines := strings.Split(output[:idx], "\r\n")
+	if len(headerLines) == 0 {
+		return nil, fmt.Errorf("empty header")
+	}
+	contentLengthLine := headerLines[0]
+	if !strings.HasPrefix(contentLengthLine, "Content-Length: ") {
+		return nil, fmt.Errorf("first line is not Content-Length header")
+	}
+	lengthStr := strings.TrimPrefix(contentLengthLine, "Content-Length: ")
+	contentLen, err := strconv.Atoi(lengthStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Content-Length: %v", err)
+	}
+
+	// Extract the body
+	bodyEnd := headerEnd + contentLen
+	if bodyEnd > len(output) {
+		return nil, fmt.Errorf("response too short; declared %d bytes but only %d available", contentLen, len(output)-headerEnd)
+	}
+	body := output[headerEnd:bodyEnd]
+
+	// Advance buf to remove this response
+	remaining := output[bodyEnd:]
+	buf.Reset()
+	buf.WriteString(remaining)
+
+	return []byte(body), nil
 }
 
 // TestServerRunReadsRequestAndWritesResponse tests that the Server type can read
@@ -50,15 +244,10 @@ func TestServerRunReadsRequestAndWritesResponse(t *testing.T) {
 			params := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
 			call := jsonrpc2.NewCall(id, "initialize", params)
 
-			// Encode the request using jsonrpc2 framing into a buffer.
+			// Write the request as a Content-Length-framed message.
 			var reqBuf bytes.Buffer
-			reqMsg, err := jsonrpc2.EncodeMessage(call)
-			if err != nil {
-				t.Fatalf("failed to encode call: %v", err)
-			}
-			_, err = reqBuf.Write(reqMsg)
-			if err != nil {
-				t.Fatalf("failed to write encoded call: %v", err)
+			if err := writeFramedMessage(&reqBuf, call); err != nil {
+				t.Fatalf("failed to write framed request: %v", err)
 			}
 
 			// Create an output buffer to capture the response.
@@ -72,7 +261,7 @@ func TestServerRunReadsRequestAndWritesResponse(t *testing.T) {
 			cfg := config.Defaults()
 			az := &stubAnalyzer{}
 			// Run takes separate Reader and Writer, not ReadWriteCloser.
-			err = Run(
+			err := Run(
 				context.Background(),
 				&reqBuf,
 				&outBuf,
@@ -86,10 +275,20 @@ func TestServerRunReadsRequestAndWritesResponse(t *testing.T) {
 			// Assert: we expect the server to read the request and write a response.
 			// The response must be valid JSON-RPC 2.0 with the matching id.
 
-			// Decode the response from the output buffer.
-			respMsg, err := jsonrpc2.DecodeMessage(outBuf.Bytes())
+			// Extract the JSON body from the framed response.
+			output := outBuf.String()
+			lines := strings.Split(output, "\r\n")
+			if len(lines) < 3 {
+				t.Fatalf("response too short; expected at least 3 lines, got %d", len(lines))
+			}
+			// Body starts after: "Content-Length: N\r\n\r\n"
+			bodyStart := len(lines[0]) + 2 + 2
+			bodyBytes := output[bodyStart:]
+
+			// Decode the response from the body bytes.
+			respMsg, err := jsonrpc2.DecodeMessage([]byte(bodyBytes))
 			if err != nil {
-				t.Fatalf("failed to decode response: %v (output was: %q)", err, outBuf.String())
+				t.Fatalf("failed to decode response: %v (output was: %q)", err, output)
 			}
 
 			// Assert: the decoded message is a Response.
@@ -174,15 +373,10 @@ func TestInitialize(t *testing.T) {
 			id := tc.idFunc()
 			call := jsonrpc2.NewCall(id, "initialize", jsonrpc2.RawMessage(tc.paramsJSON))
 
-			// Encode the request.
+			// Write the request as a Content-Length-framed message.
 			var reqBuf bytes.Buffer
-			reqMsg, err := jsonrpc2.EncodeMessage(call)
-			if err != nil {
-				t.Fatalf("failed to encode call: %v", err)
-			}
-			_, err = reqBuf.Write(reqMsg)
-			if err != nil {
-				t.Fatalf("failed to write encoded call: %v", err)
+			if err := writeFramedMessage(&reqBuf, call); err != nil {
+				t.Fatalf("failed to write framed request: %v", err)
 			}
 
 			// Create an output buffer for the response.
@@ -195,7 +389,7 @@ func TestInitialize(t *testing.T) {
 			// Act: run the server.
 			cfg := config.Defaults()
 			az := &stubAnalyzer{}
-			err = Run(
+			err := Run(
 				context.Background(),
 				&reqBuf,
 				&outBuf,
@@ -211,10 +405,20 @@ func TestInitialize(t *testing.T) {
 				t.Fatalf("Run failed: %v", err)
 			}
 
-			// Decode the response.
-			respMsg, err := jsonrpc2.DecodeMessage(outBuf.Bytes())
+			// Extract the JSON body from the framed response.
+			output := outBuf.String()
+			lines := strings.Split(output, "\r\n")
+			if len(lines) < 3 {
+				t.Fatalf("response too short; expected at least 3 lines, got %d", len(lines))
+			}
+			// Body starts after: "Content-Length: N\r\n\r\n"
+			bodyStart := len(lines[0]) + 2 + 2
+			bodyBytes := output[bodyStart:]
+
+			// Decode the response from the body bytes.
+			respMsg, err := jsonrpc2.DecodeMessage([]byte(bodyBytes))
 			if err != nil {
-				t.Fatalf("failed to decode response: %v (output was: %q)", err, outBuf.String())
+				t.Fatalf("failed to decode response: %v (output was: %q)", err, output)
 			}
 
 			resp, ok := respMsg.(*jsonrpc2.Response)
@@ -446,11 +650,9 @@ func TestLifecycle(t *testing.T) {
 					// Call (request)
 					msg = jsonrpc2.NewCall(*tm.id, tm.method, jsonrpc2.RawMessage(tm.params))
 				}
-				encoded, err := jsonrpc2.EncodeMessage(msg)
-				if err != nil {
-					t.Fatalf("failed to encode message %d (%s): %v", i, tm.method, err)
+				if err := writeFramedMessage(&inBuf, msg); err != nil {
+					t.Fatalf("failed to write framed message %d (%s): %v", i, tm.method, err)
 				}
-				inBuf.Write(encoded)
 			}
 
 			// Create output buffer and logger
@@ -498,6 +700,59 @@ func TestLifecycle(t *testing.T) {
 				}
 			}
 
+			// Assert: decode framed responses and check error codes for failing requests
+			responseBuf := bytes.NewBuffer(outBuf.Bytes())
+			for i, tm := range tc.sequence {
+				// Skip notifications (they don't receive responses)
+				if tm.id == nil {
+					continue
+				}
+
+				// Parse the next framed response
+				body, err := parseFramedResponse(responseBuf)
+				if err != nil {
+					t.Errorf("%s: failed to parse response %d (%s): %v", tc.name, i, tm.method, err)
+					continue
+				}
+
+				// Decode the response
+				respMsg, err := jsonrpc2.DecodeMessage(body)
+				if err != nil {
+					t.Errorf("%s: failed to decode response %d (%s): %v", tc.name, i, tm.method, err)
+					continue
+				}
+
+				resp, ok := respMsg.(*jsonrpc2.Response)
+				if !ok {
+					t.Errorf("%s: expected *jsonrpc2.Response for request %d (%s), got %T", tc.name, i, tm.method, respMsg)
+					continue
+				}
+
+				// Check error code if expected
+				if tm.expectErrCode != 0 {
+					if resp.Err() == nil {
+						t.Errorf("%s: request %d (%s) expected error code %v, but got success result: %s",
+							tc.name, i, tm.method, tm.expectErrCode, string(resp.Result()))
+					} else {
+						// Type-assert to *jsonrpc2.Error to access Code field
+						errTyped, ok := resp.Err().(*jsonrpc2.Error)
+						if !ok {
+							t.Errorf("%s: request %d (%s) error is %T, not *jsonrpc2.Error: %v",
+								tc.name, i, tm.method, resp.Err(), resp.Err())
+						} else if errTyped.Code != tm.expectErrCode {
+							t.Errorf("%s: request %d (%s) error code = %v, want %v (message: %s)",
+								tc.name, i, tm.method, errTyped.Code, tm.expectErrCode, errTyped.Message)
+						}
+					}
+				} else {
+					// No error expected; verify response has no error
+					if resp.Err() != nil {
+						t.Errorf("%s: request %d (%s) expected success, but got error: %v",
+							tc.name, i, tm.method, resp.Err())
+					}
+				}
+			}
+
 			// Assert: for the normal sequence case, verify clean shutdown
 			// Context cancellation of the internal background goroutines is verified
 			// via integration in feature 05 when background work is actually scheduled.
@@ -519,6 +774,135 @@ type testMessage struct {
 // newID is a helper to create a pointer to a jsonrpc2.ID
 func newID(id jsonrpc2.ID) *jsonrpc2.ID {
 	return &id
+}
+
+// blockingReaderAfter serves messages from a buffer, then blocks indefinitely
+// after all messages are consumed (doesn't return EOF immediately).
+type blockingReaderAfter struct {
+	buf   *bytes.Buffer
+	block <-chan struct{} // Never closes; reader blocks forever after buffer exhausted
+}
+
+func (br *blockingReaderAfter) Read(p []byte) (int, error) {
+	n, err := br.buf.Read(p)
+	if err != nil { // EOF from buffer
+		// Block forever instead of returning EOF
+		<-br.block
+		return 0, fmt.Errorf("reader blocked")
+	}
+	return n, nil
+}
+
+// TestShutdownCancelsBgContext pins ADR-012 requirement (R4 remediation):
+// the background context MUST be cancelled when shutdown is received,
+// NOT deferred until the server loop exits. This ensures in-flight background
+// goroutines stop promptly on shutdown, not delayed until EOF/exit.
+//
+// The test sends initialize → initialized → shutdown, then uses a blocking
+// reader to prevent Run from returning. If bgCancel() is called in the shutdown
+// handler (correct), the background context will be cancelled immediately. If
+// bgCancel() is only deferred (bug), it will not be cancelled while Run waits.
+func TestShutdownCancelsBgContext(t *testing.T) {
+	// Arrange: channel to signal when context is cancelled
+	bgCtxDone := make(chan struct{})
+	bgCtxCaptured := make(chan context.Context, 1)
+	bgCtxHookMu.Lock()
+	oldHook := bgCtxHook
+	bgCtxHook = func(ctx context.Context) {
+		bgCtxCaptured <- ctx
+		// Background goroutine watches for cancellation
+		go func() {
+			<-ctx.Done()
+			bgCtxDone <- struct{}{}
+		}()
+	}
+	bgCtxHookMu.Unlock()
+	defer func() {
+		bgCtxHookMu.Lock()
+		bgCtxHook = oldHook
+		bgCtxHookMu.Unlock()
+	}() // restore hook after test
+
+	// Prepare the message sequence: initialize → initialized → shutdown
+	initID := jsonrpc2.NewNumberID(1)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	shutdownID := jsonrpc2.NewNumberID(2)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var msgBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{initCall, initNotif, shutdownCall} {
+		if err := writeFramedMessage(&msgBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create a blocking reader that won't return EOF
+	blockForever := make(chan struct{}) // never closes
+	blockingReader := &blockingReaderAfter{
+		buf:   &msgBuf,
+		block: blockForever,
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server in a goroutine (it will block after processing shutdown)
+	runDone := make(chan error, 1)
+	go func() {
+		cfg := config.Defaults()
+		az := &stubAnalyzer{}
+		runDone <- Run(
+			context.Background(),
+			blockingReader,
+			&outBuf,
+			"0.0.0-test",
+			"/workspace",
+			cfg,
+			az,
+			logger,
+		)
+	}()
+
+	// Give Run time to process the three messages
+	time.Sleep(100 * time.Millisecond)
+
+	// Assert: the background context was captured by the hook
+	var capturedBgCtx context.Context
+	select {
+	case capturedBgCtx = <-bgCtxCaptured:
+		// Hook captured the context
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("test hook did not capture background context after 500ms")
+	}
+
+	// Assert: CRITICAL — check if the background context was cancelled.
+	// With the CURRENT code (defer bgCancel()), the context will NOT be cancelled
+	// because Run is still blocked in the read() call (haven't returned yet).
+	// With the FIXED code (bgCancel() in shutdown handler), the context WILL be cancelled.
+	select {
+	case <-bgCtxDone:
+		// GOOD: context was cancelled during shutdown (the fix is in place)
+		if capturedBgCtx.Err() != context.Canceled {
+			t.Errorf("bgCtxDone fired but Err = %v, want context.Canceled", capturedBgCtx.Err())
+		}
+	case <-time.After(500 * time.Millisecond):
+		// BAD: context was never cancelled during shutdown processing
+		// This indicates bgCancel() is deferred, not called in shutdown handler
+		t.Errorf("background context not cancelled during shutdown; " +
+			"after 500ms, bgCtx.Done() is still not signalled; " +
+			"ADR-012 requires bgCancel() to be called in the shutdown handler, not deferred")
+	}
+
+	// Cleanup: close the blockForever channel to let Run proceed (will get error reading)
+	// Actually, we can't close blockForever because it's already blocked. The test is done;
+	// let the goroutine leak (acceptable for a test).
 }
 
 // TestRequestPanicRecovery pins the behavior of panic recovery in the request dispatch
@@ -562,14 +946,12 @@ func TestRequestPanicRecovery(t *testing.T) {
 	shutdownID := jsonrpc2.NewNumberID(3)
 	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
 
-	// Encode all requests into a single input buffer
+	// Write all requests as Content-Length-framed messages into a single input buffer
 	var inBuf bytes.Buffer
 	for i, msg := range []jsonrpc2.Message{initCall, initNotif, panicCall, shutdownCall} {
-		encoded, err := jsonrpc2.EncodeMessage(msg)
-		if err != nil {
-			t.Fatalf("failed to encode message %d: %v", i, err)
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
 		}
-		inBuf.Write(encoded)
 	}
 
 	// Create output buffer and logger
@@ -596,15 +978,15 @@ func TestRequestPanicRecovery(t *testing.T) {
 		t.Fatalf("Run failed: %v; expected to recover from panic and continue", err)
 	}
 
-	// Parse the response messages
-	decoder := jsontext.NewDecoder(&outBuf)
+	// Parse the framed response messages
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
 
 	// Read first response (initialize success)
-	initResp, err := decoder.ReadValue()
+	initBody, err := parseFramedResponse(responseBuf)
 	if err != nil {
-		t.Fatalf("failed to read initialize response: %v", err)
+		t.Fatalf("failed to parse initialize response: %v", err)
 	}
-	initMsg, err := jsonrpc2.DecodeMessage(initResp)
+	initMsg, err := jsonrpc2.DecodeMessage(initBody)
 	if err != nil {
 		t.Fatalf("failed to decode initialize response: %v", err)
 	}
@@ -625,11 +1007,11 @@ func TestRequestPanicRecovery(t *testing.T) {
 
 	// Read second response (panic request should produce InternalError once wired)
 	// THIS ASSERTION WILL FAIL until T6 wires panic handling and the test/panic method
-	panicResp, err := decoder.ReadValue()
+	panicBody, err := parseFramedResponse(responseBuf)
 	if err != nil {
-		t.Fatalf("failed to read panic response: %v", err)
+		t.Fatalf("failed to parse panic response: %v", err)
 	}
-	panicMsg, err := jsonrpc2.DecodeMessage(panicResp)
+	panicMsg, err := jsonrpc2.DecodeMessage(panicBody)
 	if err != nil {
 		t.Fatalf("failed to decode panic response: %v", err)
 	}
@@ -648,15 +1030,20 @@ func TestRequestPanicRecovery(t *testing.T) {
 	if panicResp2.Err() == nil {
 		t.Errorf("panic response has no error; want InternalError (-32603), got result: %s", panicResp2.Result())
 	} else {
-		t.Logf("panic response error: %v (this should be InternalError once wired)", panicResp2.Err())
+		errTyped, ok := panicResp2.Err().(*jsonrpc2.Error)
+		if !ok {
+			t.Errorf("panic response error is %T, not *jsonrpc2.Error: %v", panicResp2.Err(), panicResp2.Err())
+		} else if errTyped.Code != jsonrpc2.InternalError {
+			t.Errorf("panic response error code = %v, want %v (InternalError)", errTyped.Code, jsonrpc2.InternalError)
+		}
 	}
 
 	// Read third response (shutdown should succeed normally, proving server recovered)
-	shutdownResp, err := decoder.ReadValue()
+	shutdownBody, err := parseFramedResponse(responseBuf)
 	if err != nil {
-		t.Fatalf("failed to read shutdown response: %v", err)
+		t.Fatalf("failed to parse shutdown response: %v", err)
 	}
-	shutdownMsg, err := jsonrpc2.DecodeMessage(shutdownResp)
+	shutdownMsg, err := jsonrpc2.DecodeMessage(shutdownBody)
 	if err != nil {
 		t.Fatalf("failed to decode shutdown response: %v", err)
 	}
