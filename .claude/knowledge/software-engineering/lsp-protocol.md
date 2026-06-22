@@ -1,8 +1,9 @@
 # LSP protocol essentials
 
-**Status:** verified (2026-06-20) against the official **LSP 3.17** specification
+**Status:** verified (2026-06-21) against the official **LSP 3.17** specification
 (microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/). All facts below
-were confirmed there unless explicitly noted otherwise.
+were confirmed there unless explicitly noted otherwise. The position-encoding default and negotiation
+sentences were re-confirmed verbatim against the live 3.17 spec on 2026-06-21 (see Sources).
 
 ## Base protocol (verified)
 
@@ -69,10 +70,23 @@ plan 03):
 | document sync                 | `textDocumentSync`         | `TextDocumentSyncKind \| TextDocumentSyncOptions` |
 | position encoding             | `positionEncoding`         | `PositionEncodingKind` (chosen from client's offer) |
 
-- **Diagnostics** (`textDocument/publishDiagnostics`) are a **server→client notification, not a
-  ServerCapabilities provider field** — there is no provider flag to set for push diagnostics; the
-  server simply publishes. (Note: 3.17 added a separate *pull*-diagnostics model with a
-  `diagnosticProvider` capability; this project uses **push**.)
+- **Diagnostics — push vs. pull (verified vs. LSP 3.17).** Two models exist:
+  - **Push** (`textDocument/publishDiagnostics`): a **server→client notification, not a
+    ServerCapabilities provider field** — there is no provider flag to set; the server simply
+    publishes whenever it (re)computes diagnostics. This is what this project ships for v1 (ADR-014).
+  - **Pull** (added in 3.17): the server advertises a **`diagnosticProvider`** capability
+    (`DiagnosticOptions` / `DiagnosticRegistrationOptions`, with fields `identifier?: string`,
+    `interFileDependencies: boolean`, `workspaceDiagnostics: boolean`) and answers
+    **`textDocument/diagnostic`** (document pull) and, when `workspaceDiagnostics` is true,
+    **`workspace/diagnostic`** requests. The motivation for pull is **client-controlled timing** —
+    the client decides *when* and *for which documents* diagnostics are computed (e.g. only visible
+    files), instead of the server pushing on its own schedule. A server may support **either or
+    both**, but if it advertises `diagnosticProvider` it should not also push for the same documents
+    (the client manages refresh via `workspace/diagnostic/refresh`). For `natural-lsp`'s
+    re-extract-whole-file model and small objects, push is the simpler, sufficient choice (ADR-014).
+    *(DiagnosticOptions field set and the pull-request method names are confirmed from the 3.17 spec
+    structure; the page is too large to re-fetch the section verbatim in one request — re-pull the
+    `#textDocument_diagnostic` anchor in a future sweep if exact wording is needed.)*
 - **Work-done progress**: the client advertises support via the `window.workDoneProgress: boolean`
   client capability. The server creates a progress token with the `window/workDoneProgress/create`
   request and reports begin/report/end via the generic `$/progress` notification
@@ -104,6 +118,17 @@ plan 03):
   (feature plan 03). Adding a capability you don't serve causes client requests you'll fail.
 - The chosen JSON-RPC/types library (ADR-010) lives behind `internal/server` and must not leak into
   `internal/analysis` / `internal/model`.
+- **Negotiated-encoding plumbing (open question now narrowed).** Whatever transport library lands per
+  ADR-010, the negotiation is the same shape: read `general.positionEncodings` off the client's
+  `InitializeParams`, pick the project's preferred order (UTF-8 then UTF-16 per ADR-008), and set the
+  single `positionEncoding` field on the returned `ServerCapabilities`. `go.lsp.dev/protocol` (the
+  ADR-010 default) generates a `PositionEncodingKind` type and the `ClientCapabilities.General.
+  PositionEncodings` / `ServerCapabilities.PositionEncoding` fields directly from the LSP meta-model
+  (Go KB `lsp-go-ecosystem.md`), so the field is a plain struct field — there is no library-specific
+  magic to discover; the conversion point (ADR-008) reads that one negotiated value. If ADR-010 is
+  re-decided toward a hand-rolled types layer, this field must be hand-modeled the same way. This
+  resolves the prior open question about *how* the library surfaces the negotiated encoding: it is an
+  ordinary capabilities field on both sides, not a library-specific callback.
 
 ## Sources
 
@@ -119,3 +144,11 @@ plan 03):
     `RequestCancelled = -32800` / `ContentModified = -32801` (verified 2026-06-20).
 - `workspaceSymbolProvider: boolean | WorkspaceSymbolOptions` confirmed present since LSP 3.15:
   https://microsoft.github.io/language-server-protocol/specifications/specification-3-15/
+- **Re-verified 2026-06-21** against the live 3.17 spec: position-encoding default
+  (`"If omitted it defaults to 'utf-16'."`), the mandatory-UTF-16 baseline, `general.positionEncodings`
+  client capability, and `"If the client didn't provide any position encodings the only valid value
+  that a server can return is 'utf-16'."` Same URL as above.
+- Pull-diagnostics model (`diagnosticProvider`, `textDocument/diagnostic`, `workspace/diagnostic`)
+  added in 3.17 — table-of-contents and capability presence confirmed; full section text could not be
+  re-fetched verbatim (page exceeds single-fetch size). 3.17 spec, Language Features → Pull
+  Diagnostics.

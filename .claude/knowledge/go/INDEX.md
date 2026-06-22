@@ -12,20 +12,21 @@ this index first, then the relevant topics.
 
 | File | Covers | Overall status |
 |------|--------|----------------|
-| [go-version-and-tooling.md](go-version-and-tooling.md) | Go 1.26, build/test/vet, modules, build tags, `-race` | verified (2026-06-20) |
+| [go-version-and-tooling.md](go-version-and-tooling.md) | Go 1.26, build/test/vet, modules, build tags, `-race` | verified (2026-06-21) |
 | [regexp-and-extraction.md](regexp-and-extraction.md) | `regexp` (RE2): capabilities, limits, multiline, perf; testing the extractor (fuzzing, golden files, test doubles) | verified (2026-06-20) |
 | [concurrency-primitives.md](concurrency-primitives.md) | context, sync, channels, errgroup, race detector | verified (2026-06-20) |
 | [stdlib-for-lsp-server.md](stdlib-for-lsp-server.md) | stdio framing, encoding/json, signals, slog; json/v2 (experimental) | verified (2026-06-20) |
-| [lsp-go-ecosystem.md](lsp-go-ecosystem.md) | Go LSP/JSON-RPC libraries and trade-offs; LSP 3.18 coverage | verified (2026-06-20) |
+| [lsp-go-ecosystem.md](lsp-go-ecosystem.md) | Go LSP/JSON-RPC libraries and trade-offs; LSP 3.18 coverage; **`go.lsp.dev/protocol` pulls json/v2 transitively** | verified (2026-06-21) |
 | [filesystem-and-watching.md](filesystem-and-watching.md) | WalkDir, io/fs, fsnotify, content hashing | verified (2026-06-20) |
 | [config-and-toml.md](config-and-toml.md) | `pelletier/go-toml/v2` (TOML decoder, strict mode); `go mod tidy` retaining a not-yet-imported dep via the `tools`-tag blank-import pattern | verified (2026-06-21) |
 
 ## Open questions (to verify on next relevant task)
 
-- **`go.lsp.dev` transitive-dependency footprint** — `go.lsp.dev/protocol` reports 22 imports; the
-  weight and maintenance of those transitive deps (and whether any conflict with this project's small
-  footprint goal) was not enumerated. Check `go mod graph` once the dependency is wired before
-  finalizing the ADR. (Not a blocker for the recommendation.)
+- **`go.lsp.dev/protocol` json/v2 acceptability (NEW, 2026-06-21)** — now that we know v1.0.0 pulls the
+  experimental `github.com/go-json-experiment/json` in as a runtime dependency, the open question is a
+  *policy* one for the ADR: is taking an unstable third-party json/v2 (breaking changes, govulncheck
+  exposure) acceptable, or does it tip the LSP decision to the hand-rolled Option B? Needs a
+  project-owner call, not further Go-fact verification. See `lsp-go-ecosystem.md`.
 - **Determinism of extraction output ordering** — golden-file tests assume a stable serialization. It
   is not yet decided whether the extractor emits symbols/edges in a guaranteed order or whether tests
   must sort. Settle this when the extraction output model lands (affects whether `cmpopts.SortMaps`/
@@ -33,14 +34,16 @@ this index first, then the relevant topics.
 
 ## Decisions now ready to make
 
-- **LSP/JSON-RPC dependency:** maintenance AND spec coverage are now verified. `go.lsp.dev/protocol`
-  implements **LSP 3.18** (per its README) and its godoc exposes types for every method this project
-  needs (workspace/symbol, documentSymbol, codeLens, work-done progress, definition/references/hover,
-  publishDiagnostics). Recommended default is Option A — depend on `go.lsp.dev/protocol` +
-  `go.lsp.dev/jsonrpc2` (both v1.0.0) — with Option B (hand-rolled JSON-RPC, or `sourcegraph/jsonrpc2`
-  for transport) as the lean alternative. `sourcegraph/go-lsp` is archived; `tliron/glsp` is pre-1.0
-  and framework-heavy. See `lsp-go-ecosystem.md`; the ADR is unblocked (modulo the dep-footprint note
-  above, which is informational).
+- **LSP/JSON-RPC dependency:** maintenance AND spec coverage are verified — `go.lsp.dev/protocol`
+  implements **LSP 3.18** and covers every method this project needs. **Revised 2026-06-21:** the
+  recommendation is no longer a clean "Option A by default." v1.0.0 transitively depends on the
+  experimental json/v2 library (`github.com/go-json-experiment/json`, "do not depend on this in
+  publicly available modules") and declares `go 1.26`. That contradicts this project's standing
+  json/v2-avoidance decision and forces the module floor to ≥ 1.26. Option A (depend on
+  `go.lsp.dev/protocol` + `go.lsp.dev/jsonrpc2`, both v1.0.0) and Option B (hand-rolled JSON-RPC on
+  stable `encoding/json`, optionally `sourcegraph/jsonrpc2` for transport) are now genuinely balanced;
+  the json/v2 transitive pull is the deciding factor for the ADR. `sourcegraph/go-lsp` is archived;
+  `tliron/glsp` is pre-1.0 and framework-heavy. See `lsp-go-ecosystem.md`.
 - **`encoding/json/v2`:** decided — **do not adopt.** Verified still experimental and
   `GOEXPERIMENT=jsonv2`-gated in Go 1.26; adopting it would break default-toolchain builds and pin an
   unstable API. Use `encoding/json`. See `stdlib-for-lsp-server.md`.
@@ -61,6 +64,25 @@ this index first, then the relevant topics.
 
 ## Changelog
 
+- 2026-06-21 — Full verification sweep (go-improve). Headline finding in `lsp-go-ecosystem.md`:
+  - **Resolved the `go.lsp.dev/protocol` transitive-footprint open question — and found a json/v2
+    dependency.** v1.0.0's `go.mod` declares `go 1.26` and has 4 direct requires; the package imports
+    only 4 third-party packages. But two of them are `github.com/go-json-experiment/json` +
+    `/jsontext` — the experimental json/v2 module ("do not depend on this in publicly available
+    modules") — and the generated types serialize via its `MarshalJSONTo`/`UnmarshalJSONFrom` API.
+    This is a runtime dependency (builds with a default toolchain — it's the standalone module, not
+    the `GOEXPERIMENT=jsonv2` stdlib gate), but it's an unstable third-party API. Consequence: choosing
+    Option A pulls json/v2 in transitively, contradicting the project's "do not adopt json/v2"
+    decision and weakening Option A's low-risk framing. Cross-referenced into
+    `stdlib-for-lsp-server.md`. The old open question is replaced by a *policy* open question.
+  - **Module `go`-directive max rule (new fact in `go-version-and-tooling.md`):** since Go 1.21 a
+    module's `go` directive must be ≥ that of every dependency. So adopting `go.lsp.dev/protocol`
+    (`go 1.26`) pins the project floor to ≥ 1.26 — the "could lower to 1.25" option only survives under
+    the hand-rolled Option B. Source: go.dev/ref/mod.
+  - **Versions re-confirmed, no drift:** Go 1.26.4 (2026-06-02) still latest, no 1.27 yet; fsnotify
+    v1.10.1, x/sync v0.21.0, go-toml/v2 v2.4.0, go.lsp.dev/protocol v1.0.0 all unchanged.
+  - No facts were found to be wrong on re-check; the regexp, concurrency, filesystem, and config
+    topics needed no changes this sweep.
 - 2026-06-21 — T0 of feature 01: adopted `github.com/pelletier/go-toml/v2 v2.4.0` (project's first
   third-party dep; ADR-013). New `config-and-toml.md` records the decoder facts (strict mode via
   `DisallowUnknownFields`, BurntSushi/toml unmaintained) and the verified `go mod tidy` retention

@@ -15,31 +15,66 @@ holds verified facts with sources. Read this index first, then the relevant topi
 | [data-definition.md](data-definition.md) | DEFINE DATA, LDA/GDA/PDA, level structure | verified (2026-06-20); array/REDEFINE grammar partial |
 | [modes-and-dialects.md](modes-and-dialects.md) | structured vs reporting mode, mainframe vs Linux/NaturalONE | verified (2026-06-20); column rules unverified |
 | [example-projects.md](example-projects.md) | public Natural source corpora & fixture candidates (licenses) | verified (2026-06-20) |
+| [natls-prior-art.md](natls-prior-art.md) | MarkusAmshove/natls: prior-art Natural LSP — scope, file types, resolution, source header, lint/parser diagnostics, LSP features | verified (2026-06-21) |
 
 ## Open questions (to verify on next relevant task)
 
-- **Exact array-bound grammar inside DEFINE DATA** — placement variants of `(format/lower:upper)` and
-  multi-dimensional arrays, and how they interleave with REDEFINE. Recorded but only partially confirmed.
+- **Array-bound grammar inside DEFINE DATA — mostly resolved.** natls parses arrays + the REDEFINE
+  clause fully (see data-definition.md, natls-prior-art.md): bounds `(fmt len/lower:upper)`,
+  multi-dim `(1:5,2:5)`, unbounded `(A10/*)`; comma is a valid decimal separator AND a dimension
+  separator (must disambiguate). Remaining: confirm exact placement variants against the parser.
 - **Column-sensitivity / fixed-format rules** for NaturalONE free-format source vs the mainframe editor.
   Multi-line continuation is confirmed; precise column positions are NOT — do not encode columns yet.
-- **User-defined function call syntax** (`.NS7`, `name(<...>)`) — confirm exact call grammar and whether
-  it should be a `CALLS` edge distinct from CALLNAT; not deeply verified this pass.
+  (natls is free-format/token-based and assumes no fixed columns — corroborating "don't encode columns".)
+- **Steplib-of-steplib recursion** — natls searches only ONE steplib level (no transitive steplibs).
+  Confirm whether the real Natural runtime resolves transitively through chained steplibs.
 - **CALLNAT/FETCH name length mismatch** — CALLNAT variable name limited to 1–8 chars but constant up to
   32; confirm whether object names longer than 8 chars can ever be reached dynamically (affects whether
-  long-named subprograms are ever `CALLS_DYNAMIC` candidates).
+  long-named subprograms are ever unresolvable dynamic-call candidates). NOTE: external SUBROUTINE/FUNCTION names
+  CAN exceed 8 chars (natls confirms) and are resolved by the in-source `DEFINE` name, not filename.
 - **`&`/`*LANGUAGE` substitution** — confirm the analyzer's intended edge type for literals containing
   `&` (treat as dynamic vs resolved-with-wildcard).
 - **Reporting-mode fixtures don't exist publicly** — the public corpus is almost entirely structured
-  mode (see example-projects.md). Reporting-mode regression fixtures (DO/DOEND, loop-collapsing
-  `END`/`LOOP`, undeclared vars) will have to be hand-authored from the docs.
+  mode (see example-projects.md). natls itself does NOT support reporting mode at all. Reporting-mode
+  regression fixtures (DO/DOEND, loop-collapsing `END`/`LOOP`, undeclared vars) will have to be
+  hand-authored from the docs.
 - **License hygiene for fixtures** — only natls (MIT) and the Software AG sample/education repos
   (Apache-2.0) are safe to derive committed fixtures from; all community GitHub repos found are
   unlicensed. Decide on the attribution mechanism for derived fixtures before importing any.
 - **Map (`.NSM`) / helproutine (`.NSH`) coverage is scarce** — only the NaturalCruise DevOps sample
-  has a meaningful set; confirm the analyzer's map/INPUT-USING-MAP handling against it.
+  has a meaningful set; confirm the analyzer's map/INPUT-USING-MAP handling against it. (Note: natls's
+  MAP type CAN carry a DEFINE DATA and a body.)
+- **DDM (`.NSD`) tabular format** — `.NSD` is NOT Natural source but a columnar field listing
+  (`T L DB Name F Leng S D Remark`); needs a separate parser. Confirm the exact column grammar before
+  extracting DDM fields (natls has a dedicated `parsing/ddm/` parser to model on).
+- **"RESOURCE" object type** — natls lists a TODO `RESOURCE` file type with no extension assigned;
+  identify what a Natural "resource" object is and its extension (not among our 15).
+- **Project-file discovery** — natls locates the workspace by a `.natural` or `_naturalBuild` build
+  file whose parent holds `Natural-Libraries/`. Our `.natural-lsp.toml` sentinel is our own; decide
+  whether to also read the native `.natural` build file for steplib config.
 
 ## Changelog
 
+- 2026-06-21 — ADDED topic `natls-prior-art.md`: deep study of MarkusAmshove/natls (MIT), the mature
+  prior-art parser-based Natural LSP, read from source. Key findings written back:
+  - file-extensions: CONFIRMED the 11 core ext→type mappings independently; natls SKIPS NS4/NS8/NST/NS3
+    (TODO in source) → lower priority. ADDED canHaveDefineData/canHaveBody per-type predicates (MAP can
+    have both; data areas + DDM cannot have a body). ADDED that `.NSS`/`.NS7` referable names come from
+    the in-source `DEFINE SUBROUTINE`/`DEFINE FUNCTION` identifier (not filename, can be >8 chars).
+    ADDED that `.NSD` is a tabular non-source format needing a separate parser.
+  - modes-and-dialects: RESOLVED the "how is mode known" question — NaturalONE source-header block
+    (`* >Natural Source Header` … `* :Mode S|R` … `* <Natural Source Header`) declares mode, code page,
+    line increment. ADDED verified comment markers (`*` line-start guard, `/*` inline; `/` vs array-bound
+    ambiguity).
+  - calls-and-resolution: CROSS-CHECKED resolution — one `IModuleReferencingNode` covers CALLNAT/PERFORM
+    (external)/FETCH/INCLUDE/function-call/`USING`; PERFORM inline-first is structural; FETCH RETURN
+    distinguished; current-lib→ordered-steplibs (ONE level in natls), DDM separate namespace, implicit
+    SYSTEM steplib, `.natural`/`_naturalBuild` + `Natural-Libraries/<LIB>/` layout.
+  - data-definition: CONFIRMED array bounds + REDEFINE clause are in-scope (natls parser errors);
+    clarified "REDEFINE statement (reporting, not planned)" ≠ "REDEFINE clause in DEFINE DATA";
+    ADDED comma-as-decimal-separator gotcha.
+  - INDEX: resolved/refined 6 open questions; added 3 new (steplib transitivity, DDM tabular grammar,
+    RESOURCE type, native `.natural` build-file reading).
 - 2026-06-21 — file-extensions: re-verified full source table against NaturalONE editors "General
   Information" page. ADDED standalone-vs-fragment column (copycode/data-areas/DDM/text = fragments).
   ADDED source-vs-generated `NS*`/`NG*` distinction (NSP→NGP, map source→`.NGM`; LSP indexes `NS*` only).

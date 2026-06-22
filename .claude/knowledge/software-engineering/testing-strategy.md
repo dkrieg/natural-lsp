@@ -1,7 +1,8 @@
 # Testing strategy
 
-**Status:** verified (2026-06-20) against CLAUDE.md and docs/plans (internal, authoritative). Go
-mechanics live in the `go-development` skill's testing reference; this topic is the *strategy*.
+**Status:** verified (2026-06-20; re-reviewed 2026-06-21, no change) against CLAUDE.md and docs/plans
+(internal, authoritative). Go mechanics live in the `go-development` skill's testing reference; this
+topic is the *strategy*.
 
 ## The pyramid (weighted to fast unit tests)
 

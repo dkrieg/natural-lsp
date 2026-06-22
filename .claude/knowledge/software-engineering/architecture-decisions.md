@@ -1,20 +1,37 @@
 # Architecture decisions (ADR log)
 
-**Status:** verified (2026-06-20) against the repo's own README.md, docs/plans/natural-lsp-prd.md, and
+**Status:** verified (2026-06-21) against the repo's own README.md, docs/plans/natural-lsp-prd.md, and
 CLAUDE.md — these are the authoritative source for project decisions. Append a new dated entry
 whenever a significant decision is made; never silently reverse one — supersede it with a new entry.
+2026-06-21 sweep: added ADR-014 (push diagnostics for v1) and downgraded ADR-010 to provisional
+pending user sign-off on its transitive json/v2 dependency.
+2026-06-21: ADR-010 sign-off received — user accepted Option A (go.lsp.dev/protocol + jsonrpc2) with
+full awareness of the transitive json/v2 dependency. Pending decision removed.
+2026-06-21: ADR-001 superseded by ADR-015 (parser pivot); ADR-007 simplified (lsp-graph removed).
 
-## ADR-001 — Regex-based extraction, not a grammar
-**Decision:** Extract Natural constructs with tuned regexes rather than a full parser/grammar.
-**Rationale:** Usable coverage of production patterns quickly beats slow, complete coverage; no mature
-Natural grammar exists. **Consequence:** two gap types handled separately — unresolvable references
-are modeled outcomes (`CALLS_DYNAMIC`), unrecognized syntax becomes a diagnostic (must be flagged on
-purpose; an unmatched regex is otherwise silent). See Go KB `regexp-and-extraction.md` for RE2 limits.
+## ADR-001 — ~~Regex-based extraction~~ **(superseded by ADR-015)**
+**Original decision:** Extract Natural constructs with tuned regexes rather than a full parser/grammar.
+**Superseded:** The project pivoted to a hand-written parser (ADR-015). The regex approach was the
+original design; it is recorded here for history. Go KB `regexp-and-extraction.md` documents RE2
+mechanics but is now reference-only.
+
+## ADR-015 — Hand-written parser, not regex (2026-06-21)
+**Decision:** Extract Natural constructs via a hand-written lexer and recursive-descent parser,
+modeled on [natls](https://github.com/MarkusAmshove/natls) (the Java reference implementation).
+**Rationale:** (1) natls demonstrates that a full parser for Natural is achievable and the reference
+implementation is openly available (MIT); (2) a parser enables completion, signature help, call
+hierarchy, real syntax diagnostics, and accurate symbol tables — features regex cannot deliver
+reliably; (3) the original regex rationale ("no mature grammar exists") no longer holds when a
+reference parser can be studied directly. **Consequence:** Two gap types are still handled separately:
+unresolvable references (e.g. `CALLNAT #VARIABLE`) are noted with call-site context rather than
+discarded; parse errors are surfaced as LSP diagnostics. `CALLS_DYNAMIC` as a named edge type is
+removed — dynamic calls are simply unresolvable calls. **See:** Natural KB `natls-prior-art.md` for
+the reference parser study; ADR-002 (Analyzer seam remains unchanged).
 
 ## ADR-002 — Analyzer interface as the replaceable-backend seam
 **Decision:** LSP-facing code depends only on `internal/analysis.Analyzer` + `internal/model`, never
-on the regex backend in `internal/analysis/natural`. **Rationale:** the backend can later become a
-hand-written parser or tree-sitter grammar without touching the LSP layer.
+on the parser backend in `internal/analysis/natural`. **Rationale:** the backend can later become a
+tree-sitter grammar or other implementation without touching the LSP layer.
 
 ## ADR-003 — Extraction and resolution are separate steps
 **Decision:** Per-file extraction produces *unresolved* references with caller context; cross-file
@@ -38,8 +55,7 @@ ADR-011: `crypto/sha256`.)
 set maps to constructs and must stay in sync with the features that consume each type.
 
 ## ADR-007 — Batch export dropped from scope
-**Decision:** No batch/bulk export feature. **Rationale:** the server is interactive/editor-driven;
-clean extracted structure can still feed an external graph consumer.
+**Decision:** No batch/bulk export feature. **Rationale:** the server is interactive/editor-driven.
 
 ## ADR-008 — Position encoding: negotiate UTF-8, default to UTF-16 (2026-06-20)
 **Decision:** Advertise `general.positionEncodings`-aware behavior: pick **UTF-8** when the client
@@ -78,6 +94,16 @@ types used — maximum control, smallest dependency surface, but more code and o
 — **archived, rejected**. The hand-roll path (a) remains the fallback if the ~22 transitive deps of
 `go.lsp.dev` become a concern. **Source:** Go KB `lsp-go-ecosystem.md` (verified 2026-06-20).
 
+> **Re-evaluation 2026-06-21 — signed off by user 2026-06-21.** The 2026-06-21 go-improve sweep
+> found that `go.lsp.dev/protocol@v1.0.0` transitively pulls **`github.com/go-json-experiment/json`**
+> (the standalone experimental json/v2 module) as a hard runtime dependency, whose README warns
+> "Do not depend on this in publicly available modules." The project's json/v2-avoidance stance was
+> noted and the trade-off was presented; the user explicitly **accepted Option A** with full awareness
+> of this dependency. The standing "avoid json/v2" note in `stdlib-for-lsp-server.md` applies to
+> *direct* adoption in project code — not to transitive dependencies of an otherwise-appropriate
+> library. The `go.lsp.dev/*` dependency remains confined behind `internal/server` (ADR-002).
+> **Sources:** Go KB `lsp-go-ecosystem.md` and `stdlib-for-lsp-server.md` (verified 2026-06-21).
+
 ## ADR-011 — Cache-key content hash: `crypto/sha256` (2026-06-20)
 **Decision:** Key the on-disk index cache (ADR-005) on **`crypto/sha256`** of file content.
 **Rationale:** the cache key must be **deterministic and stable across program runs and git
@@ -107,12 +133,12 @@ unbounded memory/goroutines on a 30k-file repo; (c) single owner goroutine + cha
 serializes reads. **Source:** PRD NFR-3/4/8, FR-43; Go KB `concurrency-primitives.md` (errgroup
 `SetLimit`, snapshot/immutable guidance) and skill concurrency reference (mechanics).
 
-## ADR-013 — Fuzz the extraction entry point as the FR-43 safety guard (2026-06-20)
-**Decision:** Maintain a Go native fuzz target over the analyzer's extraction entry point asserting
+## ADR-013 — Fuzz the parser entry point as the FR-43 safety guard (2026-06-20)
+**Decision:** Maintain a Go native fuzz target over the parser's entry point asserting
 **"never panics on any input"** (a safety/liveness property, not output correctness). Crashers found
 by fuzzing are committed under `testdata/fuzz/...` and replay under plain `go test`, becoming
 permanent regression fixtures by the same rule as hand-authored `.NSx` reproducers. **Rationale:**
-the extractor consumes untrusted source files and FR-43 forbids any single file crashing the server;
+the parser consumes untrusted source files and FR-43 forbids any single file crashing the server;
 fuzzing reaches pathological inputs no hand-written fixture would; the committed-corpus model
 integrates with the existing `testdata/` regression convention at zero extra process cost.
 **Alternatives considered:** hand-authored adversarial fixtures only — necessary but cannot match a
@@ -121,9 +147,26 @@ dependency where stdlib fuzzing already fits the "no panic" property. **Source:*
 https://go.dev/security/fuzz/ (native fuzzing since Go 1.18, corpus committed as regression seed;
 verified 2026-06-20); `testing-strategy.md`, `engineering-principles.md` (secure-by-design).
 
+## ADR-014 — Diagnostics delivery: push (`publishDiagnostics`) for v1 (2026-06-21)
+**Decision:** Deliver diagnostics via the **push** model — the server→client
+`textDocument/publishDiagnostics` notification, published after each (re)extraction — and do **not**
+advertise the 3.17 **pull** `diagnosticProvider` capability for the first release. **Rationale:** the
+analyzer already re-extracts whole files on every change (ADR-009 Full sync), so the server always
+knows a file's complete diagnostic set at extraction time and can publish immediately; push has no
+provider capability to advertise and is the least machinery. Pull's advantage is *client-controlled
+timing* (compute only for visible files), which matters for expensive cross-file analysis on huge
+repos — a real concern this project may hit at 30k files (NFR-4), but not one v1 needs to pay for up
+front. Push and pull should not both be active for the same documents, so this is an either/or for
+v1. **Alternatives considered:** (a) pull diagnostics (`diagnosticProvider` +
+`textDocument/diagnostic` / `workspace/diagnostic`) — better client-side control and lazy compute,
+but more protocol surface and a refresh-coordination burden, unjustified while extraction is cheap
+and eager; (b) support both — needless complexity and risks double-reporting. **Revisit** if
+profiling shows eager push of cross-file diagnostics is a responsiveness drag on large workspaces
+(NFR-3), or if a target client supports only pull. **Source:** LSP 3.17 spec (push vs. pull
+diagnostics), see `lsp-protocol.md`; PRD NFR-3/NFR-4; ADR-009 (Full sync → whole-file re-extraction).
+
 ## Pending decisions (record here when made)
-- *(none open — ADR-008..011 resolved the position-encoding, sync-kind, transport, and content-hash
-  decisions on 2026-06-20; ADR-012/013 added the index-concurrency and extractor-fuzzing decisions.)*
+<!-- none currently open -->
 
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,

@@ -14,16 +14,17 @@ analysis-options parsing, custom extension-type mapping (`[extension_types]` tab
 generator for `--init`. Default indexed set: all 15 Natural extensions (10 core + 5 extended; see below).
 
 `internal/model` and `internal/analysis/natural` have object-type recognition (feature 02):
-`model.ObjectType` (16 constants with stable string values for `lsp-graph` interop), `model.Diagnostic`
+`model.ObjectType` (16 constants with stable string values), `model.Diagnostic`
 (analyzer-side signal for unrecognized files — feature-03 indexer will wire it to `SkipReason`/logs),
 and `model.FileAnalysis.ObjectType`/`Diagnostics` fields. The `analysis/natural` backend classifies
 every file by extension (case-insensitive, custom-mapping-aware) via `Analyze(path, content)`. Regression
 fixtures for all 15 types live under `testdata/objecttype/`. All other `internal/` packages (`server`,
 `document`, `workspace`) remain documented stubs.
 
-`natural-lsp` is the first open-source Language Server Protocol implementation for **Software AG Natural**, a 4GL widely
-deployed on IBM z/OS mainframes. It indexes a Natural codebase and serves navigation, references, hover, document
-outline, and workspace symbols to any LSP-capable editor.
+`natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
+z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on
+[natls](https://github.com/MarkusAmshove/natls), Java/MIT) to index a Natural codebase and serve navigation, completion,
+references, hover, call hierarchy, document outline, and workspace symbols to any LSP-capable editor.
 
 ## Commands
 
@@ -83,25 +84,24 @@ A single binary (`cmd/natural-lsp`) runs as a stdio LSP server. The intended pac
 - `internal/server/` — LSP lifecycle and request dispatch (`textDocument/*`, `workspace/*`), work-done progress.
 - `internal/document/` — in-memory document store (didOpen/didChange/didClose) and the workspace file watcher.
 - `internal/workspace/` — the cross-file symbol table (`index.go`) and its on-disk cache (`cache.go`).
-- `internal/analysis/` — `analyzer.go` defines the **Analyzer interface**; `analysis/natural/` is the regex-based
-  implementation (extraction pipeline, symbol mapping, hover builders, call/data extraction).
+- `internal/analysis/` — `analyzer.go` defines the **Analyzer interface**; `analysis/natural/` is the parser-based
+  implementation (lexer, recursive-descent parser, AST, symbol extraction, hover builders, call/data extraction).
 
-**The Analyzer interface is the key seam.** The extraction backend (currently regex) sits behind it so it can later be
-swapped for a hand-written parser or tree-sitter grammar without touching the LSP layer. Keep LSP-facing code depending
-only on the interface, never on regex internals.
+**The Analyzer interface is the key seam.** The parser backend sits behind it so it can evolve (e.g. to a tree-sitter
+grammar) without touching the LSP layer. Keep LSP-facing code depending only on the interface, never on parser internals.
 
 ## Design decisions that constrain implementation
 
-These are deliberate and easy to get wrong — read the README's "Why regex-based extraction" and "Workspace
+These are deliberate and easy to get wrong — read the README's "Parser-based extraction" and "Workspace
 configuration" sections before changing related code.
 
-- **Regex extraction, not a grammar.** Chosen for fast usable coverage of production patterns over slow complete
-  coverage. Two failure modes are modeled *separately* and neither is dropped silently:
-  - *Unresolvable references* (e.g. `CALLNAT #VARIABLE`) are a modeled outcome → `CALLS_DYNAMIC` edges with caller
-    context preserved.
-  - *Unrecognized syntax* (a statement-like line matching no pattern) is a parser limitation → surface it as an LSP
-    **diagnostic**. An unmatched regex is a silent no-op unless the analyzer explicitly flags it, so this flagging must
-    be built on purpose.
+- **Hand-written parser, not regex.** A lexer + recursive-descent parser for Natural, using
+  [natls](https://github.com/MarkusAmshove/natls) as the reference implementation. This enables accurate symbol tables,
+  real syntax diagnostics, completion, signature help, and call hierarchy — features that require a proper AST. Two
+  failure modes are still modeled *separately* and neither is dropped silently:
+  - *Unresolvable references* (e.g. `CALLNAT #VARIABLE`) are noted as unresolvable with the call site preserved — they
+    appear in find-references and outline rather than disappearing.
+  - *Parse errors* are surfaced as LSP **diagnostics** so they are visible in the editor, not silently discarded.
 
 - **Module resolution follows Natural's steplib chain, not file paths.** `CALLNAT` / `PERFORM` / `FETCH` targets resolve
   current-library → steplibs (in order) → SYSTEM. The same module name can exist in multiple libraries; search order is
@@ -116,8 +116,8 @@ configuration" sections before changing related code.
   `.NS4` class, `.NS7` function, `.NS3` dialog, `.NS8` adapter, `.NST` text. All 15 are in the default indexed set.
   Keep the indexed extension set in sync with the features that consume them.
 
-- **Natural is case-insensitive** for keywords and identifiers — extraction and cross-file resolution must normalize
-  case. Statements can span multiple lines, which stresses line-oriented regex.
+- **Natural is case-insensitive** for keywords and identifiers — the lexer must normalize case. Statements can span
+  multiple lines; the parser must handle continuation correctly.
 
 - **Workspace root** is located by walking up for a `.natural-lsp.toml` sentinel. The index is cached under
   `.natural-lsp-cache/`; invalidate on **content hash** (not mtime, which breaks across git checkouts) and force a full
@@ -129,8 +129,4 @@ When the analyzer mishandles a construct: add a minimal reproducer `.NSP` (or re
 a failing unit test in `internal/analysis/natural/`, then fix the analyzer. The testdata file stays as a permanent
 regression fixture. Use only sanitized, non-proprietary Natural code.
 
-## Relation to lsp-graph
-
-Standalone LSP server usable with any LSP editor. Also designed to feed `lsp-graph`, a multi-language workspace-graph
-coordinator — keep extracted structure (calls, data access, external deps) clean enough to be consumed by an external
-graph builder. Batch export was considered and explicitly dropped from scope; do not reintroduce it.
+Standalone LSP server usable with any LSP editor.

@@ -2,30 +2,29 @@
 
 **Status:** Planned
 **PRD requirements:** FR-30, FR-31; supports FR-17; NFR-6, NFR-14; metric M-6
-**Priority / phase:** P0 (unrecognized-syntax diagnostics) · P1 (ambiguous-resolution diagnostics)
+**Priority / phase:** P0 (parse-error diagnostics) · P1 (ambiguous-resolution diagnostics)
 **Depends on:** [06](../06-call-and-dependency-resolution/plan.md),
 [08](../08-program-structure-extraction/plan.md)
 
 ## Summary
 
-Makes the analyzer's limits legible. Because an unmatched regex is otherwise a silent no-op, the
-analyzer must *deliberately* flag statement-like lines it failed to extract, and the resolver must
-flag ambiguous names. Diagnostics are strictly the "tool limitation" channel — modeled gaps (dynamic
-or unresolvable references) are **not** diagnostics (that distinction is owned by plan 06 / FR-17).
+Makes the parser's limits legible. The parser surfaces source it cannot interpret as LSP diagnostics
+rather than silently discarding it; the resolver flags ambiguous names. Diagnostics are strictly the
+"source problem" channel — unresolvable references (dynamic calls, missing targets) are **not**
+diagnostics; they are retained call-site records (that distinction is owned by plan 06 / FR-17).
 
 ## User stories
 
-### Story 1 — Surface unrecognized syntax (FR-30, NFR-6, M-6)
-**As a** developer, **I want** to see where the analyzer couldn't parse a line **so that** I know
-coverage gaps instead of getting silently wrong results.
+### Story 1 — Surface parse errors (FR-30, NFR-6, M-6)
+**As a** developer, **I want** to see where the parser encountered source it could not interpret
+**so that** I know about gaps rather than getting silently incomplete results.
 
 **Acceptance criteria:**
-- [ ] A statement-like line that matches no extraction pattern produces a diagnostic at that line.
-- [ ] The diagnostic clearly communicates that this is a parser/coverage limitation (not a code
-      error in the user's program).
-- [ ] Blank lines, comments, and lines intentionally ignored do **not** produce diagnostics.
-- [ ] In a representative corpus, every non-extracted statement-like line is accounted for as either a
-      modeled relationship (plan 06) or a diagnostic — none silently dropped.
+- [ ] Source the parser cannot interpret produces a diagnostic at the relevant position.
+- [ ] The diagnostic message is useful: it identifies the unexpected token or construct.
+- [ ] Blank lines, comments, and intentionally-skipped content do **not** produce diagnostics.
+- [ ] In a representative corpus, parse errors surface as diagnostics and unresolvable references
+      are retained as call records — none are silently dropped.
 
 ### Story 2 — Surface ambiguous resolution (FR-31)
 **As a** maintainer without a library map, **I want** to be told when a name is ambiguous **so that**

@@ -1,5 +1,9 @@
 # Go `regexp` and the extraction backend
 
+> **⚠ Reference only — the project uses a hand-written parser (ADR-015), not regex extraction.**
+> The RE2/regexp facts below remain accurate Go reference material but the extraction-pipeline
+> guidance no longer applies. See SE KB `architecture-decisions.md` ADR-015.
+
 **Status:** verified (2026-06-20) — `regexp`/RE2 facts confirmed against pkg.go.dev/regexp and
 pkg.go.dev/regexp/syntax; testing-the-extractor section (native fuzzing, golden files, test doubles)
 confirmed against go.dev/security/fuzz, pkg.go.dev/testing, and pkg.go.dev/github.com/google/go-cmp.
