@@ -3,14 +3,9 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    # Skip CI when a PR touches only docs/tooling. Any change to code,
-    # go.mod, the justfile, or this workflow is NOT ignored, so it still runs.
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".claude/**"
   push:
     branches: [main]
+    # Skip redundant runs on main when only docs/tooling changed.
     paths-ignore:
       - "**.md"
       - "docs/**"
