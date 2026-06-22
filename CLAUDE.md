@@ -22,10 +22,9 @@ fixtures for all 15 types live under `testdata/objecttype/`. All other `internal
 `document`, `workspace`) remain documented stubs.
 
 `natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
-z/OS mainframes. It uses a hand-written lexer + recursive-descent parser to index a Natural codebase and serve
-navigation, completion, references, hover, call hierarchy, document outline, and workspace symbols to any LSP-capable
-editor. [natls](https://github.com/MarkusAmshove/natls) (Java, MIT) is the reference parser implementation studied
-during design.
+z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on
+[natls](https://github.com/MarkusAmshove/natls), Java/MIT) to index a Natural codebase and serve navigation, completion,
+references, hover, call hierarchy, document outline, and workspace symbols to any LSP-capable editor.
 
 ## Commands
 
@@ -100,8 +99,8 @@ configuration" sections before changing related code.
   [natls](https://github.com/MarkusAmshove/natls) as the reference implementation. This enables accurate symbol tables,
   real syntax diagnostics, completion, signature help, and call hierarchy — features that require a proper AST. Two
   failure modes are still modeled *separately* and neither is dropped silently:
-  - *Unresolvable references* (e.g. `CALLNAT #VARIABLE`) are a modeled outcome → `CALLS_DYNAMIC` edges with caller
-    context preserved.
+  - *Unresolvable references* (e.g. `CALLNAT #VARIABLE`) are noted as unresolvable with the call site preserved — they
+    appear in find-references and outline rather than disappearing.
   - *Parse errors* are surfaced as LSP **diagnostics** so they are visible in the editor, not silently discarded.
 
 - **Module resolution follows Natural's steplib chain, not file paths.** `CALLNAT` / `PERFORM` / `FETCH` targets resolve
@@ -132,6 +131,4 @@ regression fixture. Use only sanitized, non-proprietary Natural code.
 
 ## Relation to lsp-graph
 
-Standalone LSP server usable with any LSP editor. Also designed to feed `lsp-graph`, a multi-language workspace-graph
-coordinator — keep extracted structure (calls, data access, external deps) clean enough to be consumed by an external
-graph builder. Batch export was considered and explicitly dropped from scope; do not reintroduce it.
+Standalone LSP server usable with any LSP editor.

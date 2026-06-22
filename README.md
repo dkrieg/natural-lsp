@@ -1,13 +1,13 @@
 # natural-lsp
 
 A Language Server Protocol implementation for [Software AG Natural](https://www.softwareag.com/en_corporate/platform/adabas-natural.html) —
-a Go-based LSP server focused on cross-file impact analysis, steplib-aware call resolution, and lsp-graph integration.
+a Go-based LSP server with a hand-written parser delivering navigation, completion, references, hover, and call hierarchy
+for Natural codebases on any LSP-capable editor.
 
 Natural is a 4GL language widely deployed on IBM z/OS mainframes, typically alongside COBOL, Adabas, and IMS.
 [natls](https://github.com/MarkusAmshove/natls) (Java, MIT) is the existing parser-based LSP server for Natural.
-`natural-lsp` is a Go alternative with a different center of gravity: config-driven library mapping independent of
-NaturalONE project files, explicit `CALLS_DYNAMIC` edge modeling for unresolvable calls, a git-safe content-hash cache,
-and a clean extracted call/data graph designed for [lsp-graph](https://github.com/dkrieg/lsp-graph) integration.
+`natural-lsp` is a Go alternative built around a hand-written lexer and recursive-descent parser, with
+config-driven library mapping independent of NaturalONE project files and a git-safe content-hash cache.
 
 It operates on **filesystem-based Natural sources** — the `.NSx` object files used by NaturalONE / SPoD — rather than
 objects stored only in the mainframe Natural/Adabas library system. Natural that lives solely on the mainframe must be
@@ -71,8 +71,8 @@ that regex extraction cannot deliver reliably.
 
 Two kinds of analysis gap are handled separately, and neither is dropped silently:
 
-- **Unresolvable references** — e.g. `CALLNAT #VARIABLE`, whose target cannot be determined statically — are a *modeled
-  outcome*, not a failure. They surface as explicit `CALLS_DYNAMIC` edges with caller context preserved.
+- **Unresolvable references** — e.g. `CALLNAT #VARIABLE`, whose target cannot be determined statically — are noted as
+  unresolvable with the call site preserved, so they appear in find-references and outline rather than disappearing.
 - **Parse errors** — source the parser cannot interpret — are surfaced as LSP diagnostics so they are visible in the
   editor, not silently discarded.
 
@@ -338,12 +338,12 @@ cache valid across git checkouts; a cache-format version forces a full rebuild o
 
 | Construct            | Resolution                       | Edge type       |
 |----------------------|----------------------------------|-----------------|
-| `CALLNAT 'LITERAL'`  | Static — resolved to definition  | `CALLS`         |
-| `CALLNAT #VARIABLE`  | Dynamic — flagged as unresolved  | `CALLS_DYNAMIC` |
-| `FETCH 'LITERAL'`    | Static — navigation edge         | `NAVIGATES_TO`  |
-| `RUN 'LITERAL'`      | Static — navigation edge         | `NAVIGATES_TO`  |
-| `PERFORM subroutine` | Local scope first, then external | `PERFORMS`      |
-| `INCLUDE copycode`   | Resolved to copycode file        | `INCLUDES`      |
+| `CALLNAT 'LITERAL'`  | Static — resolved to definition          | `CALLS`       |
+| `CALLNAT #VARIABLE`  | Dynamic — surfaced as unresolvable       | `CALLS`       |
+| `FETCH 'LITERAL'`    | Static — navigation edge                 | `NAVIGATES_TO`|
+| `RUN 'LITERAL'`      | Static — navigation edge                 | `NAVIGATES_TO`|
+| `PERFORM subroutine` | Local scope first, then external         | `PERFORMS`    |
+| `INCLUDE copycode`   | Resolved to copycode file                | `INCLUDES`    |
 
 ### Data access
 
@@ -483,18 +483,6 @@ When you encounter a Natural construct that the analyzer handles incorrectly:
 2. Write a unit test in `internal/analysis/natural/analyzer_test.go` asserting the expected extraction
 3. Fix the analyzer
 4. The testdata file becomes a permanent regression fixture
-
----
-
-## Relation to lsp-graph
-
-`natural-lsp` is a standalone LSP server — it works independently with any LSP-capable editor. It is also designed as a
-first-class language provider for [lsp-graph](https://github.com/dkrieg/lsp-graph), a multi-language workspace graph
-coordinator that unifies structural graphs from multiple LSP servers into a single queryable knowledge graph.
-
-In that context, `natural-lsp` handles Natural files while other servers (Broadcom `che-che4z-lsp-for-cobol` for COBOL,
-`sqls` for DB2 SQL, etc.) handle their respective languages. The coordinator derives cross-language edges — Natural
-`EXEC SQL` blocks resolved to DB2 table definitions, for example — that no single server could produce alone.
 
 ---
 

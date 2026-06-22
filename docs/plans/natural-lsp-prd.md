@@ -13,10 +13,8 @@ language widely deployed on IBM z/OS mainframes alongside COBOL, Adabas, and IMS
 open-source LSP server for Natural — [natls](https://github.com/MarkusAmshove/natls) (Java, MIT) —
 delivers broad editor intelligence via a full recursive-descent parser and is the reference
 implementation studied during the design of this server. `natural-lsp` is a Go alternative with a
-hand-written lexer + recursive-descent parser, delivering the same breadth of editor features while
-adding config-driven NaturalONE-independent library mapping, explicit `CALLS_DYNAMIC` edge modeling,
-a git-safe content-hash cache, and a clean extracted graph for
-[lsp-graph](https://github.com/dkrieg/lsp-graph) integration.
+hand-written lexer + recursive-descent parser, config-driven NaturalONE-independent library mapping,
+and a git-safe content-hash cache.
 
 This product delivers a single server binary that indexes a filesystem-based Natural codebase and
 serves navigation, completion, references, hover, call hierarchy, document outline, and
@@ -52,7 +50,7 @@ features are implemented.
   ambiguous-resolution diagnostics are in scope, but broad correctness checking is not.
 - **Not** a connection to live mainframe Natural/Adabas libraries — the product operates on exported
   filesystem objects only.
-- **Not** a batch/bulk export or reporting tool — analysis is interactive and editor-driven.
+- **Not** a batch/bulk export tool — analysis is interactive and editor-driven.
 - **Not** responsible for resolving Adabas DDM physical metadata or IMS segment metadata beyond what
   is present in the indexed source files.
 - Completeness of obscure legacy/preprocessor constructs is explicitly out of scope for the first
@@ -139,8 +137,9 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
 
 - **FR-10 (P0)** — Resolve **static** module calls (literal target names) to their definitions across
   the workspace and expose them as navigable, queryable relationships.
-- **FR-11 (P0)** — Identify **dynamic** module calls (variable target names) as a *modeled outcome*,
-  not a failure: surface them as explicit unresolved relationships that preserve the calling context.
+- **FR-11 (P0)** — Handle **dynamic** module calls (variable target names) as unresolvable: note
+  the call site with whatever context is available, so they appear in find-references and outline
+  rather than being silently discarded.
 - **FR-12 (P0)** — Resolve subroutine invocations using correct scope order: a matching **inline**
   subroutine in the same object is resolved before falling back to an **external** subroutine of the
   same name.
@@ -148,8 +147,8 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
   dependencies.
 - **FR-14 (P1)** — Resolve static program-transfer/navigation statements (literal targets) as
   navigable relationships, distinct from module calls.
-- **FR-15 (P1)** — Identify **dynamic** program-transfer statements (variable targets) as unresolved
-  relationships with caller context preserved, consistent with FR-11.
+- **FR-15 (P1)** — Handle **dynamic** program-transfer statements (variable targets) as unresolvable,
+  consistent with FR-11.
 - **FR-16 (P1)** — Resolve calls using the **steplib chain** ordering when a library map is present
   (current library → ordered steplibs → system), and correctly handle statements that explicitly
   target a specific library outside the normal chain.
@@ -254,9 +253,7 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
   without an explicit configuration file present beyond the sentinel.
 - **CR-3 (P0)** — Configurable: indexed object extensions, excluded directories, maximum indexable
   file size, and cache location.
-- **CR-4 (P1)** — Configurable: whether dynamic module calls are treated as unresolved external
-  dependencies versus errors, and heuristics governing dynamic-call handling.
-- **CR-5 (P1)** — Configurable: the library map (directory-to-library mapping and per-library steplib
+- **CR-4 (P1)** — Configurable: the library map (directory-to-library mapping and per-library steplib
   search order).
 - **CR-6 (P0)** — Invalid or partially invalid configuration must produce a clear, actionable message
   and fall back to defaults where possible rather than failing to start.
@@ -282,8 +279,8 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
 
 ### 8.2 Reliability & correctness
 
-- **NFR-6 (P0)** — No silent data loss: every statement-like line that is not extracted is either a
-  modeled outcome (an unresolved relationship) or a reported diagnostic.
+- **NFR-6 (P0)** — No silent gaps: parse errors are surfaced as diagnostics; unresolvable references
+  are retained with their call site rather than discarded.
 - **NFR-7 (P0)** — Resolution correctness is the top quality bar: a static call must resolve to the
   correct definition under the configured library/steplib semantics, and inline-before-external scope
   order must hold.
@@ -312,8 +309,6 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
 - **NFR-15 (P0)** — The extraction backend must be replaceable without changing editor-facing
   behavior — the `Analyzer` interface seam allows the hand-written parser to be replaced with a
   tree-sitter grammar or other backend as the ecosystem matures.
-- **NFR-16 (P1)** — Extracted structure (calls, data access, external dependencies) must be clean and
-  well-formed enough to be consumed by external tooling, not only the editor.
 
 ---
 
@@ -359,7 +354,7 @@ navigation questions, with limits made visible.
 Make resolution library-aware, add write/data-definition extraction and hover, persist the index,
 broaden editor support, and deliver the parser-enabled interactive features.
 
-- Library map and steplib-aware resolution; ambiguity diagnostics (FR-4, FR-5, FR-16, FR-31, CR-5).
+- Library map and steplib-aware resolution; ambiguity diagnostics (FR-4, FR-5, FR-16, FR-31, CR-4).
 - Navigation-statement resolution, static and dynamic (FR-14, FR-15).
 - Write relationships, data-definition/parameter interfaces (FR-20, FR-21).
 - Hover (FR-28).
@@ -369,7 +364,6 @@ broaden editor support, and deliver the parser-enabled interactive features.
 - External file-change watching (FR-34).
 - Persistent, content-hash-invalidated, version-gated cache (FR-37–40).
 - JetBrains client and documented config for other editors (FR-45, FR-46).
-- Dynamic-call configuration (CR-4).
 - Warm-startup, request-latency, non-blocking-indexing, cache-freshness, and regression-fixture
   NFRs (NFR-2, NFR-3, NFR-5, NFR-8, NFR-9); installation paths and observability
   (NFR-12, NFR-14, NFR-16).
@@ -401,8 +395,8 @@ broaden editor support, and deliver the parser-enabled interactive features.
 - **M-4** — Inline-before-external subroutine resolution holds for every fixture exercising the case.
 - **M-5** — Every construct ever reported as mishandled has a permanent regression fixture; the suite
   only grows.
-- **M-6** — No silent gaps: in test corpora, every non-extracted statement-like line is accounted for
-  as either a modeled unresolved relationship or a reported diagnostic.
+- **M-6** — No silent gaps: in test corpora, parse errors surface as diagnostics and unresolvable
+  references are retained rather than dropped.
 
 ### 11.3 Performance
 
