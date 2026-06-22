@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Early implementation — features 01 and 02 shipped; remaining features are stubs.**
+**Early implementation — features 01, 02, and 03 shipped; remaining features are stubs.**
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -15,11 +15,21 @@ generator for `--init`. Default indexed set: all 15 Natural extensions (10 core 
 
 `internal/model` and `internal/analysis/natural` have object-type recognition (feature 02):
 `model.ObjectType` (16 constants with stable string values), `model.Diagnostic`
-(analyzer-side signal for unrecognized files — feature-03 indexer will wire it to `SkipReason`/logs),
-and `model.FileAnalysis.ObjectType`/`Diagnostics` fields. The `analysis/natural` backend classifies
-every file by extension (case-insensitive, custom-mapping-aware) via `Analyze(path, content)`. Regression
-fixtures for all 15 types live under `testdata/objecttype/`. All other `internal/` packages (`server`,
-`document`, `workspace`) remain documented stubs.
+(analyzer-side signal for unrecognized files), and `model.FileAnalysis.ObjectType`/`Diagnostics` fields.
+The `analysis/natural` backend classifies every file by extension (case-insensitive, custom-mapping-aware)
+via `Analyze(path, content)`. Regression fixtures for all 15 types live under `testdata/objecttype/`.
+
+`internal/server/` implements the LSP lifecycle (feature 03): `Run(ctx, r, w, version, root, cfg, az,
+logger)` serves JSON-RPC 2.0 over `Content-Length`-framed stdio (`go.lsp.dev/jsonrpc2` v1.0.0). The
+server enforces the `initialize → initialized → shutdown → exit` lifecycle; the `initialize` response
+advertises `textDocumentSync: Full` and `positionEncoding` (UTF-8 preferred, UTF-16 default — ADR-008)
+with no feature providers yet. Graceful degradation (FR-43): oversized files are skipped with
+`SkipTooLarge`, excluded paths with `SkipExcluded`, unrecognized extensions processed as `ObjectUnknown`,
+and analyzer panics are recovered per-file without aborting the batch — every skip/recovery is logged to
+stderr. Per-request panic recovery returns a JSON-RPC `InternalError` and keeps the loop alive. SIGTERM
+is handled via a context-watcher goroutine that closes the stream to unblock the blocking bufio reader.
+A `FuzzProcessFile` target guards the file-processing entry point (ADR-013). `internal/document/` and
+`internal/workspace/` remain documented stubs.
 
 `natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
 z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on
@@ -46,7 +56,7 @@ just release vX.Y.Z                          # cross-build all platforms into di
 # Underlying go commands, for ad-hoc use:
 go build -o natural-lsp ./cmd/natural-lsp   # build the binary
 go test -run TestName ./internal/analysis/natural   # single test
-./natural-lsp --stdio < /dev/null           # smoke test: resolves workspace root, loads config, then exits (LSP serving not yet implemented)
+./natural-lsp --stdio < /dev/null           # smoke test: serves the LSP initialize handshake on empty input, then exits cleanly on EOF
 ./natural-lsp --init                        # write a fully-commented sample .natural-lsp.toml to stdout
 ./natural-lsp --version                     # print version and exit
 ```

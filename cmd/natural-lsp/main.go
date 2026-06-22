@@ -4,11 +4,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"natural-lsp/internal/analysis/natural"
 	"natural-lsp/internal/config"
+	"natural-lsp/internal/server"
 )
 
 // version is the build version, overridden at release time via -ldflags.
@@ -18,11 +24,16 @@ func main() {
 	os.Exit(run(os.Args[1:], slog.Default()))
 }
 
-// run is the testable entry point: it dispatches the command-line args against
-// logger and returns the process exit code. Splitting it out of main lets tests
-// inject a logger and observe the --stdio path's Bootstrap wiring without
-// touching os.Exit or the global slog default.
+// run is the testable entry point: it dispatches command-line args and returns
+// the process exit code. It uses os.Stdin/os.Stdout for the --stdio path;
+// use runWithIO for injectable stream testing.
 func run(args []string, logger *slog.Logger) int {
+	return runWithIO(args, os.Stdin, os.Stdout, logger)
+}
+
+// runWithIO is the injectable entry point used in unit tests. r/w replace
+// os.Stdin/os.Stdout so tests can drive the LSP message sequence directly.
+func runWithIO(args []string, r io.Reader, w io.Writer, logger *slog.Logger) int {
 	for _, arg := range args {
 		switch arg {
 		case "--version", "-version":
@@ -30,7 +41,7 @@ func run(args []string, logger *slog.Logger) int {
 			return 0
 		case "--init", "-init":
 			// Emit a fully-commented sample .natural-lsp.toml to stdout so a
-			// user can `natural-lsp --init > .natural-lsp.toml` (T8).
+			// user can `natural-lsp --init > .natural-lsp.toml`.
 			fmt.Print(config.Sample())
 			return 0
 		case "--stdio":
@@ -42,14 +53,20 @@ func run(args []string, logger *slog.Logger) int {
 				start = "."
 			}
 			root, cfg, _ := config.Bootstrap(start, "", logger)
-			_ = root
-			_ = cfg
-			// TODO: construct document store, workspace index, and analyzer
-			// from cfg/root, then run the stdio LSP server (internal/server).
-			fmt.Fprintln(os.Stderr, "natural-lsp: stdio LSP server not yet implemented")
+
+			az := natural.New(nil)
+
+			// Signal-aware shutdown context for production; tests use a plain
+			// background context (they control the lifecycle via messages).
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+
+			// nil error = clean shutdown → 0; non-nil = protocol violation → 1.
+			if err := server.Run(ctx, r, w, version, root, cfg, az, logger); err != nil {
+				return 1
+			}
 			return 0
 		}
 	}
-	// TODO: start the server; smoke test expects an initialize response shape.
 	return 0
 }

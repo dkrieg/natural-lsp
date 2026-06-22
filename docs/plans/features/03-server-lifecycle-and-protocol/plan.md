@@ -1,6 +1,6 @@
 # Feature: Server lifecycle & protocol
 
-**Status:** Planned
+**Status:** Planned — implementation was started but all uncommitted work was lost; needs a clean restart from this plan
 **PRD requirements:** FR-41, FR-42, FR-43; NFR-11
 **Priority / phase:** P0
 **Depends on:** none (foundation)

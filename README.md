@@ -13,9 +13,11 @@ It operates on **filesystem-based Natural sources** — the `.NSx` object files 
 objects stored only in the mainframe Natural/Adabas library system. Natural that lives solely on the mainframe must be
 exported to files before it can be indexed.
 
-> **Project status: early development / design stage.** This README describes the **target** design and feature set.
-> The server is not yet released — there are no published binaries, and the benchmarks and capabilities below are
-> goals, not all implemented today. Implemented behavior will be marked as the code lands.
+> **Project status: early development.** The LSP lifecycle (`initialize`/`shutdown`/`exit`) and
+> `Content-Length` framing are implemented; the server responds to `initialize` with `textDocumentSync: Full`
+> and exits cleanly on shutdown or EOF. Navigation, hover, completion, and other feature providers are not yet
+> wired — this README describes the **target** feature set. There are no published binaries. Implemented
+> behavior will be marked as it lands.
 
 ---
 
