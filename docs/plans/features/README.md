@@ -41,3 +41,7 @@ fixtures.
 | 13 | [Diagnostics](13-diagnostics/plan.md) | FR-30–31, FR-17 | P0/P1 |
 | **Clients** ||||
 | 14 | [Editor clients](14-editor-clients/plan.md) | FR-44–46 | P0/P1 |
+| **Interactive typing features** ||||
+| 15 | [Completion](15-completion/plan.md) | FR-47 | P1 |
+| 16 | [Signature help](16-signature-help/plan.md) | FR-48 | P1 |
+| 17 | [Call hierarchy](17-call-hierarchy/plan.md) | FR-49 | P1 |
