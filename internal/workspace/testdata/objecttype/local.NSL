@@ -1,0 +1,4 @@
+* A minimal Local Data Area for fixture testing
+DEFINE DATA LOCAL
+01 #X (A10)
+END-DEFINE

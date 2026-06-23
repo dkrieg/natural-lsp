@@ -1,0 +1,5 @@
+* A minimal Natural subprogram for fixture testing that INCLUDEs copycode2.
+INCLUDE copycode2
+DEFINE DATA PARAMETER
+END-DEFINE
+END SUBPROGRAM

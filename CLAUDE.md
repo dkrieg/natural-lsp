@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Early implementation — features 01, 02, 03, and 04 shipped; remaining features are stubs.**
+**Feature 05 shipped** — workspace indexing and persistent cache are implemented. Features 06–08 (extraction, completion, signature help, call hierarchy) remain as stubs.
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -40,7 +40,7 @@ open documents keyed by LSP URI; it re-analyzes content on `Open`/`Update` via a
 injection (avoiding circular import with `internal/server`) and removes entries on `Close`, with panic
 recovery on every analysis call (FR-43). `Watcher` uses `fsnotify` v1.10.1 for recursive workspace
 watching — `filepath.WalkDir` + per-directory `Add`, extension filtering, and a 100 ms trailing-edge
-debounce — with per-call panic recovery. `internal/workspace/` remains a documented stub.
+debounce — with per-call panic recovery. `internal/workspace/` implements cross-file indexing (index.go) and persistent cache with content-hash invalidation (cache.go).
 
 `natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
 z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on

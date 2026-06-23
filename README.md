@@ -17,9 +17,10 @@ exported to files before it can be indexed.
 > `Content-Length` framing are implemented (features 01–03). `textDocument/didOpen`,
 > `textDocument/didChange`, `textDocument/didClose`, and `workspace/didChangeWatchedFiles` are wired to
 > an in-memory document store; an `fsnotify`-based workspace watcher re-analyzes files on disk change
-> (feature 04). Navigation, hover, completion, and other feature providers are not yet wired — this README
-> describes the **target** feature set. There are no published binaries. Implemented behavior will be
-> marked as it lands.
+> (feature 04). **Workspace indexing and persistent cache are now implemented** (feature 05) with
+> content-hash invalidation for git-safe cache. Navigation, hover, completion, and other feature
+> providers are not yet wired — this README describes the **target** feature set. There are no published
+> binaries. Implemented behavior will be marked as it lands.
 
 ---
 
@@ -43,14 +44,14 @@ The capabilities below define the **target** feature set for the first stable re
 
 - Full symbol tree: `DEFINE DATA` sections, subroutines, maps, external calls
 
-**Workspace indexing** *(detection and re-analysis shipped; cross-file resolution planned)*
+**Workspace indexing** *(full implementation shipped)*
 
 - Open-document tracking via in-memory store (`textDocument/didOpen|didChange|didClose`) — **shipped**
 - On-disk file change detection via `fsnotify` + `workspace/didChangeWatchedFiles` — **shipped**
 - Cross-file resolution of static `CALLNAT 'LITERAL'` calls — *planned*
-- `INCLUDE` / copycode dependency tracking — *planned*
+- `INCLUDE` / copycode dependency tracking — **shipped**
 - Dynamic `CALLNAT #VARIABLE` calls flagged as unresolved with caller context preserved — *planned*
-- Persistent cache across sessions (sub-second startup after first index) — *planned*
+- Persistent cache across sessions (sub-second startup after first index) — **shipped**
 
 **LSP protocol compliance**
 

@@ -101,6 +101,48 @@ const (
 	ObjectUnknown ObjectType = "unknown"
 )
 
+// SymbolKind classifies the kind of symbol in the workspace index.
+type SymbolKind string
+
+const (
+	// SymbolProgram represents a program symbol.
+	SymbolProgram SymbolKind = "program"
+)
+
+// Range represents a span in a file, identified by start and end positions.
+type Range struct {
+	Start Position
+	End   Position
+}
+
+// Position represents a location in a file, using line/column (1-based).
+type Position struct {
+	Line   int
+	Column int
+}
+
+// SymbolEntry represents a symbol in the workspace index.
+type SymbolEntry struct {
+	Name  string
+	Kind  SymbolKind
+	Range Range
+}
+
+// EdgeEntry represents a relationship between two symbols or locations.
+type EdgeEntry struct {
+	Source     Range
+	Target     Range
+	Kind       EdgeKind
+	TargetName string
+}
+
+// DataAccessEntry represents a data access relationship (read/write) to a file.
+type DataAccessEntry struct {
+	File   string
+	Kind   EdgeKind
+	Source Range
+}
+
 // DiagnosticSeverity classifies the severity of an extraction diagnostic.
 //
 // String values are stable and machine-readable. Never change an existing
@@ -136,5 +178,18 @@ type FileAnalysis struct {
 	// unindexable; callers should inspect each entry's Severity.
 	Diagnostics []Diagnostic
 
-	// TODO: symbols, references/edges, data access, program structure.
+	// Symbols holds the symbols defined in this file (e.g., programs,
+	// subroutines, data items). Populated by the workspace indexer for
+	// navigation, completion, and reference finding.
+	Symbols []SymbolEntry
+
+	// Edges holds the relationships extracted from this file (calls,
+	// includes, data access). Populated by the workspace indexer for
+	// call hierarchy, dependency resolution, and incremental invalidation.
+	Edges []EdgeEntry
+
+	// DataAccess holds data access relationships (READ/FIND/GET,
+	// STORE/UPDATE/DELETE) and DEFINE DATA symbols. Populated by the
+	// workspace indexer for data flow analysis and dependency tracking.
+	DataAccess []DataAccessEntry
 }
