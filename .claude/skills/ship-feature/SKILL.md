@@ -1,5 +1,7 @@
 ---
-description: Ship a feature end-to-end — branch, plan (you approve), implement via TDD, review and remediate until PASS, then open a PR for you to merge
+description: >-
+   Ship a feature end-to-end — branch, plan (you approve), implement via TDD, review and remediate until PASS, then 
+   open a PR for you to merge
 argument-hint: "<feature> (a docs/plans/features/<feature>/ directory)"
 ---
 
