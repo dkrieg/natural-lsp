@@ -1,0 +1,5 @@
+* A minimal Natural program for fixture testing that INCLUDEs copycode and subprogram.
+INCLUDE copycode
+INCLUDE subprogram
+WRITE 'HELLO'
+END

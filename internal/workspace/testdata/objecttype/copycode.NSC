@@ -1,0 +1,3 @@
+* A minimal Natural copycode fragment for fixture testing.
+* Copycodes are textual fragments INCLUDEd at compile time.
+MOVE 0 TO #COUNTER

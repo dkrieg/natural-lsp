@@ -1,0 +1,2 @@
+* A second copycode for transitive invalidation testing.
+MOVE 1 TO #COUNTER2

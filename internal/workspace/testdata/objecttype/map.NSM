@@ -1,0 +1,6 @@
+* A minimal Natural map object for fixture testing.
+* Maps define screen layouts used by INPUT MAP and WRITE MAP statements.
+* The structural content is managed by NaturalONE tooling; this stub
+* represents the text-format header that precedes the binary layout section.
+%MAP MYMAP
+%END

@@ -1,0 +1,4 @@
+* A minimal Global Data Area for fixture testing
+DEFINE DATA GLOBAL
+01 #G (I4)
+END-DEFINE
