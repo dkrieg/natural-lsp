@@ -3,7 +3,7 @@
 **Status:** Planned
 **PRD requirements:** FR-23
 **Priority / phase:** P0
-**Depends on:** [02](../02-object-type-recognition/plan.md)
+**Depends on:** [00-parser-foundation](../00-parser-foundation/plan.md)
 
 ## Summary
 

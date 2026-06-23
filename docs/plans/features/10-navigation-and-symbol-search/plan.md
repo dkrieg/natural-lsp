@@ -4,7 +4,7 @@
 **PRD requirements:** FR-24, FR-25, FR-26
 **Priority / phase:** P0
 **Depends on:** [05](../05-workspace-indexing-and-cache/plan.md),
-[06](../06-call-and-dependency-resolution/plan.md), [08](../08-program-structure-extraction/plan.md)
+[07](../07-call-dependency-resolution/plan.md), [09](../09-program-structure-extraction/plan.md)
 
 ## Summary
 

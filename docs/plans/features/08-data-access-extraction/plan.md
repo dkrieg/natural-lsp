@@ -4,7 +4,7 @@
 **PRD requirements:** FR-19, FR-20, FR-21, FR-22
 **Priority / phase:** P0 (read relationships) · P1 (write relationships, data definitions) ·
 P2 (work files)
-**Depends on:** [02](../02-object-type-recognition/plan.md), [05](../05-workspace-indexing-and-cache/plan.md)
+**Depends on:** [00-parser-foundation](../00-parser-foundation/plan.md)
 
 ## Summary
 

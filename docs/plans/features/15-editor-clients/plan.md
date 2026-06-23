@@ -53,7 +53,7 @@ quickly.
 - [ ] A freshly installed binary reports its version and passes the stdio smoke check.
 
 ## Out of scope
-- Server features themselves (plans 03, 05–13).
+- Server features themselves (plans 03, 05–14).
 - IDE-specific syntax highlighting/grammars beyond what's needed for file-type association (TBD).
 
 ## Open questions

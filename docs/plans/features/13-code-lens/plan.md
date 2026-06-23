@@ -3,8 +3,8 @@
 **Status:** Planned
 **PRD requirements:** FR-29
 **Priority / phase:** P2
-**Depends on:** [06](../06-call-and-dependency-resolution/plan.md),
-[07](../07-data-access-extraction/plan.md)
+**Depends on:** [07](../07-call-dependency-resolution/plan.md),
+[08](../08-data-access-extraction/plan.md)
 
 ## Summary
 
