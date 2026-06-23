@@ -10,7 +10,7 @@
 Establishes how the server finds a Natural codebase and how its behavior is configured. The workspace
 root is located by a sentinel file, which also carries all configuration. Every setting has a
 documented default so the server is usable with little or no explicit configuration. The library map
-defined here is *consumed* by [call & dependency resolution](../06-call-and-dependency-resolution/plan.md).
+defined here is *consumed* by [call & dependency resolution](../07-call-dependency-resolution/plan.md).
 
 ## User stories
 

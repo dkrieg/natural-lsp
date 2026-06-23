@@ -1,17 +1,18 @@
-# Feature: Call & dependency resolution
+# Feature: Call & Dependency Resolution
 
-**Status:** Planned
+**Status:** Planned  
 **PRD requirements:** FR-10, FR-11, FR-12, FR-13, FR-14, FR-15, FR-16, FR-17, FR-18; FR-5; NFR-6,
-NFR-7; metrics M-3, M-4, M-6
+NFR-7; M-3, M-4, M-6  
 **Priority / phase:** P0 (static calls, dynamic modeling, subroutine scope, INCLUDE) · P1 (steplib
-resolution, navigation statements) · P2 (runtime name substitution)
-**Depends on:** [01](../01-workspace-and-configuration/plan.md), [02](../02-object-type-recognition/plan.md),
-[05](../05-workspace-indexing-and-cache/plan.md)
+resolution, navigation statements) · P2 (runtime name substitution)  
+**Depends on:** [06-call-dependency-extraction](../06-call-dependency-extraction/plan.md), [05-workspace-indexing-and-cache](../05-workspace-indexing-and-cache/plan.md)
 
 ## Summary
 
-The core value of the product: turning Natural call/dependency statements into correct, navigable
-relationships. Wrong relationships here are worse than missing ones, so correctness is the top bar.
+Resolve call and dependency relationships using the extracted references from feature 06 and the
+workspace index from feature 05. This feature binds extracted references to their definitions using
+the library/steplib semantics.
+
 Two ideas run through every story:
 
 - **Extraction vs. resolution.** Per-file extraction produces references with caller context;
@@ -120,7 +121,7 @@ edges to non-existent objects.
 - [ ] A fixture with a placeholder-bearing literal does not produce a false static relationship.
 
 ## Out of scope
-- Data-access relationships (READ/STORE/etc.) — see plan 07.
+- Data-access relationships (READ/STORE/etc.) — see plan 08.
 - The on-disk index/cache mechanics that store these relationships — see plan 05.
 - Resolving the *physical* metadata behind external files (Adabas/IMS) — out of scope per PRD.
 
