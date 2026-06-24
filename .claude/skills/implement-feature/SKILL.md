@@ -9,6 +9,8 @@ yourself, and do not run reviews here.
 
 Target: $ARGUMENTS
 
+## Workflow
+
 1. **Ensure the feature branch.** Per `CLAUDE.md`'s branching policy, feature code must not land on
    `main`: if on `main`, create/switch to `feat/<feature>` before implementing (it may already exist
    from `/plan-feature`).
@@ -17,9 +19,9 @@ Target: $ARGUMENTS
    `/plan-feature` first. If a task ID was given above, scope to that task; otherwise implement all
    tasks in plan order.
 4. **Run the loop per task** (one task at a time, never starting the next on a red suite):
-   spawn `tdd-red` → verify the test fails for the right reason (`go test -run <TestName>`) → spawn
-   `tdd-green` → verify `go test ./...` is green (and `-race` if concurrent) → spawn `tdd-refactor` →
-   verify the gates (`gofmt`, `go vet ./...`, `go test -race ./...`, the task's DoD).
+   spawn the `tdd-red` agent → verify the test fails for the right reason (`go test -run <TestName>`) → spawn
+   `tdd-green` agent → verify `go test ./...` is green (and `-race` if concurrent) → spawn `tdd-refactor` agent →
+   verify the gates (`gofmt`, `go vet ./...`, `go test -race ./...`, the task's DoD). mark each task as complete.
 5. **Stop and ask the user** on an ambiguous acceptance criterion, a design decision not in the plan, a
    phase that can't complete after a reasonable retry, or a plan that looks wrong (route back to
    `/plan-feature`). Never modify a test to make it pass.

@@ -8,6 +8,8 @@ top-level loop) do the dispatching — the reviewers are subagents and must not 
 
 Target: $ARGUMENTS
 
+## Workflow
+
 1. **Load** the `review-orchestration` skill.
 2. **Scope** the change: `git diff --stat <base>...` (base defaults to `origin/main`), or the explicit
    files/feature given. If it maps to a feature, read `docs/plans/features/<feature>/tasks.md` and the

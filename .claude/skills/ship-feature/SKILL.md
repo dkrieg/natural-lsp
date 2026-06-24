@@ -1,7 +1,7 @@
 ---
 description: >-
-   Ship a feature end-to-end — branch, plan (you approve), implement via TDD, review and remediate until PASS, then 
-   open a PR for you to merge
+  Ship a feature end-to-end — branch, plan (you approve), implement via TDD, review and remediate until PASS, then 
+  open a PR for you to merge
 argument-hint: "<feature> (a docs/plans/features/<feature>/ directory)"
 ---
 
@@ -14,6 +14,8 @@ Feature: $ARGUMENTS
 
 If no feature is given above, ask which `docs/plans/features/<feature>/` to ship before proceeding.
 
+## Workflow
+
 Run these phases in order:
 
 1. **Branch.** Per `CLAUDE.md`'s branching policy, ensure you are on `feat/<feature>` (create it from
@@ -21,8 +23,8 @@ Run these phases in order:
 2. **Plan** (as `/plan-feature`). Validate `docs/plans/features/<feature>/plan.md` exists — if not, list
    the available feature directories and stop. Spawn `feature-planner` (it applies the
    `feature-planning` skill) to produce `docs/plans/features/<feature>/tasks.md`.
-   - **🧍 Checkpoint — stop and present the plan** (task list, current-state findings, open questions)
-     and wait for the user to approve or amend. **Do not write any code before approval.**
+    - **🧍 Checkpoint — stop and present the plan** (task list, current-state findings, open questions)
+      and wait for the user to approve or amend. **Do not write any code before approval.**
 3. **Implement** (as `/implement-feature`). With the `tdd-implementation` skill, drive every task
    through `tdd-red` → `tdd-green` → `tdd-refactor`, enforcing the gates between phases (fails for the
    right reason → suite green → `gofmt`/`vet`/`-race`/DoD). One task at a time; never start the next on
