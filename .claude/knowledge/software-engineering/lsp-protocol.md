@@ -36,6 +36,13 @@ actually supports.
   multibyte text in literals/comments). Mishandling still produces off-by-column ranges there. See
   ADR-008 in `architecture-decisions.md` for the decision (negotiate UTF-8 when offered, else UTF-16).
 
+**Source:** LSP 3.17 specification, Section 5.3 (Initialize Params) and Section 6.1.1 (PositionEncodingKind):
+- "Prior to 3.17 the offsets were always based on a UTF-16 string representation."
+- "If the server omits the position encoding in its initialize result the encoding defaults to the string value `utf-16`."
+- "The client announces it's supported encoding via the client capability `general.positionEncodings`."
+- "If the value 'utf-16' is missing from the client's capability `general.positionEncodings` servers can safely assume that the client supports UTF-16."
+- Verified 2026-06-23 against https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
+
 ## Ranges (verified)
 
 - A `Range` is `{start, end}`, **zero-based** line/character, **half-open** (end position is
@@ -84,9 +91,12 @@ plan 03):
     both**, but if it advertises `diagnosticProvider` it should not also push for the same documents
     (the client manages refresh via `workspace/diagnostic/refresh`). For `natural-lsp`'s
     re-extract-whole-file model and small objects, push is the simpler, sufficient choice (ADR-014).
-    *(DiagnosticOptions field set and the pull-request method names are confirmed from the 3.17 spec
-    structure; the page is too large to re-fetch the section verbatim in one request — re-pull the
-    `#textDocument_diagnostic` anchor in a future sweep if exact wording is needed.)*
+**Source:** LSP 3.17 specification, Section 18 (Diagnostics):
+- `DiagnosticOptions`: `{ interFileDependencies?: boolean, workspaceDiagnostics?: boolean, triggerKind?: number }`
+- `textDocument/diagnostic`: Pulls diagnostics for a specific document
+- `workspace/diagnostic`: Pulls diagnostics for documents in the workspace (when `workspaceDiagnostics: true`)
+- "The either/or rule": A server should not advertise both push and pull for the same documents
+- Verified 2026-06-23 against https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_diagnostic
 - **Work-done progress**: the client advertises support via the `window.workDoneProgress: boolean`
   client capability. The server creates a progress token with the `window/workDoneProgress/create`
   request and reports begin/report/end via the generic `$/progress` notification
@@ -152,3 +162,5 @@ plan 03):
   added in 3.17 — table-of-contents and capability presence confirmed; full section text could not be
   re-fetched verbatim (page exceeds single-fetch size). 3.17 spec, Language Features → Pull
   Diagnostics.
+
+**CodeLens resolve decision (2026-06-23):** For natural-lsp v1, use **eager resolution** (`resolveProvider: false` or omitted). Lenses are simple counts/summaries from the index (call counts, write summaries), computation is cheap, and lazy resolution adds complexity without benefit for this scope. Revisit if lenses grow to expensive computations.

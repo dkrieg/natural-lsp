@@ -21,11 +21,19 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 
 ## Open questions (to verify on next relevant task)
 
-- `codeLens/resolve` — will codeLenses be resolved lazily (`CodeLensOptions.resolveProvider: true`) or
-  computed eagerly? Decide when the code-lens feature plan is implemented.
+- ~~`codeLens/resolve` — will codeLenses be resolved lazily (`CodeLensOptions.resolveProvider: true`) or
+  computed eagerly?~~ **Resolved (2026-06-23):** eager resolution (`resolveProvider: false`) for v1 —
+  lenses are simple counts/summaries from the index, computation is cheap, and lazy resolution adds
+  complexity without benefit for this scope. See `lsp-protocol.md` for details.
 
 ## Changelog
 
+- 2026-06-23 — Full LSP 3.17 verification sweep. **lsp-protocol.md**: verified all claims against the
+  live spec at https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/;
+  added explicit source citations for position encoding (Section 5.3, Section 6.1.1) and diagnostics
+  (Section 18); resolved the codeLens/resolve open question (eager resolution for v1). **INDEX.md**:
+  marked codeLens/resolve as resolved. All other topics (`architecture-decisions.md`, `testing-strategy.md`,
+  `engineering-principles.md`) remain `verified` — no changes needed.
 - 2026-06-21 (addendum) — ADR-010 user sign-off received: Option A (`go.lsp.dev/protocol` +
   `go.lsp.dev/jsonrpc2`) accepted with full awareness of the transitive json/v2 dependency. Pending
   decision removed; ADR-010 re-evaluation block updated to record sign-off. HIGH open question cleared.
