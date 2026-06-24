@@ -3,8 +3,9 @@
 Why the same construct can have different syntax. Always tag a recorded fact with the dialect/mode/
 version it applies to.
 
-**Status: verified (2026-06-20)** — structured vs reporting differences confirmed against the official
-"Natural Programming Modes" page. Column/continuation rules partially verified (see open item).
+**Status: verified (2026-06-23)** — structured vs reporting differences confirmed against the official
+"Natural Programming Modes" page. Column rules confirmed as free-format (NaturalONE is Eclipse-based);
+reporting-mode grammar (DO/DOEND, loop-collapsing END/LOOP) confirmed.
 
 ## Axes that change syntax/behavior
 
@@ -16,16 +17,26 @@ version it applies to.
 - **Version:** features vary across versions (6.x → 8.x → 9.x). Extension/object-type mapping is stable
   across recent versions.
 
-## Structured mode vs reporting mode — verified
+## Structured mode vs reporting mode — verified (2026-06-23)
 
 These differences directly affect line-oriented parsing:
 
 | Aspect | Structured mode | Reporting mode |
 |--------|-----------------|----------------|
-| Block closing | EVERY loop/logical construct closed by an explicit `END-...`: `END-IF`, `END-READ`, `END-FIND`, `END-FOR`, `END-REPEAT`, `END-SORT`, `END-WHILE`, `END-SUBROUTINE`, `END-DEFINE`, etc. | Uses `DO ... DOEND` blocks and `(CLOSE) LOOP`; a single `END` / `LOOP` can close MULTIPLE active loops. `END-IF`/`END-READ`/`END-REPEAT` cause ERRORS. |
+| Block closing | EVERY loop/logical construct closed by an explicit `END-...`: `END-IF`, `END-READ`, `END-FIND`, `END-FOR`, `END-REPEAT`, `END-SORT`, `END-WHILE`, `END-SUBROUTINE`, `END-DEFINE`, etc. | Uses `DO ... DOEND` blocks and `(CLOSE) LOOP`; a single `END` / `LOOP` can close MULTIPLE active loops. `END-IF`/`END-READ`/`END-REPEAT` cause **ERRORS**. |
 | Data definition | All data must be defined centrally (`DEFINE DATA` at top, or external data area). | Database fields usable without defining them; user variables may be declared ANYWHERE in the program. |
 | DDM/field reference | Must appear in `DEFINE DATA`. | May reference DDMs/fields directly without prior definition. |
 | Intended use | Complex, well-structured applications. | Ad-hoc reports / small programs. |
+
+**Reporting-mode grammar details:**
+- `DO ... DOEND` for multi-statement blocks
+- Single `END` or `LOOP` can close multiple nested loops (loop-collapsing)
+- `LOOP (r)` syntax closes loops up to a labeled statement
+- `END-IF`, `END-READ`, `END-REPEAT` cause errors in reporting mode
+
+**Sources:**
+- Natural Programming Modes: https://documentation.softwareag.com/natural/nat841unx/pg/pg_mode.htm
+- LOOP statement (reporting mode only): https://documentation.softwareag.com/natural/nat921unx/webhelp/natux-webhelp/sm/loop.htm
 
 Analyzer implications:
 - In structured mode, block nesting is explicit and reliably matchable via `END-...` tokens — good for
@@ -76,15 +87,18 @@ presence:
   format spec like `(A10/1:5)`. The lexer must not treat the `/` in array bounds as a comment start.
   Source (natls Lexer `isSingleAsteriskComment` / `isInlineComment`): same URL as above.
 
-## Column / continuation rules — partially verified
+## Column / continuation rules — verified (2026-06-23)
 
 - Natural source is line-oriented; statements CAN span multiple lines (operands continue on following
   lines — the parser must support multi-line statements. The `INCLUDE` statement is an exception: it
   must be the only statement on its line.
-- Exact fixed-format column sensitivity (e.g. label/structured-indentation rules in the mainframe
-  editor) was NOT fully confirmed in this pass. **Status: unverified** for precise column rules — do
-  not assume fixed columns for the NaturalONE/free-format source; confirm before encoding column
-  positions into the parser.
+- **NaturalONE uses free-format syntax** (Eclipse-based editor). No fixed-format column rules.
+  Indentation corresponds to the `STRUCT` command. Multi-line continuation is supported but not
+  column-dependent.
+- **Mainframe Natural** (z/OS, BS2000) may use fixed-format columns; this analyzer targets NaturalONE/SPoD.
+
+**Sources:**
+- NaturalONE Source Editor: https://documentation.softwareag.com/naturalONE/natONE914/core/using/use-edis-source.htm
 
 ## Sources
 

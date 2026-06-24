@@ -1,12 +1,12 @@
 # Configuration & TOML parsing
 
-**Status:** verified (2026-06-21) — go-toml/v2 version/API and the `go mod tidy` retention
-pattern confirmed against pkg.go.dev and observed `go mod tidy` behavior in this repo.
+**Status:** verified (2026-06-23) — go-toml/v2 version updated from v2.4.0 to v2.4.1 (released
+2026-06-22); API confirmed against pkg.go.dev and observed `go mod tidy` behavior in this repo.
 
 ## Facts (verified)
 
-- **TOML decoder: `github.com/pelletier/go-toml/v2`**, adopted at **v2.4.0** (published
-  **2026-06-16**). It is the project's first third-party dependency (ADR-013 in
+- **TOML decoder: `github.com/pelletier/go-toml/v2`**, adopted at **v2.4.1** (published
+  **2026-06-22**). It is the project's first third-party dependency (ADR-013 in
   `docs/architecture-decisions.md`). The import is **confined to `internal/config`** — never
   `internal/model` or `internal/analysis` (the Analyzer seam).
   - Package name is `toml` (path ends in `/v2`); idiomatic alias `toml "github.com/pelletier/go-toml/v2"`.
@@ -42,7 +42,7 @@ pattern confirmed against pkg.go.dev and observed `go mod tidy` behavior in this
 
 ## Sources
 
-- pkg.go.dev/github.com/pelletier/go-toml/v2 (verified 2026-06-21: v2.4.0, 2026-06-16;
+- pkg.go.dev/github.com/pelletier/go-toml/v2 (verified 2026-06-23: v2.4.1, 2026-06-22;
   `DisallowUnknownFields` / `StrictMissingError`; last-two-Go-majors support).
 - go-toml v2 README & discussions: github.com/pelletier/go-toml (strict mode; BurntSushi
   migration trend).

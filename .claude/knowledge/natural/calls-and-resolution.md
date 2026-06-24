@@ -9,16 +9,16 @@ and reporting mode unless noted.
 
 | Construct | Meaning | Analyzer edge | Resolution |
 |-----------|---------|---------------|------------|
-| `CALLNAT 'NAME'` | call subprogram by literal name | `CALLS` | static → definition (`.NSN`) via steplib chain |
-| `CALLNAT name-var` | call subprogram by variable | unresolvable | call site retained; target cannot be determined statically |
+| `CALLNAT 'NAME'` | call subprogram by literal name | `CALLS` | static → definition (`.NSN`) via steplib chain; constant 1–32 chars (9.3.1+) |
+| `CALLNAT name-var` | call subprogram by variable | unresolvable | call site retained; target cannot be determined statically; variable 1–8 chars |
 | `PERFORM name` | invoke subroutine | `PERFORMS` | inline first, then external (`.NSS`) — see below |
-| `FETCH 'NAME'` / `FETCH RETURN 'NAME'` | transfer to / call program | `NAVIGATES_TO` | static → program (`.NSP`) |
-| `FETCH name-var` | transfer to program by variable | unresolvable | call site retained; dynamic target |
+| `FETCH 'NAME'` / `FETCH RETURN 'NAME'` | transfer to / call program | `NAVIGATES_TO` | static → program (`.NSP`); name max 8 chars |
+| `FETCH name-var` | transfer to program by variable | unresolvable | call site retained; dynamic target; variable 1–8 chars |
 | `RUN 'NAME'` | compile+execute source program | `NAVIGATES_TO` | primarily a SYSTEM COMMAND — see caveat |
 | `INCLUDE NAME` | inline copycode at compile time | `INCLUDES` | literal name only → copycode (`.NSC`) |
 | `name(<...>)` | user-defined function call | `CALLS` (to `.NS7`) | function objects; lower priority |
 
-## CALLNAT (subprogram call) — verified
+## CALLNAT (subprogram call) — verified (2026-06-23)
 
 Canonical syntax:
 ```
@@ -35,6 +35,9 @@ CALLNAT operand1 [operand2 ... ] [USING] ...
   parser should treat a literal containing `&` as a dynamic/parametric target (retain as unresolvable,
   NOT as a clean `CALLS` to the literal text). See FR-18.
 
+**Note on FETCH:** FETCH program name (constant or variable) is limited to **1–8 characters** only,
+not 1–32. Both CALLNAT and FETCH support `&` substitution with `*LANGUAGE`.
+
 ## PERFORM (subroutine) — verified
 
 Canonical syntax:
@@ -50,7 +53,7 @@ PERFORM subroutine-name [operand1 ...]
   take parameters passed directly on the PERFORM (matching the subroutine's `DEFINE DATA PARAMETER`/PDA).
 - A variable subroutine-name → unresolvable; retain call site (no inline target to bind).
 
-## FETCH / RUN (program transfer) — verified
+## FETCH / RUN (program transfer) — verified (2026-06-23)
 
 `FETCH` syntax:
 ```
@@ -59,6 +62,11 @@ FETCH [REPEAT|RETURN] operand1 [operand2 [(parameter)] ...]
 - `operand1` (program name) is an **alphanumeric constant OR an alphanumeric variable (1–8)**.
   Variable form → unresolvable; retain call site. Name case is NOT translated. May contain `&`
   (`*LANGUAGE`) — same gotcha as CALLNAT (treat as unresolvable).
+- **Important:** Unlike CALLNAT constants (1–32), FETCH names are limited to **1–8 characters** for both
+  constants and variables.
+
+**Sources:**
+- FETCH (9.1.1): https://documentation.softwareag.com/natural/nat911unx/sm/fetch.htm
 - `FETCH 'NAME'` (no RETURN): terminates the invoking object and starts NAME as a new main program
   (level 1). The caller is NOT re-activated → model as `NAVIGATES_TO` (transfer of control).
 - `FETCH RETURN 'NAME'`: suspends caller, runs NAME as a subordinate; control returns at NAME's `END`
@@ -97,7 +105,7 @@ INCLUDE copycode-name [operand1 ... up to 99]
     the includer's context. Parameter substitution (`&n&`) means the included text can differ per call
     site — symbol extraction from the raw copycode may be incomplete.
 
-## Steplib resolution (critical) — verified
+## Steplib resolution (critical) — verified (2026-06-23)
 
 Natural resolves a module name by walking a **steplib chain**, not a file path. Documented search
 order for object execution:
@@ -112,6 +120,32 @@ Additional (user) steplibs are searched BEFORE the standard `SYSTEM` libraries. 
 can exist in multiple libraries; the search ORDER is what disambiguates. The analyzer models this via
 `[resolution]` config; with no library map it falls back to a flat namespace and emits a diagnostic on
 ambiguity. `RUN ... library-id` overrides this by naming a specific library.
+
+**Steplib-of-steplib recursion:** Natural **does search transitively** through chained steplibs. When a
+program in steplib A calls another program, the entire steplib chain is searched again for the called
+program. Up to 8 steplibs are supported in addition to the current library. This is confirmed in the
+Performance Considerations documentation which describes the recursive search behavior.
+
+**Sources:**
+- Steplib Support: https://documentation.softwareag.com/natural/prd841/reference/natxref_steplib_5.htm
+- STEPLIB system variable: https://documentation.softwareag.com/natural/nat913unx/parms/steplib.htm
+
+## Sources (calls-and-resolution)
+
+- CALLNAT (9.3.3): https://documentation.softwareag.com/natux/9.3.3/en/webhelp/natux-webhelp/sm/callnat.htm
+- PERFORM (9.1.4): https://documentation.softwareag.com/natural/nat914unx/sm/perform.htm
+- FETCH (9.1.1): https://documentation.softwareag.com/natural/nat911unx/sm/fetch.htm
+- RUN (system command): https://documentation.softwareag.com/natural/nat912unx/syscom/run.htm
+- INCLUDE (9.1.1): https://documentation.softwareag.com/natural/nat911unx/sm/include.htm
+- STEPLIB / object search order: https://documentation.softwareag.com/natural/nat912unx/parms/steplib.htm
+- Programs and Subordinate Routines (FETCH vs FETCH RETURN levels):
+  https://documentation.softwareag.com/natural/nat913unx/pg/pg_obj_pgm_routine.htm
+- Steplib Support (transitive resolution):
+  https://documentation.softwareag.com/natural/prd841/reference/natxref_steplib_5.htm
+- natls steplib resolution (`NaturalLibrary`):
+  https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/natural/project/NaturalLibrary.java
+- natls project/steplib wiring (`BuildFileProjectReader`):
+  https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/parsing/project/BuildFileProjectReader.java
 
 ## Cross-check against natls implementation — verified (2026-06-21)
 

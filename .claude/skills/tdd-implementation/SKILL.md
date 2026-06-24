@@ -25,7 +25,7 @@ All work happens on the feature's `feat/<feature>` branch (per `CLAUDE.md`'s bra
 - Each task's Definition-of-Done checklist, and the plan's "Reviews required" section (handed to
   `/review-feature` at the end).
 
-## The loop — for each task, in plan order
+## Workflow
 
 Work strictly **one task at a time**, and within a task **one behavior at a time**. Do not start a task
 until the previous task's DoD is met and the suite is green.
