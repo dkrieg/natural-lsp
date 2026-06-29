@@ -77,15 +77,54 @@ presence:
   natls-prior-art.md. Source:
   https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/lexing/Lexer.java
 
-## Comment markers — verified (cross-checked against natls lexer)
+## Comment markers — verified (2026-06-29, official Software AG doc + natls lexer)
 
-- **Full-line comment:** `*` as the first non-blank character of a line, when the next character is a
-  space, tab, `/`, `*`, or end-of-line. (The "next char" guard prevents eating an operand/label that
-  legitimately starts with `*`.)
-- **Inline comment:** `/*` anywhere on a line → comment to end of line.
-- Gotcha: `/` is ambiguous between an inline comment (`/*`) and an array-bound separator inside a
-  format spec like `(A10/1:5)`. The lexer must not treat the `/` in array bounds as a comment start.
-  Source (natls Lexer `isSingleAsteriskComment` / `isInlineComment`): same URL as above.
+Authoritatively confirmed against the **Natural Programming Guide → "User Comments"** page. There are
+exactly two comment forms and BOTH are REST-OF-LINE; Natural has **NO C-style delimited `/* ... */`
+block comment**. There is no closing `*/` delimiter and comments NEVER span physical lines.
+
+**Verbatim from the doc:**
+- Full-line comment: *"If you wish to use an entire source-code line for a user comment, you enter one
+  of the following at the beginning of the line: an asterisk and a blank (`* `), two asterisks (`**`),
+  or a slash and an asterisk (`/*`)."*
+- Inline (latter-part-of-line) comment: *"If you wish to use only the latter part of a source-code line
+  for a user comment, you enter a blank, a slash and an asterisk (`/*`); the remainder of the line
+  after this notation is thus marked as a comment."*
+
+### (1) `/*` is REST-OF-LINE, NOT a delimited block — DECISION-CRITICAL
+- `/*` (anywhere on the line, but in practice preceded by a blank when trailing code) marks **the
+  remainder of the physical line** as a comment. There is **no `*/` closer**. A `*/` appearing later on
+  the line is just more comment text — code does NOT resume after it.
+- Therefore a line like `MOVE 1 TO #VAR /* comment with /* inside */ ends here` is: code `MOVE 1 TO
+  #VAR`, then a comment running `/* comment with /* inside */ ends here` to EOL. The trailing
+  `*/ ends here` is **comment**, NOT code. A naive C-style `/* ... */` lexer would get this wrong.
+- The inner `/*` does not nest and the `*/` does not close — there is nothing to nest or close.
+
+### (2) Leading `*` — line-start guard
+- `*` (or `**`) starts a full-line comment **only at the beginning of the line** (first non-blank).
+  natls's lexer guard: `*` is a line comment only when the NEXT char is one of: space, tab, `/`, `*`,
+  newline/CR, or EOF (`isSingleAsteriskComment`). The guard prevents eating an operand/label that
+  legitimately starts with `*` (e.g. a system variable like `*OCC`, `*DATX`).
+- A **mid-line `*`** is the **multiplication operator**, never a comment. In `COMPUTE #A = #B * #C`
+  the `*` is multiplication. The comment interpretation is triggered ONLY by line-start position (for
+  `*`/`**`) or by the two-char `/*` sequence (anywhere).
+
+### (3) Multi-line
+- Comments NEVER span lines. Each comment line needs its own `*`/`**`/`/*`; each trailing comment ends
+  at its physical line end. (natls `consumeComment`: advance to `isLineEnd()`, no multi-line path.)
+
+### Gotchas for the lexer
+- `/` alone is the division operator / array-bound separator. Only the two-char `/*` is a comment
+  start. Inside a format/array spec like `(A10/1:5)` the `/` is a bound separator — but note `(A10/*...`
+  would still begin a comment at `/*`; in practice array bounds use `/1:n`, not `/*`. The lexer must
+  scan for the exact `/*` digraph, and must NOT treat a lone `/` as a comment.
+- `END-SUBROUTINE/*` = keyword `END-SUBROUTINE` immediately followed by an inline comment (no blank
+  required between code and `/*`, though the doc shows a leading blank).
+
+**Sources:**
+- Natural Programming Guide, "User Comments": https://documentation.softwareag.com/natural/nat827mf/pg/pg_furth_ucom.htm
+- natls Lexer (`isSingleAsteriskComment` / `consumeComment`):
+  https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/lexing/Lexer.java
 
 ## Column / continuation rules — verified (2026-06-23)
 

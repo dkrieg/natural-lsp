@@ -1,0 +1,18 @@
+* Task 2 fixture: Lexer token types
+* This file contains minimal examples of each token type.
+
+CALLNAT 'PROGRAM'           /* Keyword + string literal
+PERFORM SUBROUTINE          /* Keyword + identifier
+FETCH 'MYPROG'              /* Keyword + string literal
+INCLUDE 'COPYBOOK'          /* Keyword + string literal
+RUN PROGRAM                 /* Keyword + identifier
+
+MOVE 12345 TO VAR           /* Numeric literal
+MOVE 3.14159 TO PI          /* Decimal literal
+
+IF X <> Y THEN              /* Operators
+SET @VAR = 'value'          /* Punctuation
+
+* This is a comment          * Comment
+
+END                         /* EOF

@@ -1,0 +1,11 @@
+* Task 6 fixture: DEFINE DATA REDEFINE clause
+* Exercises a scalar field re-mapped by a REDEFINE block with two subfields.
+
+DEFINE DATA LOCAL
+1 #EMPLOYEE-ID (A7)
+1 REDEFINE #EMPLOYEE-ID
+  2 #ID-PREFIX (A3)
+  2 #ID-SEQUENCE (A4)
+END-DEFINE
+
+END

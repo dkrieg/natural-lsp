@@ -161,8 +161,16 @@ const (
 // decide SkipReason and to emit structured log entries; the LSP layer may
 // forward them to the editor as textDocument/publishDiagnostics notifications.
 type Diagnostic struct {
-	Message  string
+	// Message is the human-readable description of the issue.
+	Message string
+
+	// Severity classifies how serious the issue is (info, warning, error).
 	Severity DiagnosticSeverity
+
+	// Range is the source span where the issue was detected.
+	// Task 7 of feature 00-parser-foundation wires real token positions here;
+	// constructors that predate that work use a {1,1}→{1,1} placeholder.
+	Range Range
 }
 
 // FileAnalysis is the structured result of analyzing a single Natural source
@@ -192,4 +200,8 @@ type FileAnalysis struct {
 	// STORE/UPDATE/DELETE) and DEFINE DATA symbols. Populated by the
 	// workspace indexer for data flow analysis and dependency tracking.
 	DataAccess []DataAccessEntry
+
+	// AST holds the parsed AST for this file. Populated by the parser
+	// backend when available; nil when the parser is not integrated.
+	AST interface{}
 }

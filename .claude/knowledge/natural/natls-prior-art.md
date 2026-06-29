@@ -157,13 +157,15 @@ guessing from `END-IF` presence. If absent (hand-written / non-exported source),
 structured is the safe default. Source: `libs/natparse/.../lexing/Lexer.java` (consumeNaturalHeader),
 fixtures under `libs/*/src/test/resources/`.
 
-## Comment lexing (confirms markers for our regex)
+## Comment lexing (confirms markers — both are REST-OF-LINE)
 
-`Lexer`:
+`Lexer` (corroborates the official Software AG "User Comments" doc — see modes-and-dialects.md):
 - **Line comment:** `*` at line start *followed by* space, tab, newline, `/`, `*`, or EOF
   (`isSingleAsteriskComment`). So `*` begins a full-line comment only when it's the first non-blank and
   the next char isn't an identifier char — important so a label/operand starting with `*` isn't eaten.
-- **Inline comment:** `/*` anywhere (`isInlineComment`) — runs to end of line.
+- **Inline comment:** `/*` anywhere → `consumeComment` advances to end of line. There is **NO `*/`
+  closer** — Natural has no C-style delimited block comment; `/*` is rest-of-line. Comments never span
+  physical lines.
 - Gotcha the lexer handles explicitly: `END-SUBROUTINE/*` = the keyword *plus* a comment; and `/` is
   ambiguous between an inline comment and an array-bound separator like `(A10/1:5)` — disambiguated by
   lexer mode. A naive regex must treat `/*` carefully inside array definitions.

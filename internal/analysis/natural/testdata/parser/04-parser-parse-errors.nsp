@@ -1,0 +1,19 @@
+* Task 6 fixture: Parse errors
+* This file contains examples of malformed statements.
+
+DEFINE DATA
+LOCAL
+* Missing END DEFINE
+
+CALLNAT
+THIS IS MALFORMED
+
+IF X = Y
+* Missing THEN
+
+FETCH
+* Missing target
+
+CALLNAT 'PROG'
+
+END

@@ -35,6 +35,13 @@ holds verified facts with sources. Read this index first, then the relevant topi
 
 ## Changelog
 
+- 2026-06-29 — VERIFIED comment syntax against official Software AG "User Comments" doc
+  (decision-critical for the comment lexer). Both Natural comment forms are **REST-OF-LINE**; Natural
+  has **NO C-style delimited `/* ... */` block comment** and no `*/` closer. `/*` marks the remainder
+  of the physical line; a later `*/` is just comment text, code does NOT resume after it; comments
+  never span lines. Mid-line `*` is always multiplication. Leading `*`/`**` only at line start (with
+  natls's next-char guard). Written to modes-and-dialects.md (full verbatim quotes + lexer rules) and
+  natls-prior-art.md. Source: https://documentation.softwareag.com/natural/nat827mf/pg/pg_furth_ucom.htm
 - 2026-06-23 — VERIFIED critical open questions from KB:
     - **Steplib recursion:** Natural **does search transitively** through chained steplibs (up to 8 steplibs supported). Confirmed in Software AG performance docs.
     - **CALLNAT/FETCH name length:** CALLNAT constant = 1–32 chars (9.3.1+), variable = 1–8 chars. FETCH constant/variable = 1–8 chars only (not 1–32).

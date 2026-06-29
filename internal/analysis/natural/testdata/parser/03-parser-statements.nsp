@@ -1,0 +1,32 @@
+* Task 5 fixture: Parser statement types
+* This file contains minimal valid examples of each statement type.
+
+DEFINE DATA
+LOCAL
+PARAMETER myparam
+END DEFINE
+
+DEFINE SUBROUTINE
+MY_SUB
+DEFINE DATA LOCAL
+PARAMETER param
+END DEFINE
+END SUBROUTINE
+
+DEFINE MAP
+MY_MAP
+FIELD1
+FIELD2
+END MAP
+
+CALLNAT 'MYPROG'
+
+PERFORM MYSUB
+
+INCLUDE 'MYCOPY'
+
+FETCH 'MYPROG'
+
+RUN MYPROG
+
+END

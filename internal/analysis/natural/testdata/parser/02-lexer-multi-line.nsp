@@ -1,0 +1,20 @@
+* Task 3 fixture: Multi-line statements
+* This file contains examples of statements spanning multiple lines.
+
+CALLNAT 'MYPROG'
+WITH OPTIONS
+
+DEFINE DATA
+LOCAL
+PARAMETER myparam
+OTHERPARAM otherparam
+
+CALLNAT 'PROG'
+* This is a comment
+WITH OPTIONS
+
+MOVE
+myvar
+TO other
+
+END
