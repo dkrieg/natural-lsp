@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Feature 05 shipped** — workspace indexing and persistent cache are implemented. Features 06–08 (extraction, completion, signature help, call hierarchy) remain as stubs.
+**Features 00–05 shipped** — the parser foundation (feature 00: lexer + recursive-descent parser + AST) and workspace indexing/persistent cache are implemented. Features 06–08 (call/data extraction, completion, signature help, call hierarchy) remain as stubs (`calls.go`, `data.go`, `hover.go`, `symbols.go` are package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -15,9 +15,23 @@ generator for `--init`. Default indexed set: all 15 Natural extensions (10 core 
 
 `internal/model` and `internal/analysis/natural` have object-type recognition (feature 02):
 `model.ObjectType` (16 constants with stable string values), `model.Diagnostic`
-(analyzer-side signal for unrecognized files), and `model.FileAnalysis.ObjectType`/`Diagnostics` fields.
-The `analysis/natural` backend classifies every file by extension (case-insensitive, custom-mapping-aware)
-via `Analyze(path, content)`. Regression fixtures for all 15 types live under `testdata/objecttype/`.
+(`Message`, `Severity`, and a positional `Range` — added in feature 00), and
+`model.FileAnalysis.ObjectType`/`Diagnostics`/`AST` fields. The `analysis/natural` backend classifies
+every file by extension (case-insensitive, custom-mapping-aware) via `Analyze(path, content)`.
+Regression fixtures for all 15 types live under `testdata/objecttype/`.
+
+`internal/analysis/natural` has a hand-written **lexer** (`lexer.go`) and **recursive-descent parser**
+(`parser.go`) producing a real **AST** (`ast.go`) — feature 00, the foundation for all extraction
+features. The lexer normalizes case, lexes Natural identifiers (incl. `#`/`&` prefixes and embedded
+hyphens) as single tokens, handles `*`/`**` full-line comments (line-start only) and `/*` rest-of-line
+comments, string/numeric literals, operators, and treats `\r\n` as one line terminator. The parser is
+**error-recovering**: it parses `CALLNAT`/`PERFORM`/`INCLUDE`/`FETCH [REPEAT|RETURN]`/`RUN`/`READ`/`STORE`,
+`DEFINE DATA` (level numbers, types/formats, array dimensions, `REDEFINE`, group nesting), `DEFINE
+SUBROUTINE`, and `DEFINE MAP` into AST nodes carrying real source positions, and emits ranged syntax
+diagnostics (`Program.Diagnostics`) for malformed statements while retaining valid surrounding ones (no
+silent gaps — FR-30/M-6). `Analyze` surfaces the parsed `*Program` as `FileAnalysis.AST` and copies the
+parser's ranged diagnostics into `FileAnalysis.Diagnostics`. A `FuzzParse` target guards the parser
+entry point (never panics, always returns a non-nil `*Program`). Fixtures live under `testdata/parser/`.
 
 `internal/server/` implements the LSP lifecycle (feature 03): `Run(ctx, r, w, version, root, cfg, az,
 logger)` serves JSON-RPC 2.0 over `Content-Length`-framed stdio (`go.lsp.dev/jsonrpc2` v1.0.0). The
@@ -93,8 +107,7 @@ then implements, reviews and remediates to a `PASS`, and opens the PR for you to
 - **Docs track as-built.** By the time a feature merges, `CLAUDE.md` and `README.md` must already match
   what shipped — the "Project state" note below, the command list, and the architecture/feature set.
   `/finalize-feature` performs that sync before opening the PR, and the `review-docs` reviewer flags
-  drift during `/review-feature`. Update the "Project state" note as real source lands (it currently
-  says pre-implementation).
+  drift during `/review-feature`. Keep the "Project state" note current as each feature lands.
 
 ## Architecture
 

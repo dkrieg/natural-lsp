@@ -263,3 +263,143 @@ func TestFileAnalysisSymbolEdgesDataAccessFields(t *testing.T) {
 		})
 	}
 }
+
+// TestFileAnalysis_ASTField verifies that FileAnalysis has an AST field
+// for the parser foundation (Task 1 of feature 00-parser-foundation).
+//
+// The test asserts:
+//   - FileAnalysis has an AST field of type interface{}
+//   - The AST field can be nil (valid zero value)
+//   - The AST field can be set to a non-nil value
+func TestFileAnalysis_ASTField(t *testing.T) {
+	tests := []struct {
+		name       string
+		initialize func() FileAnalysis
+		verify     func(t *testing.T, fa FileAnalysis)
+	}{
+		{
+			name: "AST_field_can_be_nil",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{
+					ObjectType: ObjectProgram,
+				}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if fa.AST != nil {
+					t.Errorf("FileAnalysis.AST = %v, want nil", fa.AST)
+				}
+			},
+		},
+		{
+			name: "AST_field_can_be_set_to_non_nil_value",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{
+					ObjectType: ObjectProgram,
+					AST:        map[string]string{"NodeType": "program"},
+				}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if fa.AST == nil {
+					t.Fatal("FileAnalysis.AST is nil, want non-nil value")
+				}
+			},
+		},
+		{
+			name: "AST_field_is_nil_when_not_explicitly_set",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if fa.AST != nil {
+					t.Errorf("FileAnalysis.AST = %v, want nil", fa.AST)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fa := tc.initialize()
+			tc.verify(t, fa)
+		})
+	}
+}
+
+// TestDiagnosticRange verifies that Diagnostic carries a positional Range field
+// for syntax diagnostics to have precise editor positions (Task 1a of
+// feature 00-parser-foundation).
+//
+// The test asserts:
+//   - Diagnostic has a Range field of type Range
+//   - The Range field round-trips with Start/End Position values
+func TestDiagnosticRange(t *testing.T) {
+	tests := []struct {
+		name string
+		// Initialize creates a Diagnostic with the given Range.
+		initialize func() Diagnostic
+		// verify runs assertions on the initialized Diagnostic.
+		verify func(t *testing.T, d Diagnostic)
+	}{
+		{
+			name: "Diagnostic_Range_roundtrips_start_end_positions",
+			initialize: func() Diagnostic {
+				return Diagnostic{
+					Message:  "test syntax error",
+					Severity: DiagnosticError,
+					Range: Range{
+						Start: Position{Line: 3, Column: 5},
+						End:   Position{Line: 3, Column: 12},
+					},
+				}
+			},
+			verify: func(t *testing.T, d Diagnostic) {
+				if d.Range.Start.Line != 3 {
+					t.Errorf("Diagnostic.Range.Start.Line = %d, want 3", d.Range.Start.Line)
+				}
+				if d.Range.Start.Column != 5 {
+					t.Errorf("Diagnostic.Range.Start.Column = %d, want 5", d.Range.Start.Column)
+				}
+				if d.Range.End.Line != 3 {
+					t.Errorf("Diagnostic.Range.End.Line = %d, want 3", d.Range.End.Line)
+				}
+				if d.Range.End.Column != 12 {
+					t.Errorf("Diagnostic.Range.End.Column = %d, want 12", d.Range.End.Column)
+				}
+			},
+		},
+		{
+			name: "Diagnostic_Range_can_span_multiple_lines",
+			initialize: func() Diagnostic {
+				return Diagnostic{
+					Message:  "multi-line error",
+					Severity: DiagnosticWarning,
+					Range: Range{
+						Start: Position{Line: 10, Column: 1},
+						End:   Position{Line: 15, Column: 20},
+					},
+				}
+			},
+			verify: func(t *testing.T, d Diagnostic) {
+				if d.Range.Start.Line != 10 {
+					t.Errorf("Diagnostic.Range.Start.Line = %d, want 10", d.Range.Start.Line)
+				}
+				if d.Range.End.Line != 15 {
+					t.Errorf("Diagnostic.Range.End.Line = %d, want 15", d.Range.End.Line)
+				}
+				if d.Range.Start.Column != 1 {
+					t.Errorf("Diagnostic.Range.Start.Column = %d, want 1", d.Range.Start.Column)
+				}
+				if d.Range.End.Column != 20 {
+					t.Errorf("Diagnostic.Range.End.Column = %d, want 20", d.Range.End.Column)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := tc.initialize()
+			tc.verify(t, d)
+		})
+	}
+}

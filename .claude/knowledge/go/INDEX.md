@@ -18,7 +18,7 @@ this index first, then the relevant topics.
 | [stdlib-for-lsp-server.md](stdlib-for-lsp-server.md) | stdio framing, encoding/json, signals, slog; json/v2 (experimental) | verified (2026-06-20) |
 | [lsp-go-ecosystem.md](lsp-go-ecosystem.md) | Go LSP/JSON-RPC libraries and trade-offs; LSP 3.18 coverage; **`go.lsp.dev/protocol` pulls json/v2 transitively** | verified (2026-06-21) |
 | [filesystem-and-watching.md](filesystem-and-watching.md) | WalkDir, io/fs, fsnotify, content hashing | verified (2026-06-20) |
-| [config-and-toml.md](config-and-toml.md) | `pelletier/go-toml/v2` (TOML decoder, strict mode); `go mod tidy` retaining a not-yet-imported dep via the `tools`-tag blank-import pattern | verified (2026-06-21) |
+| [config-and-toml.md](config-and-toml.md) | `pelletier/go-toml/v2` (TOML decoder, strict mode); `go mod tidy` retaining a not-yet-imported dep via the `tools`-tag blank-import pattern | verified (2026-06-23) — updated from v2.4.0 to v2.4.1 |
 
 ## Open questions (to verify on next relevant task)
 
@@ -64,6 +64,16 @@ this index first, then the relevant topics.
 
 ## Changelog
 
+- 2026-06-23 — Full verification sweep. Key findings:
+  - `go-version-and-tooling.md`: Confirmed Go 1.26.4 (2026-06-02) is latest; no 1.27 yet. Module go-directive max rule verified.
+  - `regexp-and-extraction.md`: Verified RE2 does NOT support backreferences or lookaround (confirmed via re2/wiki/Syntax). KB correct.
+  - `lsp-go-ecosystem.md`: Verified `go.lsp.dev/protocol` v1.0.0 transitively depends on `github.com/go-json-experiment/json` (experimental, "do not depend on this"). Verified jsonrpc2 v1.0.0 also depends on it. Module requires go 1.26.
+  - `config-and-toml.md`: Updated go-toml/v2 from v2.4.0 to v2.4.1 (released 2026-06-22).
+  - `filesystem-and-watching.md`: Verified fsnotify v1.10.1; no recursive watch confirmed.
+  - `concurrency-primitives.md`: Verified errgroup APIs (WithContext, SetLimit, TryGo) and signal.NotifyContext.
+  - `stdlib-for-lsp-server.md`: Verified json/v2 still experimental (requires GOEXPERIMENT=jsonv2).
+  - `go-cmp`: Verified v0.7.0 (2026-02-21), test-only use.
+  - No facts were found to be wrong; KB remains accurate except for go-toml version bump.
 - 2026-06-22 — FR-34 (external file watching) prep. Two topics updated, both verified against the
   module cache / repo:
   - `lsp-go-ecosystem.md`: documented the exact `go.lsp.dev/protocol` v1.0.0 watched-files types

@@ -4,9 +4,11 @@ argument-hint: "<feature> (addresses the latest review findings for it)"
 ---
 
 Close the review → fix → re-review loop for a feature, using the `tdd-implementation` skill in
-remediation mode. **You** sequence and gate the TDD subagents; they implement.
+remediation mode.
 
 Feature: $ARGUMENTS
+
+## Workflow
 
 1. **Ensure the feature branch.** Per `CLAUDE.md`, you must be on `feat/<feature>` (not `main`).
 2. **Collect the findings.** Take the actionable findings from the latest `/review-feature` for this

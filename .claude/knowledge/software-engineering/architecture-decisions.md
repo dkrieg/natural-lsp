@@ -1,9 +1,10 @@
 # Architecture decisions (ADR log)
 
-**Status:** verified (2026-06-21) against the repo's own README.md, docs/plans/natural-lsp-prd.md, and
+**Status:** verified (2026-06-23) against the repo's own README.md, docs/plans/natural-lsp-prd.md, and
 CLAUDE.md — these are the authoritative source for project decisions. Append a new dated entry
 whenever a significant decision is made; never silently reverse one — supersede it with a new entry.
-2026-06-21 sweep: added ADR-014 (push diagnostics for v1) and downgraded ADR-010 to provisional
+2026-06-23 sweep: added ADR-016 (CodeLens eager resolution for v1).
+2026-06-21: Added ADR-014 (push diagnostics for v1) and downgraded ADR-010 to provisional
 pending user sign-off on its transitive json/v2 dependency.
 2026-06-21: ADR-010 sign-off received — user accepted Option A (go.lsp.dev/protocol + jsonrpc2) with
 full awareness of the transitive json/v2 dependency. Pending decision removed.
@@ -168,9 +169,24 @@ diagnostics), see `lsp-protocol.md`; PRD NFR-3/NFR-4; ADR-009 (Full sync → who
 ## Pending decisions (record here when made)
 <!-- none currently open -->
 
+## ADR-016 — CodeLens resolve: eager for v1 (2026-06-23)
+**Decision:** Implement CodeLens with **eager resolution** (`resolveProvider: false` or omitted in
+`CodeLensOptions`) for the first release. **Rationale:** The lenses for natural-lsp are simple
+counts/summaries from the index (inbound call counts, table-write summaries) — computation is cheap
+and fast. Lazy resolution (`resolveProvider: true`) adds protocol complexity (additional
+`textDocument/codeLens/resolve` handler, per-lens caching, client-side refresh logic) without
+benefit for this scope. Eager resolution keeps the implementation minimal and predictable for v1.
+**Consequence:** All CodeLens are computed during the initial index build and whenever the index
+is re-built; no `codeLens/resolve` handler is needed for v1. **Revisit:** If lenses grow to
+expensive computations (e.g. cross-file data-flow analysis) or profiling shows eager computation
+degrades responsiveness on large workspaces. **Source:** LSP 3.17 spec (CodeLensOptions), PRD FR-29
+(CodeLens summaries), project scope (v1 minimal implementation).
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.
 - Cross-referenced Go KB (verified 2026-06-20): `.claude/knowledge/go/lsp-go-ecosystem.md`,
   `.claude/knowledge/go/filesystem-and-watching.md`.
-- LSP 3.17 spec for ADR-008/009 — see `lsp-protocol.md`.
+- LSP 3.17 spec for ADR-008/009/014/016 — see `lsp-protocol.md`:
+  https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
+    (verified 2026-06-23).

@@ -9,9 +9,10 @@ description: >-
 
 # TDD implementation loop for natural-lsp
 
-You (the top-level agent) drive implementation of a **planned** feature. You spawn the TDD subagents in
-sequence per task and enforce the discipline between phases — **the agents do the work; you sequence and
-gate them.** Read `CLAUDE.md` for context.
+You (the top-level agent) drive implementation of a **planned** feature. You spawn `tdd-red` agent, `tdd-green` agent
+and `tdd-refactor` agent in sequence per task and enforce the discipline between phases — **do NOT use gneral puprpose
+agents nor perform the work yourlsef: the agents do the work; you sequence and gate them.** Read `CLAUDE.md` for
+context.
 
 All work happens on the feature's `feat/<feature>` branch (per `CLAUDE.md`'s branching policy), never on
 `main` — ensure you are on it before the first task; `/implement-feature` does this for you.
@@ -24,25 +25,26 @@ All work happens on the feature's `feat/<feature>` branch (per `CLAUDE.md`'s bra
 - Each task's Definition-of-Done checklist, and the plan's "Reviews required" section (handed to
   `/review-feature` at the end).
 
-## The loop — for each task, in plan order
+## Workflow
 
 Work strictly **one task at a time**, and within a task **one behavior at a time**. Do not start a task
 until the previous task's DoD is met and the suite is green.
 
-1. **RED** — spawn `tdd-red` with the task: its behavior, the `testdata/` fixture(s) it names, and the
+1. **load** the `go-development` skill to ensure you are following recommended coding practices.
+2. **RED** — spawn `tdd-red` agent with the task: its behavior, the `testdata/` fixture(s) it names, and the
    expected result. It writes one failing test (plus a minimal stub so it compiles, plus the fixture
    for analyzer work).
-   - **Gate:** confirm the test exists and **fails for the right reason** — an assertion failure, not a
-     build error. Run `go test -run <TestName> ./internal/...` yourself to verify. If it doesn't fail as
-     expected, send it back to `tdd-red`; do not proceed.
-2. **GREEN** — spawn `tdd-green` with the failing test. It writes the minimal code to pass.
-   - **Gate:** run `go test ./...` (and `-race` if the task touches concurrency). The target test passes,
-     nothing else broke, and the test was **not modified**. If green can't be reached, return to
-     `tdd-red` to reconsider the test or surface a blocker — **never weaken the test to make it pass.**
-3. **REFACTOR** — spawn `tdd-refactor`. It improves design and robustness while keeping the suite green.
-   - **Gate:** `gofmt` clean, `go vet ./...` clean, `go test -race ./...` green, and the task's DoD
-     satisfied (seam purity, graceful degradation, deterministic output, a fuzz target where the parser
-     widened).
+    - **Gate:** confirm the test exists and **fails for the right reason** — an assertion failure, not a
+      build error. Run `go test -run <TestName> ./internal/...` yourself to verify. If it doesn't fail as
+      expected, send it back to `tdd-red`; do not proceed.
+2. **GREEN** — spawn `tdd-green` agent with the failing test. It writes the minimal code to pass.
+    - **Gate:** run `go test ./...` (and `-race` if the task touches concurrency). The target test passes,
+      nothing else broke, and the test was **not modified**. If green can't be reached, return to
+      `tdd-red` to reconsider the test or surface a blocker — **never weaken the test to make it pass.**
+3. **REFACTOR** — spawn `tdd-refactor` agent. It improves design and robustness while keeping the suite green.
+    - **Gate:** `gofmt` clean, `go vet ./...` clean, `go test -race ./...` green, and the task's DoD
+      satisfied (seam purity, graceful degradation, deterministic output, a fuzz target where the parser
+      widened).
 4. Mark the task done; record which acceptance criteria / FR-IDs it satisfied. Move to the next task.
 
 ## Checkpoints & stopping

@@ -1,0 +1,27 @@
+* Program: Inline Comment Handling
+* Description: Natural comment forms - full-line (* / **) and rest-of-line (/*)
+** A double-asterisk line is also a full-line comment.
+*
+DEFINE DATA LOCAL
+1 #MSG1 (A50)
+1 #MSG2 (A50)
+1 #A (I4)
+1 #B (I4)
+1 #C (I4)
+END-DEFINE
+*
+* CALLNAT with a rest-of-line comment after the statement
+CALLNAT 'MYPROG' /* call to myprog
+*
+* Rest-of-line comment after an assignment
+MOVE 'hello' TO #MSG1 /* first assignment
+MOVE 'world' TO #MSG2 /* second assignment
+*
+* A mid-line asterisk is multiplication, NOT a comment
+COMPUTE #A = #B * #C /* product, then comment to end of line
+*
+* No nesting and no closer: everything after /* is comment,
+* including any later */ which is just comment text, not code
+MOVE 1 TO #A /* comment with /* inside */ still all comment
+*
+END

@@ -4,8 +4,8 @@
 Dialect/mode: verified against Natural for Linux/Unix/Windows + Mainframe references. `DEFINE DATA` is
 available in BOTH structured and reporting mode.
 
-**Status: verified (2026-06-20)** — section clauses, terminator, and format codes confirmed against
-official Software AG documentation. Detailed array/REDEFINE grammar partially verified (see below).
+**Status: verified (2026-06-23)** — section clauses, terminator, format codes, and array-bound grammar
+confirmed against official Software AG documentation. Array bounds placed inline after format with `/` separator.
 
 ## DEFINE DATA structure — verified
 
@@ -64,8 +64,9 @@ END-DEFINE
 - **Length notation:** `(A20)` = alpha 20; `(N7.2)` = 7 digits integer part, 2 fractional;
   `(P5)` packed 5 digits. Dynamic length: `(A) DYNAMIC`.
 - **Arrays/occurrences:** bound syntax `(1:10)` after the format, e.g. `(A10/1:5)` or `(N3/1:12)`;
-  multi-dimensional `(1:5,1:3)`. *Status: array bound syntax recorded from the syntax overview but the
-  exact placement variants (format-then-bounds vs separate) should be re-confirmed on a parsing task.*
+  multi-dimensional `(1:5,1:3)`. **Confirmed:** bounds are placed **inline** after the format with `/` separator.
+  Single bound defaults lower to 1: `(A10/10)` = `(A10/1:10)`. Extensible arrays use `*`: `(A10/1:*)`.
+  Comma is both a valid decimal separator AND a dimension separator (must disambiguate).
 - **REDEFINE:** `level REDEFINE field` introduces an alternate layout over an already-defined field;
   sub-levels carve up the storage. The analyzer should treat REDEFINE sub-fields as aliases, not new
   storage.
@@ -115,7 +116,8 @@ Source: natls `ParserError.java` and `IUsingNode.java`; see natls-prior-art.md.
 - DEFINE DATA general / clauses / END-DEFINE:
   https://documentation.softwareag.com/natural/nat911mf/sm/defineda_basic.htm
 - DEFINE DATA (statement page): https://documentation.softwareag.com/natural/nat912unx/sm/defineda.htm
-- Syntax Overview: https://documentation.softwareag.com/natural/nat6312unx/sm/defineda_synt.htm
+- Array Dimension Definition (inline syntax `(A10/1:5)`):
+  https://documentation.softwareag.com/natux/9.3.3/en/webhelp/natux-webhelp/sm/defineda_array.htm
 - CONTEXT variables: https://documentation.softwareag.com/natural/nat827mf/sm/defineda_cv.htm
 - Format codes / packed limits (Natural & Adabas field defs):
   https://documentation.softwareag.com/natural/nsn828/ug/fields9.htm

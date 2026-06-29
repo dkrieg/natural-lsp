@@ -32,6 +32,8 @@ The local-file naming rule: `<object-name>.<EXT>`, extension always UPPERCASE. S
 | `.NSL` | Local data area (LDA) | **Fragment** (data, not exec) | `DEFINE DATA LOCAL USING` target |
 | `.NSA` | Parameter data area (PDA) | **Fragment** (data, not exec) | `DEFINE DATA PARAMETER USING`; callable interface |
 | `.NSD` | DDM (Data Definition Module) | **Fragment** (definition) | DB view; referenced by `DEFINE DATA ... VIEW OF`, READ/FIND |
+| `.NKR` | Resource (shared) | **Fragment** | shared resources (HTML, XML, GIF, JPEG, BMP); stored in `RES/` subdirectory |
+| `.NR3` | Resource (private dialog) | **Fragment** | private resources for dialogs only; stored in `RES/` subdirectory |
 
 ## `.NAT` — NOT a Natural source extension
 
@@ -53,6 +55,7 @@ Notes:
   distinct from `CALLNAT`/`PERFORM`.
 - `.NSD` (DDM) is the local-file representation of a DDM in NaturalONE, created/edited with the DDM Editor.
 - Extensions/object types are dialect-stable across recent NaturalONE versions (8.x–9.x).
+- DDM column order: `C T L Name F Length S D` (DB is optional toggle).
 
 ## Cross-check against natls (prior-art parser-based LSP) — verified (2026-06-21)
 
@@ -105,7 +108,10 @@ statements — it needs a separate, columnar parser. natls has a dedicated DDM p
 - NaturalONE Documentation 9.1.3 (object types and file name extensions in the local file system):
   https://documentation.softwareag.com/naturalONE/natONE913/index.htm
 - DDM in NaturalONE: https://documentation.softwareag.com/naturalONE/natONE913/natux/pg/pg_obj_ddm.htm
-- DDM Editor: https://documentation.softwareag.com/naturalONE/natONE911/core/using/use-edis-ddm.htm
+- DDM Editor (column order `C T L Name F Length S D`):
+  https://documentation.softwareag.com/natux/9.3.2/en/webhelp/natux-webhelp/edis/ddm_use_editor.htm
+- RESOURCE object type (`.NKR` shared, `.NR3` private):
+  https://documentation.softwareag.com/natural/nat913unx/pg/pg_obj_resource.htm
 - natls `NaturalFileType` (11-type enum, canHaveDefineData/canHaveBody):
   https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/natural/project/NaturalFileType.java
 - natls `NaturalProjectFileIndexer` (referable-name derivation):

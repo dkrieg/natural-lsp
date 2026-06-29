@@ -1,0 +1,12 @@
+* Task 5 fixture: READ and STORE statements
+* Minimal examples for parsing READ/STORE into AST nodes.
+
+READ EMPLOYEES BY NAME
+
+STORE RECORD IN EMPLOYEES
+
+READ (10) DEPARTMENTS WITH NAME = 'SALES'
+
+STORE PERSONNEL
+
+END

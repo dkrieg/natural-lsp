@@ -18,9 +18,11 @@ exported to files before it can be indexed.
 > `textDocument/didChange`, `textDocument/didClose`, and `workspace/didChangeWatchedFiles` are wired to
 > an in-memory document store; an `fsnotify`-based workspace watcher re-analyzes files on disk change
 > (feature 04). **Workspace indexing and persistent cache are now implemented** (feature 05) with
-> content-hash invalidation for git-safe cache. Navigation, hover, completion, and other feature
-> providers are not yet wired — this README describes the **target** feature set. There are no published
-> binaries. Implemented behavior will be marked as it lands.
+> content-hash invalidation for git-safe cache. A **hand-written lexer and recursive-descent parser
+> producing an AST with ranged syntax diagnostics is implemented** (feature 00) behind the `Analyzer`
+> interface. The higher-level extraction/navigation providers that consume the AST (navigation, hover,
+> completion, call hierarchy) are not yet wired — this README describes the **target** feature set. There
+> are no published binaries. Implemented behavior will be marked as it lands.
 
 ---
 
@@ -408,7 +410,8 @@ internal/
   analysis/
     analyzer.go            Analyzer interface (the replaceable-backend seam)
     natural/
-      analyzer.go          Regex-based extraction pipeline
+      analyzer.go          Parser-based extraction pipeline (hand-written
+                           lexer + recursive-descent parser)
       symbols.go           Map FileAnalysis → LSP SymbolInformation
       hover.go             Hover content builders
       calls.go             CALLNAT / FETCH / RUN / PERFORM extraction
@@ -429,7 +432,7 @@ testdata/
 > **Extraction vs. resolution.** Per-file extraction (`analysis/natural/`) produces *unresolved*
 > references with caller context. Cross-file **resolution** (`workspace/resolution.go`) walks the
 > steplib chain and the configured library map to bind those references to definitions — keeping the
-> highest-risk logic out of the regex backend and behind the workspace index.
+> highest-risk logic out of the parser backend and behind the workspace index.
 
 ---
 
