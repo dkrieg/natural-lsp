@@ -53,12 +53,24 @@ PERFORM subroutine-name [operand1 ...]
   take parameters passed directly on the PERFORM (matching the subroutine's `DEFINE DATA PARAMETER`/PDA).
 - A variable subroutine-name → unresolvable; retain call site (no inline target to bind).
 
-## FETCH / RUN (program transfer) — verified (2026-06-23)
+## FETCH / RUN (program transfer) — verified (2026-06-30)
 
-`FETCH` syntax:
+**Library-qualifier summary (the parser question):** FETCH has **NO** source-level library qualifier —
+library/steplib selection is runtime-only. RUN **DOES** have one — an optional bare `library-id` second
+positional operand. Details below.
+
+`FETCH` syntax (verbatim diagram, both nat911unx and nat911mf):
 ```
-FETCH [REPEAT|RETURN] operand1 [operand2 [(parameter)] ...]
+FETCH [REPEAT] [RETURN] operand1 [operand2 [(parameter)]] ...
 ```
+- **NO source-level library qualifier on FETCH (decision-critical, verified 2026-06-30).** The FETCH
+  syntax diagram has NO operand or keyword to name a target library or steplib. The ONLY operands are
+  `operand1` (program name) and zero-or-more `operand2` parameter fields. Library/steplib resolution is
+  purely a RUNTIME concern: per the doc, "Natural will attempt to locate the program in the library
+  currently active … If the program is not found, Natural will attempt to locate the program in the
+  steplibs." → The parser CANNOT and MUST NOT extract a library qualifier from FETCH text. `operand2`
+  after the program name is a PARAMETER FIELD pushed onto the stack, never a library — do not misread
+  the second operand as a library id.
 - `operand1` (program name) is an **alphanumeric constant OR an alphanumeric variable (1–8)**.
   Variable form → unresolvable; retain call site. Name case is NOT translated. May contain `&`
   (`*LANGUAGE`) — same gotcha as CALLNAT (treat as unresolvable).
@@ -77,14 +89,30 @@ FETCH [REPEAT|RETURN] operand1 [operand2 [(parameter)] ...]
   program also sees the established GDA.
 - Target of FETCH is a cataloged program object (`.NSP`).
 
-`RUN` caveat — verified:
-- `RUN [REPEAT] [program-name [library-id]]` is documented as a **SYSTEM COMMAND**, not a regular
-  in-program statement. It compiles (catalogs) AND executes a source program. The official statement
-  reference set does not list RUN as a program statement the way it lists FETCH.
+`RUN` caveat — verified (verbatim diagram nat912unx + nat912mf, 2026-06-30):
+```
+RUN [REPEAT] [program-name [library-id]]
+```
+- `RUN` is documented as a **SYSTEM COMMAND**, not a regular in-program statement. It compiles
+  (catalogs) AND executes a source program. The official statement reference set does not list RUN as a
+  program statement the way it lists FETCH.
+- **YES, RUN HAS a source-level library qualifier (decision-critical).** Unlike FETCH, RUN takes an
+  OPTIONAL second positional operand `library-id` after `program-name`. Per the doc: "The library in
+  which the program to be run is contained. If both `program-name` and `library-id` are specified,
+  Natural will retrieve, compile, and execute the specified program only if it is stored under the
+  library ID specified." So with `library-id` present, RUN targets THAT library only (single library,
+  no steplib fall-through) — it does NOT walk the steplib chain. Without `library-id`, RUN searches the
+  current library only.
+- **Lexical distinction (how the parser tells program-name from library-id):** both are bare
+  positional tokens; there is NO keyword introducing the library. The grammar is
+  `RUN [REPEAT] [token1 [token2]]`. `token1` = program-name, `token2` (if present) = library-id. There
+  is no third positional operand on RUN, so a second token is unambiguously the library. Constraint
+  the parser can assert: `library-id` must NOT begin with `SYS` (except exactly `SYSTEM`). Note RUN
+  takes NO parameter-field operands (contrast FETCH), so a second token cannot be a parameter.
 - Practical implication: RUN appearing inside object source is far less common than FETCH/CALLNAT.
-  Keep a `NAVIGATES_TO` edge for `RUN 'NAME'` if encountered, but prioritize FETCH/CALLNAT/PERFORM.
-  The optional `library-id` second token means RUN can target a SPECIFIC library, bypassing the normal
-  steplib search — if present, resolution should honor that library, not the steplib chain.
+  Emit a `NAVIGATES_TO` edge for `RUN program-name`; when `library-id` is present, resolution should
+  honor that single library, NOT the steplib chain. Both `program-name` and `library-id` can be a
+  constant or a variable (variable → dynamic/unresolvable, retain call site).
 
 ## INCLUDE (copycode) — verified
 

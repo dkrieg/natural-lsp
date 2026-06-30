@@ -1,0 +1,17 @@
+* Task 3 fixture: CALLNAT dynamic extraction (FR-11, FR-17, M-6)
+* Contains one variable-target call (#PROGNAME) and one literal call ('STATIC')
+* to prove static and dynamic edges coexist and are visibly distinct in one file.
+* Neither call should produce a diagnostic — the variable target is a modeled outcome, not an error.
+
+DEFINE DATA
+LOCAL
+  1 PROGNAME (A30)
+END DEFINE
+
+CALLNAT #PROGNAME
+
+CALLNAT 'STATIC'
+
+MOVE 'DONE' TO PROGNAME
+
+END

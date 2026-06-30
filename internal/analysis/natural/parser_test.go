@@ -1535,3 +1535,262 @@ func TestParser_FetchStatement_CorrectGrammar(t *testing.T) {
 		})
 	}
 }
+
+// TestParser_TargetLiteralAndRange_Task1 verifies that the parser captures whether a call/transfer
+// target was written as a quoted string literal vs. an identifier/variable, plus the source range
+// of the target operand. This test drives Task 1 of feature 06 (call-dependency-extraction).
+//
+// Per FR-10, FR-11, FR-12, FR-13, FR-14, FR-15 (Stories 1-5):
+// - CALLNAT 'LITERAL' → CallStatement{Target:"LITERAL", TargetIsLiteral:true, TargetRange:range_of_operand}
+// - CALLNAT #VAR → CallStatement{Target:"#VAR", TargetIsLiteral:false}
+// - Same for FETCH 'RPT' / FETCH #DEST, RUN 'JOB' / RUN #J, INCLUDE 'CC' / INCLUDE ERRHANDLER
+//
+// The two new fields must be populated by the parser:
+// - TargetIsLiteral: bool — true if the operand was a TokenLiteralString, false if TokenIdentifier
+// - TargetRange: model.Range — start and end positions of the target operand token
+//
+// Note: Target itself (the unquoted name) is UNCHANGED — existing tests must remain valid.
+func TestParser_TargetLiteralAndRange_Task1(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        string
+		wantCalls    int
+		checkCall    func(t *testing.T, call *CallStatement)
+		wantFetches  int
+		checkFetch   func(t *testing.T, fetch *FetchStatement)
+		wantRuns     int
+		checkRun     func(t *testing.T, run *RunStatement)
+		wantIncludes int
+		checkInclude func(t *testing.T, inc *IncludeStatement)
+	}{
+		{
+			name:      "CALLNAT_quoted_literal_target",
+			input:     `CALLNAT 'MYPROG'`,
+			wantCalls: 1,
+			checkCall: func(t *testing.T, call *CallStatement) {
+				// FR-10: literal target → static CALLNAT.
+				// TargetIsLiteral must be true for a quoted string operand.
+				if !call.TargetIsLiteral {
+					t.Errorf("CallStatement.TargetIsLiteral = %v, want true (quoted literal)", call.TargetIsLiteral)
+				}
+				// Target is the unquoted name per FR-Q6.
+				if call.Target != "MYPROG" {
+					t.Errorf("CallStatement.Target = %q, want %q", call.Target, "MYPROG")
+				}
+				// TargetRange convention: inclusive source span of the operand token, including
+				// surrounding quotes for string literals.
+				// "CALLNAT 'MYPROG'": CALLNAT occupies cols 1-7, space at 8, 'MYPROG' at cols 9-16.
+				// lexer: tok.Column = 9 (opening quote), tok.Literal = "'MYPROG'" (8 chars).
+				// Start.Column = 9, End.Column = 9 + 8 - 1 = 16 (closing quote).
+				if call.TargetRange.Start.Line != 1 {
+					t.Errorf("CallStatement.TargetRange.Start.Line = %d, want 1", call.TargetRange.Start.Line)
+				}
+				if call.TargetRange.Start.Column != 9 {
+					t.Errorf("CallStatement.TargetRange.Start.Column = %d, want 9 (column of opening quote)", call.TargetRange.Start.Column)
+				}
+				if call.TargetRange.End.Line != 1 {
+					t.Errorf("CallStatement.TargetRange.End.Line = %d, want 1", call.TargetRange.End.Line)
+				}
+				if call.TargetRange.End.Column != 16 {
+					t.Errorf("CallStatement.TargetRange.End.Column = %d, want 16 (column of closing quote)", call.TargetRange.End.Column)
+				}
+			},
+		},
+		{
+			name:      "CALLNAT_identifier_variable_target",
+			input:     `CALLNAT #PROGNAME`,
+			wantCalls: 1,
+			checkCall: func(t *testing.T, call *CallStatement) {
+				// FR-11: variable/identifier target → dynamic CALLNAT.
+				// TargetIsLiteral must be false for a plain identifier operand.
+				if call.TargetIsLiteral {
+					t.Errorf("CallStatement.TargetIsLiteral = %v, want false (identifier/variable)", call.TargetIsLiteral)
+				}
+				// Target is the identifier text (# prefix retained, normalized to upper-case).
+				if call.Target != "#PROGNAME" {
+					t.Errorf("CallStatement.Target = %q, want %q", call.Target, "#PROGNAME")
+				}
+				// TargetRange convention: inclusive source span of the operand token.
+				// "CALLNAT #PROGNAME": CALLNAT cols 1-7, space at 8, #PROGNAME at cols 9-17.
+				// lexer: tok.Column = 9, tok.Literal = "#PROGNAME" (9 chars).
+				// Start.Column = 9, End.Column = 9 + 9 - 1 = 17 (last char 'E').
+				if call.TargetRange.Start.Line != 1 {
+					t.Errorf("CallStatement.TargetRange.Start.Line = %d, want 1", call.TargetRange.Start.Line)
+				}
+				if call.TargetRange.Start.Column != 9 {
+					t.Errorf("CallStatement.TargetRange.Start.Column = %d, want 9 (column of #)", call.TargetRange.Start.Column)
+				}
+				if call.TargetRange.End.Line != 1 {
+					t.Errorf("CallStatement.TargetRange.End.Line = %d, want 1", call.TargetRange.End.Line)
+				}
+				if call.TargetRange.End.Column != 17 {
+					t.Errorf("CallStatement.TargetRange.End.Column = %d, want 17 (column of last char of #PROGNAME)", call.TargetRange.End.Column)
+				}
+			},
+		},
+		{
+			name:        "FETCH_quoted_literal_target",
+			input:       `FETCH 'RPT001'`,
+			wantFetches: 1,
+			checkFetch: func(t *testing.T, fetch *FetchStatement) {
+				// FR-14: literal FETCH target → static NAVIGATES_TO
+				if !fetch.TargetIsLiteral {
+					t.Errorf("FetchStatement.TargetIsLiteral = %v, want true", fetch.TargetIsLiteral)
+				}
+				if fetch.Target != "RPT001" {
+					t.Errorf("FetchStatement.Target = %q, want %q", fetch.Target, "RPT001")
+				}
+				if fetch.TargetRange.Start.Line == 0 || fetch.TargetRange.End.Line == 0 {
+					t.Errorf("FetchStatement.TargetRange = %+v, want non-zero", fetch.TargetRange)
+				}
+			},
+		},
+		{
+			name:        "FETCH_identifier_variable_target",
+			input:       `FETCH #DYNRPT`,
+			wantFetches: 1,
+			checkFetch: func(t *testing.T, fetch *FetchStatement) {
+				// FR-15: variable FETCH target → dynamic NAVIGATES_TO_DYNAMIC
+				if fetch.TargetIsLiteral {
+					t.Errorf("FetchStatement.TargetIsLiteral = %v, want false", fetch.TargetIsLiteral)
+				}
+				if fetch.Target != "#DYNRPT" {
+					t.Errorf("FetchStatement.Target = %q, want %q", fetch.Target, "#DYNRPT")
+				}
+				if fetch.TargetRange.Start.Line == 0 || fetch.TargetRange.End.Line == 0 {
+					t.Errorf("FetchStatement.TargetRange = %+v, want non-zero", fetch.TargetRange)
+				}
+			},
+		},
+		{
+			name:     "RUN_quoted_literal_target",
+			input:    `RUN 'BATCHJOB'`,
+			wantRuns: 1,
+			checkRun: func(t *testing.T, run *RunStatement) {
+				// FR-14: literal RUN target → static NAVIGATES_TO
+				if !run.TargetIsLiteral {
+					t.Errorf("RunStatement.TargetIsLiteral = %v, want true", run.TargetIsLiteral)
+				}
+				if run.Target != "BATCHJOB" {
+					t.Errorf("RunStatement.Target = %q, want %q", run.Target, "BATCHJOB")
+				}
+				if run.TargetRange.Start.Line == 0 || run.TargetRange.End.Line == 0 {
+					t.Errorf("RunStatement.TargetRange = %+v, want non-zero", run.TargetRange)
+				}
+			},
+		},
+		{
+			name:     "RUN_identifier_variable_target",
+			input:    `RUN #JOB`,
+			wantRuns: 1,
+			checkRun: func(t *testing.T, run *RunStatement) {
+				// FR-15: variable RUN target → dynamic NAVIGATES_TO_DYNAMIC
+				if run.TargetIsLiteral {
+					t.Errorf("RunStatement.TargetIsLiteral = %v, want false", run.TargetIsLiteral)
+				}
+				if run.Target != "#JOB" {
+					t.Errorf("RunStatement.Target = %q, want %q", run.Target, "#JOB")
+				}
+				if run.TargetRange.Start.Line == 0 || run.TargetRange.End.Line == 0 {
+					t.Errorf("RunStatement.TargetRange = %+v, want non-zero", run.TargetRange)
+				}
+			},
+		},
+		{
+			name:         "INCLUDE_quoted_literal_target",
+			input:        `INCLUDE 'COMMON-DECLS'`,
+			wantIncludes: 1,
+			checkInclude: func(t *testing.T, inc *IncludeStatement) {
+				// FR-13: copycode literal → static INCLUDES
+				if !inc.TargetIsLiteral {
+					t.Errorf("IncludeStatement.TargetIsLiteral = %v, want true", inc.TargetIsLiteral)
+				}
+				if inc.Target != "COMMON-DECLS" {
+					t.Errorf("IncludeStatement.Target = %q, want %q", inc.Target, "COMMON-DECLS")
+				}
+				if inc.TargetRange.Start.Line == 0 || inc.TargetRange.End.Line == 0 {
+					t.Errorf("IncludeStatement.TargetRange = %+v, want non-zero", inc.TargetRange)
+				}
+			},
+		},
+		{
+			name:         "INCLUDE_unquoted_identifier_target",
+			input:        `INCLUDE ERRHANDLER`,
+			wantIncludes: 1,
+			checkInclude: func(t *testing.T, inc *IncludeStatement) {
+				// FR-13: Natural allows unquoted INCLUDE targets (identifiers)
+				// Copycode names are treated as literal names (not dynamic variables)
+				// Per the model, this should still be TargetIsLiteral=false (it's an identifier)
+				// but extraction treats it as a static dependency (not dynamic like CALLNAT #VAR)
+				if inc.TargetIsLiteral {
+					t.Errorf("IncludeStatement.TargetIsLiteral = %v, want false (identifier, not quoted literal)", inc.TargetIsLiteral)
+				}
+				if inc.Target != "ERRHANDLER" {
+					t.Errorf("IncludeStatement.Target = %q, want %q", inc.Target, "ERRHANDLER")
+				}
+				if inc.TargetRange.Start.Line == 0 || inc.TargetRange.End.Line == 0 {
+					t.Errorf("IncludeStatement.TargetRange = %+v, want non-zero", inc.TargetRange)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: parse inline source
+			lexer := NewLexer(tc.input)
+			parser := NewParser(lexer)
+
+			// Act: parse
+			prog, err := parser.Parse()
+
+			// Assert: parse succeeds
+			if err != nil {
+				t.Fatalf("Parser.Parse() error = %v", err)
+			}
+			if prog == nil {
+				t.Fatal("Program is nil, want non-nil")
+			}
+
+			// Assert: CALLNAT count and check
+			if tc.wantCalls > 0 {
+				if len(prog.Calls) != tc.wantCalls {
+					t.Fatalf("len(prog.Calls) = %d, want %d", len(prog.Calls), tc.wantCalls)
+				}
+				if tc.checkCall != nil {
+					tc.checkCall(t, prog.Calls[0])
+				}
+			}
+
+			// Assert: FETCH count and check
+			if tc.wantFetches > 0 {
+				if len(prog.Fetches) != tc.wantFetches {
+					t.Fatalf("len(prog.Fetches) = %d, want %d", len(prog.Fetches), tc.wantFetches)
+				}
+				if tc.checkFetch != nil {
+					tc.checkFetch(t, prog.Fetches[0])
+				}
+			}
+
+			// Assert: RUN count and check
+			if tc.wantRuns > 0 {
+				if len(prog.Runs) != tc.wantRuns {
+					t.Fatalf("len(prog.Runs) = %d, want %d", len(prog.Runs), tc.wantRuns)
+				}
+				if tc.checkRun != nil {
+					tc.checkRun(t, prog.Runs[0])
+				}
+			}
+
+			// Assert: INCLUDE count and check
+			if tc.wantIncludes > 0 {
+				if len(prog.Includes) != tc.wantIncludes {
+					t.Fatalf("len(prog.Includes) = %d, want %d", len(prog.Includes), tc.wantIncludes)
+				}
+				if tc.checkInclude != nil {
+					tc.checkInclude(t, prog.Includes[0])
+				}
+			}
+		})
+	}
+}

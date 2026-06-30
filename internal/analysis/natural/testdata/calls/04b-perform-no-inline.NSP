@@ -1,0 +1,19 @@
+* Task 5 fixture: PERFORM without inline definition
+* Same as 04-perform-inline-and-external.NSP but WITHOUT the DEFINE SUBROUTINE.
+* Proves that the inline-marking behavior is data-driven: removing the definition
+* marks the same SHARED-LOGIC target as unresolved (left for external resolution).
+
+DEFINE DATA
+LOCAL
+  1 STATUS-CODE (N2)
+END DEFINE
+
+PERFORM SHARED-LOGIC
+
+MOVE 1 TO STATUS-CODE
+
+PERFORM EXTERNAL-ONLY
+
+WRITE 'Done'
+
+END

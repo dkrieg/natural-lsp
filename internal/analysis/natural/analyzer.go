@@ -68,5 +68,13 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 		result.Diagnostics = append(result.Diagnostics, ast.Diagnostics...)
 	}
 
+	// Extract edges from the parsed AST. The extractor runs over whatever the
+	// parser produced (including partial ASTs from malformed code) without panicking
+	// (FR-43), and returns all valid edges it can extract. No diagnostics are emitted
+	// from extraction — syntax errors are already in result.Diagnostics.
+	if ast != nil {
+		result.Edges = extractEdges(ast)
+	}
+
 	return result, nil
 }

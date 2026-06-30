@@ -1,0 +1,18 @@
+* Task 2 fixture: CALLNAT static extraction
+* Contains two literal CALLNAT calls plus surrounding non-call statements
+* to prove zero false edges are produced for non-call lines.
+
+DEFINE DATA
+LOCAL
+  1 STATUS-CODE (N2)
+END DEFINE
+
+CALLNAT 'A'
+
+WRITE 'Processing'
+
+CALLNAT 'B'
+
+MOVE 42 TO STATUS-CODE
+
+END

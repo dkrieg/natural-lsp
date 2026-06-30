@@ -370,9 +370,15 @@ func (p *Parser) parseCallStatement(ast *Program) {
 	}
 
 	if p.matches(TokenLiteralString) {
+		tok := p.current
+		call.TargetIsLiteral = true
+		call.TargetRange = tokenRange(tok)
 		call.Target = p.consumeStringTarget()
 	} else if p.matches(TokenIdentifier) {
-		call.Target = p.current.Literal
+		tok := p.current
+		call.TargetIsLiteral = false
+		call.TargetRange = tokenRange(tok)
+		call.Target = tok.Literal
 		p.advance()
 	} else {
 		// A token is present on the same line but is not a valid operand.
@@ -424,7 +430,9 @@ func (p *Parser) parsePerformStatement(ast *Program) {
 	}
 
 	if p.matches(TokenIdentifier) {
-		perform.Target = p.current.Literal
+		tok := p.current
+		perform.Target = tok.Literal
+		perform.TargetRange = tokenRange(tok)
 		p.advance()
 	}
 
@@ -462,9 +470,15 @@ func (p *Parser) parseIncludeStatement(ast *Program) {
 	}
 
 	if p.matches(TokenLiteralString) {
+		tok := p.current
+		inc.TargetIsLiteral = true
+		inc.TargetRange = tokenRange(tok)
 		inc.Target = p.consumeStringTarget()
 	} else if p.matches(TokenIdentifier) {
-		inc.Target = p.current.Literal
+		tok := p.current
+		inc.TargetIsLiteral = false
+		inc.TargetRange = tokenRange(tok)
+		inc.Target = tok.Literal
 		p.advance()
 	}
 
@@ -509,9 +523,15 @@ func (p *Parser) parseFetchStatement(ast *Program) {
 
 	// Consume the target (either a string literal or identifier).
 	if p.matches(TokenLiteralString) {
+		tok := p.current
+		fetch.TargetIsLiteral = true
+		fetch.TargetRange = tokenRange(tok)
 		fetch.Target = p.consumeStringTarget()
 	} else if p.matches(TokenIdentifier) {
-		fetch.Target = p.current.Literal
+		tok := p.current
+		fetch.TargetIsLiteral = false
+		fetch.TargetRange = tokenRange(tok)
+		fetch.Target = tok.Literal
 		p.advance()
 	}
 
@@ -523,6 +543,13 @@ func (p *Parser) parseFetchStatement(ast *Program) {
 }
 
 // parseRunStatement parses a RUN statement.
+//
+// Grammar: RUN [REPEAT] [program-name [library-id]]
+//
+// Both program-name and library-id must appear on the same source line as the
+// RUN keyword; a token on the next line belongs to a following statement and is
+// never consumed here. library-id is the second positional operand and may be
+// a quoted literal or an identifier; it is placed in RunStatement.Library.
 func (p *Parser) parseRunStatement(ast *Program) {
 	// Capture position of RUN keyword before advancing.
 	startPos := p.currentPos()
@@ -549,10 +576,26 @@ func (p *Parser) parseRunStatement(ast *Program) {
 	}
 
 	if p.matches(TokenLiteralString) {
+		tok := p.current
+		run.TargetIsLiteral = true
+		run.TargetRange = tokenRange(tok)
 		run.Target = p.consumeStringTarget()
 	} else if p.matches(TokenIdentifier) {
-		run.Target = p.current.Literal
+		tok := p.current
+		run.TargetIsLiteral = false
+		run.TargetRange = tokenRange(tok)
+		run.Target = tok.Literal
 		p.advance()
+	}
+
+	// Capture the optional library-id: second positional operand, same-line only.
+	if p.current.Type != TokenEOF && p.current.Line == startLine {
+		if p.matches(TokenLiteralString) {
+			run.Library = p.consumeStringTarget()
+		} else if p.matches(TokenIdentifier) {
+			run.Library = p.current.Literal
+			p.advance()
+		}
 	}
 
 	// Skip remaining tokens in this statement until the next statement keyword.
@@ -648,6 +691,23 @@ func (p *Parser) skipToNextStatement() {
 // currentPos returns the current position from the current token.
 func (p *Parser) currentPos() model.Position {
 	return model.Position{Line: p.current.Line, Column: p.current.Column}
+}
+
+// tokenRange returns the inclusive source span of a single token.
+// The convention used throughout the AST for TargetRange:
+//   - Start is the first character of the token (tok.Column).
+//   - End is the last character, computed as tok.Column + len(tok.Literal) - 1.
+//
+// For TokenLiteralString the lexer stores the surrounding quotes in tok.Literal
+// (e.g. "'MYPROG'" for the source text 'MYPROG'), so the span includes both
+// quotes, matching the visible source range.
+// For TokenIdentifier tok.Literal is the bare identifier text (e.g. "#PROGNAME"),
+// so End points to the last identifier character.
+func tokenRange(tok Token) model.Range {
+	return model.Range{
+		Start: model.Position{Line: tok.Line, Column: tok.Column},
+		End:   model.Position{Line: tok.Line, Column: tok.Column + len(tok.Literal) - 1},
+	}
 }
 
 // parseReadStatement parses a READ statement.

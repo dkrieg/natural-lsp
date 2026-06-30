@@ -92,9 +92,11 @@ func (m *Map) Position() (model.Position, model.Position) {
 
 // IncludeStatement represents an INCLUDE statement.
 type IncludeStatement struct {
-	StartPos model.Position
-	EndPos   model.Position
-	Target   string
+	StartPos        model.Position
+	EndPos          model.Position
+	Target          string
+	TargetIsLiteral bool
+	TargetRange     model.Range
 }
 
 func (i *IncludeStatement) Position() (model.Position, model.Position) {
@@ -103,10 +105,12 @@ func (i *IncludeStatement) Position() (model.Position, model.Position) {
 
 // CallStatement represents a CALLNAT statement.
 type CallStatement struct {
-	StartPos   model.Position
-	EndPos     model.Position
-	Target     string
-	Parameters []string
+	StartPos        model.Position
+	EndPos          model.Position
+	Target          string
+	Parameters      []string
+	TargetIsLiteral bool
+	TargetRange     model.Range
 }
 
 func (c *CallStatement) Position() (model.Position, model.Position) {
@@ -115,9 +119,11 @@ func (c *CallStatement) Position() (model.Position, model.Position) {
 
 // FetchStatement represents a FETCH statement.
 type FetchStatement struct {
-	StartPos model.Position
-	EndPos   model.Position
-	Target   string
+	StartPos        model.Position
+	EndPos          model.Position
+	Target          string
+	TargetIsLiteral bool
+	TargetRange     model.Range
 }
 
 func (f *FetchStatement) Position() (model.Position, model.Position) {
@@ -126,9 +132,12 @@ func (f *FetchStatement) Position() (model.Position, model.Position) {
 
 // RunStatement represents a RUN statement.
 type RunStatement struct {
-	StartPos model.Position
-	EndPos   model.Position
-	Target   string
+	StartPos        model.Position
+	EndPos          model.Position
+	Target          string
+	TargetIsLiteral bool
+	TargetRange     model.Range
+	Library         string
 }
 
 func (r *RunStatement) Position() (model.Position, model.Position) {
@@ -137,9 +146,10 @@ func (r *RunStatement) Position() (model.Position, model.Position) {
 
 // PerformStatement represents a PERFORM statement.
 type PerformStatement struct {
-	StartPos model.Position
-	EndPos   model.Position
-	Target   string
+	StartPos    model.Position
+	EndPos      model.Position
+	Target      string
+	TargetRange model.Range
 }
 
 func (p *PerformStatement) Position() (model.Position, model.Position) {

@@ -13,7 +13,7 @@ import (
 	"os"
 )
 
-const cacheFormatVersion = "0.2.0"
+const cacheFormatVersion = "0.3.0"
 
 // CacheFile represents the on-disk cache format.
 type CacheFile struct {

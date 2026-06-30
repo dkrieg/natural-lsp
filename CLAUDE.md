@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–05 shipped** — the parser foundation (feature 00: lexer + recursive-descent parser + AST) and workspace indexing/persistent cache are implemented. Features 06–08 (call/data extraction, completion, signature help, call hierarchy) remain as stubs (`calls.go`, `data.go`, `hover.go`, `symbols.go` are package-doc + TODO only).
+**Features 00–06 shipped** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, and call/dependency extraction (feature 06) are implemented. Features 07–08 (data-access extraction, completion, signature help, call hierarchy) remain as stubs (`data.go`, `hover.go`, `symbols.go` are package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -32,6 +32,25 @@ diagnostics (`Program.Diagnostics`) for malformed statements while retaining val
 silent gaps — FR-30/M-6). `Analyze` surfaces the parsed `*Program` as `FileAnalysis.AST` and copies the
 parser's ranged diagnostics into `FileAnalysis.Diagnostics`. A `FuzzParse` target guards the parser
 entry point (never panics, always returns a non-nil `*Program`). Fixtures live under `testdata/parser/`.
+
+`internal/analysis/natural/calls.go` implements **call/dependency extraction** (feature 06):
+`extractEdges(*Program)` walks the AST and emits `model.EdgeEntry` values into `FileAnalysis.Edges` (wired
+in by `Analyze`). Per-construct edge kinds: `CALLNAT` → `EdgeCalls` (literal) / `EdgeCallsDynamic`
+(variable); `PERFORM` → `EdgePerforms`; `INCLUDE` → `EdgeIncludes`; `FETCH`/`RUN` → `EdgeNavigatesTo`
+(literal) / `EdgeNavigatesToDynamic` (variable). Two modeled gaps are never silent and never become
+diagnostics: variable targets become *dynamic* edges with caller context preserved, and a literal target
+containing an `&` runtime-substitution placeholder (e.g. `CALLNAT 'PRG&LANG'`) is **downgraded to the
+dynamic kind** rather than producing a false static edge (FR-18; CALLNAT/FETCH/RUN only — INCLUDE
+copycode is compile-time and excluded). An inline `PERFORM` target that matches a same-object `DEFINE
+SUBROUTINE` carries that definition's range in `EdgeEntry.Target` (else the zero range — cross-file
+binding is deferred to the resolution feature). A `RUN program-id library-id` records the library
+qualifier on `EdgeEntry.Library` (FETCH has no source-level library — its `operand2` is a stack
+parameter, not a library). Edges are returned in global source order (stable sort on `Source.Start`).
+This feature added two purely-additive `internal/model` members (`EdgeNavigatesToDynamic` and
+`EdgeEntry.Library`); persisting `Library` bumped the cache-format version (`0.2.0` → `0.3.0`). Parse
+errors continue to flow through `Program.Diagnostics`/`FileAnalysis.Diagnostics`, keeping the
+edge/diagnostic channels separate (FR-17/M-6); extraction over a partial/malformed AST never panics and
+retains the edges it could extract (FR-43). Fixtures live under `testdata/calls/`.
 
 `internal/server/` implements the LSP lifecycle (feature 03): `Run(ctx, r, w, version, root, cfg, az,
 logger)` serves JSON-RPC 2.0 over `Content-Length`-framed stdio (`go.lsp.dev/jsonrpc2` v1.0.0). The
