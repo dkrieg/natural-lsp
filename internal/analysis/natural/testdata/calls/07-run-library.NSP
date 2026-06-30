@@ -1,0 +1,7 @@
+* RUN with explicit library-id
+DEFINE DATA LOCAL
+END-DEFINE
+
+RUN 'BATCHJOB' 'MYLIB'
+
+END

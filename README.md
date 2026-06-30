@@ -20,9 +20,11 @@ exported to files before it can be indexed.
 > (feature 04). **Workspace indexing and persistent cache are now implemented** (feature 05) with
 > content-hash invalidation for git-safe cache. A **hand-written lexer and recursive-descent parser
 > producing an AST with ranged syntax diagnostics is implemented** (feature 00) behind the `Analyzer`
-> interface. The higher-level extraction/navigation providers that consume the AST (navigation, hover,
-> completion, call hierarchy) are not yet wired — this README describes the **target** feature set. There
-> are no published binaries. Implemented behavior will be marked as it lands.
+> interface. **Per-file call/dependency extraction is now implemented** (feature 06): `CALLNAT`,
+> `PERFORM`, `INCLUDE`, `FETCH`, and `RUN` produce relationship edges with caller context (static vs.
+> dynamic distinguished). The remaining navigation/hover/completion/call-hierarchy LSP providers, and
+> cross-file *resolution* of these edges, are not yet wired — this README describes the **target**
+> feature set. There are no published binaries. Implemented behavior will be marked as it lands.
 
 ---
 
@@ -50,9 +52,9 @@ The capabilities below define the **target** feature set for the first stable re
 
 - Open-document tracking via in-memory store (`textDocument/didOpen|didChange|didClose`) — **shipped**
 - On-disk file change detection via `fsnotify` + `workspace/didChangeWatchedFiles` — **shipped**
-- Cross-file resolution of static `CALLNAT 'LITERAL'` calls — *planned*
+- Per-file extraction of static `CALLNAT 'LITERAL'` calls — **shipped** (cross-file *resolution* of the edges — *planned*)
 - `INCLUDE` / copycode dependency tracking — **shipped**
-- Dynamic `CALLNAT #VARIABLE` calls flagged as unresolved with caller context preserved — *planned*
+- Dynamic `CALLNAT #VARIABLE` calls flagged as unresolved with caller context preserved — **shipped**
 - Persistent cache across sessions (sub-second startup after first index) — **shipped**
 
 **LSP protocol compliance**
@@ -81,6 +83,7 @@ Two kinds of analysis gap are handled separately, and neither is dropped silentl
 
 - **Unresolvable references** — e.g. `CALLNAT #VARIABLE`, whose target cannot be determined statically — are noted as
   unresolvable with the call site preserved, so they appear in find-references and outline rather than disappearing.
+  (Implemented for `CALLNAT`/`FETCH`/`RUN` as `*_DYNAMIC` edges that retain the call site; cross-file binding is deferred to resolution.)
 - **Parse errors** — source the parser cannot interpret — are surfaced as LSP diagnostics so they are visible in the
   editor, not silently discarded.
 
@@ -344,14 +347,21 @@ cache valid across git checkouts; a cache-format version forces a full rebuild o
 
 ### Call relationships
 
-| Construct            | Resolution                       | Edge type       |
-|----------------------|----------------------------------|-----------------|
-| `CALLNAT 'LITERAL'`  | Static — resolved to definition          | `CALLS`       |
-| `CALLNAT #VARIABLE`  | Dynamic — surfaced as unresolvable       | `CALLS`       |
-| `FETCH 'LITERAL'`    | Static — navigation edge                 | `NAVIGATES_TO`|
-| `RUN 'LITERAL'`      | Static — navigation edge                 | `NAVIGATES_TO`|
-| `PERFORM subroutine` | Local scope first, then external         | `PERFORMS`    |
-| `INCLUDE copycode`   | Resolved to copycode file                | `INCLUDES`    |
+| Construct            | Resolution                       | Edge type             |
+|----------------------|----------------------------------|-----------------------|
+| `CALLNAT 'LITERAL'`  | Static — resolved to definition          | `CALLS`               |
+| `CALLNAT #VARIABLE`  | Dynamic — surfaced as unresolvable       | `CALLS_DYNAMIC`       |
+| `FETCH 'LITERAL'`    | Static — navigation edge                 | `NAVIGATES_TO`        |
+| `FETCH #VARIABLE`    | Dynamic — surfaced as unresolvable       | `NAVIGATES_TO_DYNAMIC`|
+| `RUN 'LITERAL'`      | Static — navigation edge                 | `NAVIGATES_TO`        |
+| `RUN #VARIABLE`      | Dynamic — surfaced as unresolvable       | `NAVIGATES_TO_DYNAMIC`|
+| `PERFORM subroutine` | Local scope first, then external         | `PERFORMS`            |
+| `INCLUDE copycode`   | Resolved to copycode file                | `INCLUDES`            |
+
+A literal `CALLNAT`/`FETCH`/`RUN` target containing an `&` runtime-substitution placeholder (e.g.
+`CALLNAT 'PRG&LANG'`) is treated as **dynamic** — it produces the `*_DYNAMIC` edge rather than a false
+static edge to a non-existent object. `RUN 'PGM' library-id` records the named target library on the
+edge.
 
 ### Data access
 

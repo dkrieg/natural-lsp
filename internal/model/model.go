@@ -12,13 +12,14 @@ package model
 type EdgeKind string
 
 const (
-	EdgeCalls        EdgeKind = "CALLS"         // CALLNAT 'LITERAL' — static
-	EdgeCallsDynamic EdgeKind = "CALLS_DYNAMIC" // CALLNAT #VARIABLE — unresolved
-	EdgeNavigatesTo  EdgeKind = "NAVIGATES_TO"  // FETCH / RUN 'LITERAL'
-	EdgePerforms     EdgeKind = "PERFORMS"      // PERFORM subroutine
-	EdgeIncludes     EdgeKind = "INCLUDES"      // INCLUDE copycode
-	EdgeReads        EdgeKind = "READS"         // READ / FIND / GET
-	EdgeWrites       EdgeKind = "WRITES"        // STORE / UPDATE / DELETE
+	EdgeCalls              EdgeKind = "CALLS"                // CALLNAT 'LITERAL' — static
+	EdgeCallsDynamic       EdgeKind = "CALLS_DYNAMIC"        // CALLNAT #VARIABLE — unresolved
+	EdgeNavigatesTo        EdgeKind = "NAVIGATES_TO"         // FETCH / RUN 'LITERAL'
+	EdgeNavigatesToDynamic EdgeKind = "NAVIGATES_TO_DYNAMIC" // FETCH / RUN #VARIABLE — unresolved
+	EdgePerforms           EdgeKind = "PERFORMS"             // PERFORM subroutine
+	EdgeIncludes           EdgeKind = "INCLUDES"             // INCLUDE copycode
+	EdgeReads              EdgeKind = "READS"                // READ / FIND / GET
+	EdgeWrites             EdgeKind = "WRITES"               // STORE / UPDATE / DELETE
 )
 
 // ObjectType classifies a Natural source object by its file extension and
@@ -129,11 +130,21 @@ type SymbolEntry struct {
 }
 
 // EdgeEntry represents a relationship between two symbols or locations.
+//
+// All fields are populated by extractEdges in internal/analysis/natural/calls.go.
+// Library is additive and optional: it is only set when the edge carries an
+// explicit library qualifier (currently only RUN with a library-id operand).
+// All other edge kinds leave Library empty.
 type EdgeEntry struct {
 	Source     Range
 	Target     Range
 	Kind       EdgeKind
 	TargetName string
+	// Library is the library qualifier for the target — set from the
+	// library-id operand of a RUN statement, empty for all other edge kinds.
+	// FETCH's second positional operand is a parameter field, not a library,
+	// so it never populates this field.
+	Library string
 }
 
 // DataAccessEntry represents a data access relationship (read/write) to a file.

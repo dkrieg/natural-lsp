@@ -44,6 +44,11 @@ func TestSave_Load(t *testing.T) {
 						Kind:       model.EdgeCalls,
 						TargetName: "program2.NSP",
 					},
+					{
+						Kind:       model.EdgeNavigatesTo,
+						TargetName: "BATCHJOB",
+						Library:    "MYLIB",
+					},
 				},
 			})
 			idx.Add("program2.NSP", model.FileAnalysis{
@@ -97,6 +102,15 @@ func TestSave_Load(t *testing.T) {
 				}
 				if len(fa.Edges) != len(original.Edges) {
 					t.Errorf("Load() Edges count for %s = %d, want %d", path, len(fa.Edges), len(original.Edges))
+				}
+				// Verify EdgeEntry.Library field survives round-trip (Decision 3)
+				for i, edge := range fa.Edges {
+					if i < len(original.Edges) {
+						originalEdge := original.Edges[i]
+						if edge.Library != originalEdge.Library {
+							t.Errorf("Load() Edge[%d].Library for %s = %q, want %q", i, path, edge.Library, originalEdge.Library)
+						}
+					}
 				}
 			}
 		})
@@ -251,7 +265,7 @@ func TestLoad_FormatVersionMismatch(t *testing.T) {
 			oldVersion := "0.1.0"
 			newContent := string(content)
 			// The actual version string in the cache - replace it with an old one.
-			newContent = strings.Replace(newContent, "0.2.0", oldVersion, 1)
+			newContent = strings.Replace(newContent, cacheFormatVersion, oldVersion, 1)
 
 			// Write the corrupted cache back.
 			if err := os.WriteFile(cachePath, []byte(newContent), 0644); err != nil {

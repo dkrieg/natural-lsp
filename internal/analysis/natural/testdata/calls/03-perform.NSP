@@ -1,0 +1,19 @@
+* Task 4 fixture: PERFORM extraction with caller context
+* Contains two PERFORM statements targeting external subroutines.
+* PERFORM targets are always identifiers (never quoted literals).
+* The fixture includes non-PERFORM lines to verify zero false edges.
+
+DEFINE DATA
+LOCAL
+  1 STATUS-CODE (N2)
+END DEFINE
+
+PERFORM CHECK-INPUT
+
+MOVE 1 TO STATUS-CODE
+
+PERFORM PROCESS-RECORD
+
+WRITE 'Done'
+
+END

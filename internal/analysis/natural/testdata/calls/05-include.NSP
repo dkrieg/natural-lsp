@@ -1,0 +1,18 @@
+* Task 6 fixture: INCLUDE extraction
+* Contains two INCLUDE statements: one quoted and one unquoted.
+* Natural allows both forms.
+* Copycode targets are treated as literal names regardless of quoting.
+
+DEFINE DATA
+LOCAL
+  1 REQUEST-REC
+    2 REQUEST-ID (A10)
+END DEFINE
+
+INCLUDE 'COMMON-DECLS'
+
+INCLUDE ERRHANDLER
+
+MOVE 'REQ001' TO REQUEST-ID
+
+END

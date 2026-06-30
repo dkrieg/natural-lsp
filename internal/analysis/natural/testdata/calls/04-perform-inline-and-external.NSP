@@ -1,0 +1,24 @@
+* Task 5 fixture: PERFORM with both inline definition and external reference
+* This program defines an inline subroutine SHARED-LOGIC (DEFINE SUBROUTINE).
+* It performs both the inline SHARED-LOGIC and an EXTERNAL-ONLY (not defined).
+* Accepts the Task 5 criterion: inline subroutine targets are marked in-file-resolved;
+* external-only targets are left unresolved (deferred to resolution feature).
+
+DEFINE DATA
+LOCAL
+  1 STATUS-CODE (N2)
+END DEFINE
+
+PERFORM SHARED-LOGIC
+
+MOVE 1 TO STATUS-CODE
+
+PERFORM EXTERNAL-ONLY
+
+WRITE 'Done'
+
+DEFINE SUBROUTINE SHARED-LOGIC
+  WRITE 'Shared logic'
+END-SUBROUTINE
+
+END

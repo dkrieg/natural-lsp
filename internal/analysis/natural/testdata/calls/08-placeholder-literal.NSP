@@ -1,0 +1,16 @@
+* Task 8 fixture: runtime-substitution placeholders in literal targets
+* Contains a CALLNAT with a placeholder literal ('PRG&LANG') and a plain literal
+* ('PLAINPROG') to verify the downgrade from static to dynamic when & is present.
+
+DEFINE DATA
+LOCAL
+  1 RESULT-CODE (N2)
+END DEFINE
+
+CALLNAT 'PRG&LANG'
+
+CALLNAT 'PLAINPROG'
+
+MOVE 0 TO RESULT-CODE
+
+END
