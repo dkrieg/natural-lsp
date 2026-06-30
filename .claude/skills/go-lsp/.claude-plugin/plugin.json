@@ -1,0 +1,15 @@
+{
+  "name": "go-lsp",
+  "description": "Go code intelligence via gopls (diagnostics, go-to-definition, find references, hover).",
+  "version": "0.1.0",
+  "lspServers": {
+    "go": {
+      "command": "gopls",
+      "args": ["serve"],
+      "extensionToLanguage": {
+        ".go": "go"
+      },
+      "diagnostics": true
+    }
+  }
+}
