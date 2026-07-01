@@ -57,7 +57,8 @@ in structure.
 
 ## Out of scope
 - Resolving physical Adabas DDM metadata or IMS segment metadata beyond names present in source.
-- Cross-language resolution of embedded SQL to external table definitions (out of PRD scope).
+- **Embedded-SQL data access.** This feature covers Adabas-style data access (`READ`/`FIND`/`GET`/`STORE`/record-form `UPDATE`/`DELETE`) against DDMs. Native Natural SQL (`SELECT`/`INSERT`/SQL-form `UPDATE`/`DELETE`/`MERGE`/`PROCESS SQL`/`CALLDBPROC`) and its host variables are extracted by [08b-embedded-sql-extraction](../08b-embedded-sql-extraction/plan.md), which reuses this feature's DDM read/write edge model. (SQL table operands *are* DDM names, so the two share the DDM namespace — they differ only in which statements produce the edges.)
+- Resolving the *physical* SQL table behind a DDM, or column-level DB metadata (out of PRD scope).
 
 ## Open questions
 - Exact array-bound and redefinition grammar inside data-definition blocks — depth required for the
