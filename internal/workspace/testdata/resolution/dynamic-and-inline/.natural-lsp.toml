@@ -1,0 +1,5 @@
+# Minimal config for Task 4 fixture: no library map (flat namespace)
+[workspace]
+max_file_size_kb = 512
+
+# No [resolution] section — defaults to flat namespace (no library map)

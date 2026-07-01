@@ -1,0 +1,14 @@
+# Task 7 fixture: ambiguity diagnostic in flat namespace (no library map).
+# Two directories (LIBA and LIBB) each contain a module named DUP.
+# With NO [resolution] library map configured, the workspace falls back to
+# a single flat namespace. When MAIN.NSP calls CALLNAT 'DUP', the resolver
+# sees two candidates (LIBA/DUP.NSN and LIBB/DUP.NSN) and must:
+#   1. NOT silently pick one winner.
+#   2. Emit an ambiguity diagnostic for the referencing file at the CALLNAT source range.
+#   3. Mark the resolution outcome as Ambiguous(candidates).
+# Task 7 / FR-5, FR-31.
+
+[workspace]
+max_file_size_kb = 512
+
+# [resolution] is intentionally omitted — this forces flat-namespace behavior.

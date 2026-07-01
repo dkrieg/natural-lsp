@@ -1,0 +1,12 @@
+* Task 6 fixture: APP/SHARED.NSN
+* Subprogram with the same name as COMMON/SHARED.NSN.
+* The APP/CALLER.NSP should prefer this one (current library beats steplib).
+
+DEFINE DATA
+LOCAL
+  1 X (A5)
+END DEFINE
+
+MOVE 'APP' TO X
+
+END

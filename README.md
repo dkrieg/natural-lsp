@@ -22,9 +22,13 @@ exported to files before it can be indexed.
 > producing an AST with ranged syntax diagnostics is implemented** (feature 00) behind the `Analyzer`
 > interface. **Per-file call/dependency extraction is now implemented** (feature 06): `CALLNAT`,
 > `PERFORM`, `INCLUDE`, `FETCH`, and `RUN` produce relationship edges with caller context (static vs.
-> dynamic distinguished). The remaining navigation/hover/completion/call-hierarchy LSP providers, and
-> cross-file *resolution* of these edges, are not yet wired — this README describes the **target**
-> feature set. There are no published binaries. Implemented behavior will be marked as it lands.
+> dynamic distinguished). **Cross-file resolution of those edges is now implemented** (feature 07): the
+> steplib chain (current library → declared steplibs → SYSTEM, non-transitive), explicit-library bypass
+> for `RUN 'pgm' 'lib'`, inline-before-external `PERFORM`, `INCLUDE`→copycode binding, and flat-namespace
+> ambiguity diagnostics — exposed as a workspace-index capability. The remaining
+> navigation/hover/completion/call-hierarchy LSP *providers* that surface this to the editor are not yet
+> wired — this README describes the **target** feature set. There are no published binaries. Implemented
+> behavior will be marked as it lands.
 
 ---
 
@@ -52,7 +56,7 @@ The capabilities below define the **target** feature set for the first stable re
 
 - Open-document tracking via in-memory store (`textDocument/didOpen|didChange|didClose`) — **shipped**
 - On-disk file change detection via `fsnotify` + `workspace/didChangeWatchedFiles` — **shipped**
-- Per-file extraction of static `CALLNAT 'LITERAL'` calls — **shipped** (cross-file *resolution* of the edges — *planned*)
+- Per-file extraction of static `CALLNAT 'LITERAL'` calls — **shipped** (cross-file *resolution* of the edges — **shipped**, feature 07: steplib chain, explicit-library bypass, flat-namespace ambiguity diagnostics)
 - `INCLUDE` / copycode dependency tracking — **shipped**
 - Dynamic `CALLNAT #VARIABLE` calls flagged as unresolved with caller context preserved — **shipped**
 - Persistent cache across sessions (sub-second startup after first index) — **shipped**
@@ -83,7 +87,7 @@ Two kinds of analysis gap are handled separately, and neither is dropped silentl
 
 - **Unresolvable references** — e.g. `CALLNAT #VARIABLE`, whose target cannot be determined statically — are noted as
   unresolvable with the call site preserved, so they appear in find-references and outline rather than disappearing.
-  (Implemented for `CALLNAT`/`FETCH`/`RUN` as `*_DYNAMIC` edges that retain the call site; cross-file binding is deferred to resolution.)
+  (Implemented for `CALLNAT`/`FETCH`/`RUN` as `*_DYNAMIC` edges that retain the call site; cross-file resolution (feature 07) binds resolvable references and records these as `Unresolved(dynamic)` outcomes that keep the call site.)
 - **Parse errors** — source the parser cannot interpret — are surfaced as LSP diagnostics so they are visible in the
   editor, not silently discarded.
 

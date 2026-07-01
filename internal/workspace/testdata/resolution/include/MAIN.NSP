@@ -1,0 +1,7 @@
+* MAIN program that includes a copycode
+PROGRAM MAIN
+
+INCLUDE SHARED
+
+MOVE 1 TO *RESULT
+END

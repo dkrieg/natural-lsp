@@ -1,0 +1,26 @@
+* Task 8a fixture: perform-inline-wins/MAIN.NSP
+* Demonstrates that inline DEFINE SUBROUTINE wins over external .NSS.
+* Contains BOTH:
+*   - An inline DEFINE SUBROUTINE SHARED-SUB
+*   - A PERFORM SHARED-SUB statement (should resolve to inline, not external)
+*   - An external SHARED-SUB.NSS also exists in the workspace
+*
+* M-4 (inline-wins): PERFORM resolves to the inline definition first.
+* When the inline definition is removed, it should resolve to the external .NSS.
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* Inline subroutine definition (will win over external SHARED-SUB.NSS).
+DEFINE SUBROUTINE SHARED-SUB
+  MOVE 'INLINE' TO RESULT
+END SUBROUTINE
+
+* PERFORM targets the inline subroutine (not the external one).
+* Extraction sets the inline match's Target range (non-zero).
+* Resolution must NOT re-resolve it to the external NSS.
+PERFORM SHARED-SUB
+
+END

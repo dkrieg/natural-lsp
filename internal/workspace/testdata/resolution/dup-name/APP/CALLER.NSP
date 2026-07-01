@@ -1,0 +1,33 @@
+* Task 6 fixture (dup-name case): APP/CALLER.NSP
+* Demonstrates steplib-chain resolution where the same module name (SHARED)
+* exists in multiple libraries (APP and COMMON).
+* This caller's current library is APP (path prefix match against config).
+* When CALLNAT 'SHARED' is resolved:
+* - Current library APP → has SHARED.NSN
+* - Expected: resolves to APP/SHARED.NSN (current library wins over steplib)
+*
+* OQ-3, OQ-5: current library from path; steplib chain non-transitive.
+* FR-16, FR-5: steplib-chain resolution order matters.
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* Call to SHARED — should resolve to APP/SHARED.NSN (current library first)
+CALLNAT 'SHARED'
+
+* Call to COMMONONLY — exists only in COMMON library, not in APP.
+* APP declares steplibs=["COMMON"], so resolution follows the chain.
+* Expected: resolves to COMMON/COMMONONLY.NSN (steplib fallback).
+CALLNAT 'COMMONONLY'
+
+* Call to ORPHAN — exists only in OTHER library.
+* OTHER is declared in the library map but is NOT a steplib of APP.
+* APP's chain is [APP, COMMON, SYSTEM]; OTHER is not in the chain.
+* Expected: Unresolved(ReasonNoTarget) — unreachable from APP.
+CALLNAT 'ORPHAN'
+
+MOVE 'OK' TO RESULT
+
+END

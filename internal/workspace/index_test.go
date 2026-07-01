@@ -392,16 +392,12 @@ func TestInvalidate_INCLUDE(t *testing.T) {
 
 	idx := &Index{}
 
-	// Create a dependency chain: program.NSP -> copycode.NSC
-	// program.NSP has an INCLUDE edge to copycode.NSC
+	// Create a dependency chain: program.NSP -> copycode.NSC (COPYCODE object)
+	// program.NSP has an INCLUDE edge that references the bare name "COPYCODE"
+	// (not the full path). Invalidate must match by object name, not path.
 	copycode := model.FileAnalysis{
 		ObjectType: model.ObjectCopycode,
-		Edges: []model.EdgeEntry{
-			{
-				Kind:       model.EdgeIncludes,
-				TargetName: "program.NSP",
-			},
-		},
+		Edges:      []model.EdgeEntry{},
 	}
 	idx.Add("copycode.NSC", copycode)
 
@@ -410,13 +406,15 @@ func TestInvalidate_INCLUDE(t *testing.T) {
 		Edges: []model.EdgeEntry{
 			{
 				Kind:       model.EdgeIncludes,
-				TargetName: "copycode.NSC",
+				TargetName: "COPYCODE", // Bare object name, not path
 			},
 		},
 	}
 	idx.Add("program.NSP", program)
 
 	// When copycode.NSC changes, Invalidate() should return program.NSP
+	// The object name of copycode.NSC is "COPYCODE" (filename stem, uppercased).
+	// program.NSP has an INCLUDE edge with TargetName="COPYCODE", so it should match.
 	dependents := idx.Invalidate("copycode.NSC")
 
 	if len(dependents) != 1 {
@@ -446,19 +444,14 @@ func TestInvalidate_Transitive(t *testing.T) {
 
 	idx := &Index{}
 
-	// Create a transitive dependency chain:
-	// program.NSP -> subprogram.NSN -> copycode2.NSC
-	// When copycode2.NSC changes, both subprogram.NSN and program.NSP
-	// should be returned as dependents.
+	// Create a transitive dependency chain via object names:
+	// program.NSP includes SUBPROGRAM -> subprogram.NSN includes COPYCODE2 -> copycode2.NSC
+	// When copycode2.NSC changes (object name = COPYCODE2), both subprogram.NSN and
+	// program.NSP should be returned as dependents.
 
 	copycode2 := model.FileAnalysis{
 		ObjectType: model.ObjectCopycode,
-		Edges: []model.EdgeEntry{
-			{
-				Kind:       model.EdgeIncludes,
-				TargetName: "subprogram.NSN",
-			},
-		},
+		Edges:      []model.EdgeEntry{},
 	}
 	idx.Add("copycode2.NSC", copycode2)
 
@@ -467,7 +460,7 @@ func TestInvalidate_Transitive(t *testing.T) {
 		Edges: []model.EdgeEntry{
 			{
 				Kind:       model.EdgeIncludes,
-				TargetName: "copycode2.NSC",
+				TargetName: "COPYCODE2", // Bare object name
 			},
 		},
 	}
@@ -478,14 +471,18 @@ func TestInvalidate_Transitive(t *testing.T) {
 		Edges: []model.EdgeEntry{
 			{
 				Kind:       model.EdgeIncludes,
-				TargetName: "subprogram.NSN",
+				TargetName: "SUBPROGRAM", // Bare object name
 			},
 		},
 	}
 	idx.Add("program.NSP", program)
 
 	// When copycode2.NSC changes, Invalidate() should return both
-	// subprogram.NSN and program.NSP (transitively dependent)
+	// subprogram.NSN and program.NSP (transitively dependent).
+	// The object name of copycode2.NSC is "COPYCODE2".
+	// subprogram.NSN has INCLUDE COPYCODE2, so it's a direct dependent.
+	// program.NSP has INCLUDE SUBPROGRAM, and subprogram.NSN is in the dependents,
+	// so program.NSP becomes a transitive dependent via BFS.
 	dependents := idx.Invalidate("copycode2.NSC")
 
 	// We expect exactly 2 dependents: subprogram.NSN and program.NSP
@@ -736,4 +733,267 @@ func TestBuild_CacheIntegration(t *testing.T) {
 			tc.verify(t, idx, staleCount, totalFiles)
 		})
 	}
+}
+
+// TestIndex_LookupByName verifies that Index.LookupByName() looks up candidate
+// definitions by object name (derived from filename stem, case-insensitive) and
+// optionally filters by ObjectType. This implements Task 3 of feature 07
+// (FR-5, FR-10, FR-16, FR-31 — call-dependency resolution).
+func TestIndex_LookupByName(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name        string
+		setup       func(*Index, *config.Config)
+		lookupName  string
+		lookupType  model.ObjectType
+		cfg         *config.Config
+		wantCount   int
+		wantPaths   []string
+		wantLibs    []string
+		description string
+	}{
+		{
+			name: "basic-lookup-multiple-same-name-different-libs",
+			description: "lookup MYSUB returns both APP/MYSUB.NSN and COMMON/MYSUB.NSN " +
+				"with their respective libraries (Task 3, FR-5, FR-16)",
+			setup: func(idx *Index, cfg *config.Config) {
+				// Add APP/MYSUB.NSN
+				idx.Add("APP/MYSUB.NSN", model.FileAnalysis{
+					ObjectType: model.ObjectSubprogram,
+				})
+				// Add COMMON/MYSUB.NSN
+				idx.Add("COMMON/MYSUB.NSN", model.FileAnalysis{
+					ObjectType: model.ObjectSubprogram,
+				})
+			},
+			lookupName: "MYSUB",
+			lookupType: model.ObjectSubprogram,
+			cfg: &config.Config{
+				Resolution: config.ResolutionConfig{
+					Libraries: []config.Library{
+						{Name: "APP", Path: "APP"},
+						{Name: "COMMON", Path: "COMMON"},
+					},
+				},
+			},
+			wantCount: 2,
+			wantPaths: []string{"APP/MYSUB.NSN", "COMMON/MYSUB.NSN"},
+			wantLibs:  []string{"APP", "COMMON"},
+		},
+		{
+			name: "case-insensitive-lookup",
+			description: "lookup with lowercase 'mysub' returns same results " +
+				"as uppercase 'MYSUB' (case-insensitive, Task 3)",
+			setup: func(idx *Index, cfg *config.Config) {
+				idx.Add("APP/MYSUB.NSN", model.FileAnalysis{
+					ObjectType: model.ObjectSubprogram,
+				})
+				idx.Add("COMMON/MYSUB.NSN", model.FileAnalysis{
+					ObjectType: model.ObjectSubprogram,
+				})
+			},
+			lookupName: "mysub",
+			lookupType: model.ObjectSubprogram,
+			cfg: &config.Config{
+				Resolution: config.ResolutionConfig{
+					Libraries: []config.Library{
+						{Name: "APP", Path: "APP"},
+						{Name: "COMMON", Path: "COMMON"},
+					},
+				},
+			},
+			wantCount: 2,
+			wantPaths: []string{"APP/MYSUB.NSN", "COMMON/MYSUB.NSN"},
+			wantLibs:  []string{"APP", "COMMON"},
+		},
+		{
+			name: "type-filter-excludes-wrong-type",
+			description: "lookup MAIN with type filter ObjectSubprogram excludes " +
+				"MAIN.NSP (wrong type) but includes MAIN.NSN (Task 3, FR-10, FR-16)",
+			setup: func(idx *Index, cfg *config.Config) {
+				// Add MAIN.NSP (program)
+				idx.Add("MAIN.NSP", model.FileAnalysis{
+					ObjectType: model.ObjectProgram,
+				})
+				// Add MAIN.NSN (subprogram)
+				idx.Add("MAIN.NSN", model.FileAnalysis{
+					ObjectType: model.ObjectSubprogram,
+				})
+			},
+			lookupName: "MAIN",
+			lookupType: model.ObjectSubprogram,
+			cfg:        &config.Config{},
+			wantCount:  1,
+			wantPaths:  []string{"MAIN.NSN"},
+			wantLibs:   []string{""},
+		},
+		{
+			name: "zero-type-matches-all-types",
+			description: "lookup MAIN with zero ObjectType (empty string) returns " +
+				"all matching names regardless of type (Task 3)",
+			setup: func(idx *Index, cfg *config.Config) {
+				idx.Add("MAIN.NSP", model.FileAnalysis{
+					ObjectType: model.ObjectProgram,
+				})
+				idx.Add("MAIN.NSN", model.FileAnalysis{
+					ObjectType: model.ObjectSubprogram,
+				})
+			},
+			lookupName: "MAIN",
+			lookupType: "", // zero/empty type means match all
+			cfg:        &config.Config{},
+			wantCount:  2,
+			wantPaths:  []string{"MAIN.NSN", "MAIN.NSP"},
+			wantLibs:   []string{"", ""},
+		},
+		{
+			name:        "unknown-name-returns-empty",
+			description: "lookup of non-existent name returns empty slice, not nil or error (Task 3, FR-17)",
+			setup: func(idx *Index, cfg *config.Config) {
+				idx.Add("EXISTING.NSN", model.FileAnalysis{
+					ObjectType: model.ObjectSubprogram,
+				})
+			},
+			lookupName: "NOSUCH",
+			lookupType: model.ObjectSubprogram,
+			cfg:        &config.Config{},
+			wantCount:  0,
+			wantPaths:  []string{},
+			wantLibs:   []string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := &Index{}
+			tc.setup(idx, tc.cfg)
+
+			// Call LookupByName
+			candidates := idx.LookupByName(tc.lookupName, tc.lookupType, tc.cfg)
+
+			// Verify count
+			if len(candidates) != tc.wantCount {
+				t.Errorf("LookupByName(%q, %v) returned %d candidates, want %d",
+					tc.lookupName, tc.lookupType, len(candidates), tc.wantCount)
+				if len(candidates) > 0 {
+					for _, c := range candidates {
+						t.Logf("  candidate: path=%q, library=%q", c.Path, c.Library)
+					}
+				}
+				return
+			}
+
+			// Verify paths and libraries (in order)
+			if tc.wantCount > 0 {
+				for i, candidate := range candidates {
+					if candidate.Path != tc.wantPaths[i] {
+						t.Errorf("LookupByName candidate %d: path=%q, want %q",
+							i, candidate.Path, tc.wantPaths[i])
+					}
+					if candidate.Library != tc.wantLibs[i] {
+						t.Errorf("LookupByName candidate %d: library=%q, want %q",
+							i, candidate.Library, tc.wantLibs[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestBuildNameIndex verifies that buildNameIndex produces a complete, sorted,
+// case-normalized snapshot that matches LookupByName results for every name.
+// This exercises the bulk-resolution path that the call-graph resolver will use
+// (O(files + edges) rather than O(files * edges)).
+func TestBuildNameIndex(t *testing.T) {
+	t.Helper()
+
+	cfg := &config.Config{
+		Resolution: config.ResolutionConfig{
+			Libraries: []config.Library{
+				{Name: "APP", Path: "APP"},
+				{Name: "COMMON", Path: "COMMON"},
+			},
+		},
+	}
+
+	idx := &Index{}
+	idx.Add("APP/MYSUB.NSN", model.FileAnalysis{ObjectType: model.ObjectSubprogram})
+	idx.Add("COMMON/MYSUB.NSN", model.FileAnalysis{ObjectType: model.ObjectSubprogram})
+	idx.Add("APP/MAIN.NSP", model.FileAnalysis{ObjectType: model.ObjectProgram})
+
+	nameMap := idx.buildNameIndex(cfg)
+
+	// Keys must be uppercase (object names are case-normalised).
+	if _, ok := nameMap["MYSUB"]; !ok {
+		t.Error("buildNameIndex: missing key \"MYSUB\"")
+	}
+	if _, ok := nameMap["MAIN"]; !ok {
+		t.Error("buildNameIndex: missing key \"MAIN\"")
+	}
+
+	// MYSUB has two candidates sorted by path.
+	mysub := nameMap["MYSUB"]
+	if len(mysub) != 2 {
+		t.Fatalf("buildNameIndex[MYSUB] len=%d, want 2", len(mysub))
+	}
+	if mysub[0].Path != "APP/MYSUB.NSN" {
+		t.Errorf("buildNameIndex[MYSUB][0].Path=%q, want %q", mysub[0].Path, "APP/MYSUB.NSN")
+	}
+	if mysub[1].Path != "COMMON/MYSUB.NSN" {
+		t.Errorf("buildNameIndex[MYSUB][1].Path=%q, want %q", mysub[1].Path, "COMMON/MYSUB.NSN")
+	}
+	if mysub[0].Library != "APP" {
+		t.Errorf("buildNameIndex[MYSUB][0].Library=%q, want %q", mysub[0].Library, "APP")
+	}
+	if mysub[1].Library != "COMMON" {
+		t.Errorf("buildNameIndex[MYSUB][1].Library=%q, want %q", mysub[1].Library, "COMMON")
+	}
+
+	// The buildNameIndex result must match what LookupByName returns for the same name.
+	for name, candidates := range nameMap {
+		via := idx.LookupByName(name, "", cfg)
+		if len(via) != len(candidates) {
+			t.Errorf("buildNameIndex[%q] len=%d but LookupByName returned %d",
+				name, len(candidates), len(via))
+			continue
+		}
+		for i := range candidates {
+			if candidates[i].Path != via[i].Path {
+				t.Errorf("buildNameIndex[%q][%d].Path=%q but LookupByName=%q",
+					name, i, candidates[i].Path, via[i].Path)
+			}
+		}
+	}
+}
+
+// TestBuildNameIndex_Race exercises buildNameIndex and concurrent Add calls under
+// the race detector to verify the read-lock snapshot is race-free.
+func TestBuildNameIndex_Race(t *testing.T) {
+	t.Parallel()
+
+	idx := &Index{}
+	idx.Add("APP/INIT.NSP", model.FileAnalysis{ObjectType: model.ObjectProgram})
+
+	cfg := &config.Config{}
+
+	done := make(chan struct{})
+
+	// Writer goroutine: continuously adds entries while the reader runs.
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			idx.Add("APP/INIT.NSP", model.FileAnalysis{ObjectType: model.ObjectProgram})
+		}
+	}()
+
+	// Reader: call buildNameIndex while the writer is active.
+	for i := 0; i < 10; i++ {
+		nameMap := idx.buildNameIndex(cfg)
+		if len(nameMap) == 0 {
+			t.Error("buildNameIndex returned empty map during concurrent writes")
+		}
+	}
+
+	<-done
 }

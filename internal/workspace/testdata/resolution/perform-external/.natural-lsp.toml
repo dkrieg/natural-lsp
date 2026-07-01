@@ -1,0 +1,5 @@
+# Task 8a fixture: perform-external/.natural-lsp.toml
+# Flat namespace (no library map) — resolution uses Task 5 flat logic.
+
+[extensions]
+

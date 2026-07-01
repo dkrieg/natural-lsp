@@ -1,0 +1,3 @@
+* External subroutine that resolves correctly
+DEFINE SUBROUTINE GOODSUB
+END-SUBROUTINE.

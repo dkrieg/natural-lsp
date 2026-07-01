@@ -1,0 +1,18 @@
+* R1 remediation: caller at undeclared path (SCRATCH/) calling target in declared library (APP/)
+* This caller is under SCRATCH/, which is NOT declared in [resolution].libraries
+* The target ONLYSUB exists only in APP/ (a declared library)
+* Expected: when library map exists but caller is undeclared, fall back to flat-namespace resolution
+* The ONLYSUB call should RESOLVE (currently returns Unresolved(ReasonNoTarget) — the RED failure)
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* Static call to ONLYSUB, which exists only in APP/
+CALLNAT 'ONLYSUB'
+
+* Use the result variable to complete the structure
+MOVE 'OK' TO RESULT
+
+END

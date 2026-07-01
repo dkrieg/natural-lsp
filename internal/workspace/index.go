@@ -16,6 +16,20 @@ import (
 	"natural-lsp/internal/model"
 )
 
+// Candidate represents a definition candidate returned by Index.LookupByName.
+// It includes the workspace-relative path and the derived owning library.
+type Candidate struct {
+	// Path is the workspace-relative file path.
+	Path string
+
+	// Library is the owning Natural library name (e.g., "APP", "COMMON"),
+	// derived from the config Library mapping, or empty if not in a declared library.
+	Library string
+
+	// Type is the ObjectType of the candidate (e.g., ObjectSubprogram).
+	Type model.ObjectType
+}
+
 // Index is an in-memory map of file paths to FileAnalysis results.
 // It provides basic query methods for the workspace symbol table.
 type Index struct {
@@ -62,27 +76,157 @@ func (idx *Index) Keys() []string {
 	return keys
 }
 
-// Invalidate returns the set of files that depend on the given path.
-// It traverses the INCLUDE edges to find all direct and transitive dependents.
-// For example, if A includes B and B includes C, invalidating C returns both A and B.
+// LookupByName looks up candidate definitions by object name (case-insensitive,
+// derived from the filename stem via objectIdentity), optionally filtered by
+// expected ObjectType. It returns the matching entries sorted by Path (deterministic)
+// with workspace-relative paths and derived owning libraries (from config path
+// mapping).
+//
+// Matching is case-insensitive: "mysub", "MYSUB", and "Mysub" are equivalent.
+// The sort order is lexicographic on Path, which is byte-stable and independent
+// of map-iteration order.
+//
+// A zero/empty typ (model.ObjectType("")) is the "any type" sentinel: all
+// matching names are returned regardless of their ObjectType. Pass a non-zero
+// typ to restrict results to a specific object kind (e.g. model.ObjectSubprogram).
+//
+// Unknown names return an empty (non-nil) slice, never an error.
+//
+// Performance: this method is O(n) over all indexed files on every call.
+// When resolving many edges in bulk — for example during call-graph resolution —
+// callers should build a full name index once using buildNameIndex and look up
+// all edges against that map, rather than calling LookupByName once per edge
+// (which would be O(edges * files)). See buildNameIndex for details.
+//
+// This method is thread-safe and race-free.
+func (idx *Index) LookupByName(name string, typ model.ObjectType, cfg *config.Config) []Candidate {
+	// Uppercase the input name for case-insensitive matching.
+	inputName := strings.ToUpper(name)
+
+	var candidates []Candidate
+
+	// ForEach holds the read lock for the duration of the iteration.
+	idx.ForEach(func(path string, fa model.FileAnalysis) {
+		objName, objLibrary := objectIdentity(path, cfg)
+
+		if objName != inputName {
+			return
+		}
+
+		// A zero typ is the "any type" sentinel; non-zero restricts by ObjectType.
+		if typ != "" && fa.ObjectType != typ {
+			return
+		}
+
+		candidates = append(candidates, Candidate{
+			Path:    path,
+			Library: objLibrary,
+			Type:    fa.ObjectType,
+		})
+	})
+
+	// Sort by path for deterministic, byte-stable output. The golden-file tests,
+	// on-disk cache (SHA-256 keyed), and downstream lsp-graph consumer all require
+	// this stability.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Path < candidates[j].Path
+	})
+
+	if len(candidates) == 0 {
+		return []Candidate{}
+	}
+
+	return candidates
+}
+
+// buildNameIndex snapshots the index and returns a map from uppercase object name
+// to all Candidate definitions for that name (filtered and library-mapped per cfg).
+//
+// The map is built in a single O(n) pass over the index under the read lock,
+// making it the right primitive for the call-graph resolver: call buildNameIndex
+// once before the resolution loop, then look up each edge target in the returned
+// map in O(1) — giving O(files + edges) overall rather than O(files * edges).
+//
+// Each Candidate slice in the map is sorted by Path (deterministic, byte-stable).
+// Empty slices are not stored; absent map keys represent zero-candidate names.
+//
+// buildNameIndex takes a snapshot at call time. It does not cache state on Index
+// and requires no invalidation — the caller owns the returned map.
+func (idx *Index) buildNameIndex(cfg *config.Config) map[string][]Candidate {
+	// Snapshot all entries under the read lock.
+	idx.mu.RLock()
+	snapshot := make(map[string]model.FileAnalysis, len(idx.entries))
+	for path, fa := range idx.entries {
+		snapshot[path] = fa
+	}
+	idx.mu.RUnlock()
+
+	// Build the name → candidates map from the snapshot (no lock held).
+	nameMap := make(map[string][]Candidate)
+	for path, fa := range snapshot {
+		objName, objLibrary := objectIdentity(path, cfg)
+		nameMap[objName] = append(nameMap[objName], Candidate{
+			Path:    path,
+			Library: objLibrary,
+			Type:    fa.ObjectType,
+		})
+	}
+
+	// Sort each candidate list by path for deterministic ordering.
+	for name, list := range nameMap {
+		sort.Slice(list, func(i, j int) bool {
+			return list[i].Path < list[j].Path
+		})
+		nameMap[name] = list
+	}
+
+	return nameMap
+}
+
+// Invalidate returns the set of workspace-relative paths that directly or
+// transitively depend on the file at path via INCLUDE edges. The returned
+// slice is sorted for deterministic output; an empty slice (not nil) is
+// returned when the file has no dependents.
+//
+// Dependency matching uses object NAME, not file path. An INCLUDE edge's
+// TargetName (e.g. "SHARED") is compared against the uppercased filename stem
+// of every indexed file (e.g. "SHARED.NSC" → "SHARED") using the shared
+// objectIdentity helper. This corrects a prior name-vs-path bug where
+// edge.TargetName was compared directly against the full workspace-relative
+// path, which never matched (TargetName carries the bare copycode name;
+// the path carries the full relative path including extension).
+//
+// Transitive closure is computed via BFS: if A includes B and B includes C,
+// invalidating C returns {A, B}. Each newly discovered dependent is itself
+// matched by object name, so the same name-based matching applies at every BFS
+// level (no path comparison anywhere in the traversal).
+//
+// The entire operation is performed under a single read lock (RLock) held for
+// its duration, making it race-safe for concurrent callers — consistent with
+// the snapshot-on-read pattern used throughout Index (FR-35, FR-36).
 func (idx *Index) Invalidate(path string) []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
+	// Compute the object name of the changed file (UPPERCASE filename stem).
+	changedName, _ := objectIdentity(path, nil)
+
 	// Build reverse dependency graph: for each file, find files that include it
 	dependents := make(map[string]struct{})
 
-	// First pass: find direct dependents (files with INCLUDE edge pointing to path)
+	// First pass: find direct dependents (files with INCLUDE edge pointing to the changed object).
+	// We match by UPPERCASE(edge.TargetName) against the changed object's name.
 	for depPath, fa := range idx.entries {
 		for _, edge := range fa.Edges {
-			if edge.Kind == model.EdgeIncludes && edge.TargetName == path {
+			if edge.Kind == model.EdgeIncludes && strings.ToUpper(edge.TargetName) == changedName {
 				dependents[depPath] = struct{}{}
 			}
 		}
 	}
 
-	// Second pass: find transitive dependents via BFS
-	// When A includes B and B includes C, invalidating C returns both A and B
+	// Second pass: find transitive dependents via BFS.
+	// When A includes B and B includes C, invalidating C returns both A and B.
+	// We now use the object names of files in the queue, not their paths.
 	queue := make([]string, 0, len(dependents))
 	visited := make(map[string]struct{})
 	// Mark the original path as visited to avoid revisiting it
@@ -96,13 +240,16 @@ func (idx *Index) Invalidate(path string) []string {
 		current := queue[0]
 		queue = queue[1:]
 
-		// Find all files that include 'current'
+		// Compute the object name of the current file.
+		currentName, _ := objectIdentity(current, nil)
+
+		// Find all files that include 'current' (by its object name).
 		for depPath, fa := range idx.entries {
 			if _, alreadyVisited := visited[depPath]; alreadyVisited {
 				continue
 			}
 			for _, edge := range fa.Edges {
-				if edge.Kind == model.EdgeIncludes && edge.TargetName == current {
+				if edge.Kind == model.EdgeIncludes && strings.ToUpper(edge.TargetName) == currentName {
 					dependents[depPath] = struct{}{}
 					visited[depPath] = struct{}{}
 					queue = append(queue, depPath)

@@ -1,0 +1,24 @@
+* Task 8c fixture: runtime-substitution placeholder confirmation (FR-18)
+* Demonstrates:
+* - CALLNAT 'PRG&LANG' (literal with & placeholder) → should resolve as Unresolved(Dynamic)
+*   with NO false static edge to an object named PRG&LANG
+* - CALLNAT 'PLAINPROG' (clean literal) → should resolve statically to PLAINPROG.NSN
+*
+* The placeholder downgrade happened at extraction (feature 06: 'PRG&LANG' → EdgeCallsDynamic).
+* This test confirms the end-to-end invariant: the resolver does not invent a static
+* edge to the raw literal text, and the dynamic reference preserves caller context.
+
+DEFINE DATA
+LOCAL
+  1 LANG (A2)
+END DEFINE
+
+* Placeholder-bearing literal — downgraded to dynamic at extraction.
+* Expected: Unresolved(ReasonDynamic), NOT a false static edge to PRG&LANG.NSN
+CALLNAT 'PRG&LANG'
+
+* Clean literal — normal static binding.
+* Expected: Resolved to PLAINPROG.NSN
+CALLNAT 'PLAINPROG'
+
+END

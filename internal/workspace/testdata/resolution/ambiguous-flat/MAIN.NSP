@@ -1,0 +1,16 @@
+* Task 7 fixture: MAIN.NSP
+* Calls CALLNAT 'DUP' where DUP has two definitions (LIBA/DUP.NSN, LIBB/DUP.NSN)
+* in a flat namespace (no library map). The resolver must:
+*   1. Produce Resolution.IsAmbiguous() == true with both candidates.
+*   2. Add ONE diagnostic to MAIN.NSP's FileAnalysis.Diagnostics at the CALLNAT source range.
+*   3. NOT arbitrarily pick one winner.
+* Task 7 / FR-5, FR-31, OQ-2.
+
+DEFINE DATA
+LOCAL
+  1 X (A5)
+END DEFINE
+
+CALLNAT 'DUP'
+
+END

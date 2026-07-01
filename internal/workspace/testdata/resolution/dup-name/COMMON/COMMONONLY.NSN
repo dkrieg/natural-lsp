@@ -1,0 +1,17 @@
+* Task 6 fixture: COMMON/COMMONONLY.NSN
+* Subprogram that exists ONLY in COMMON library (not in APP).
+* Tests the steplib fallback mechanic: when a caller's current library
+* does NOT contain the target, but a declared steplib does, resolution
+* follows the chain and finds the target in the steplib.
+*
+* OQ-5: steplib chain walk — current library first, then declared steplibs.
+* FR-16, Story 6: steplib fallback acceptance criterion.
+
+DEFINE DATA
+LOCAL
+  1 X (A5)
+END DEFINE
+
+MOVE 'COMMONONLY' TO X
+
+END

@@ -1,0 +1,24 @@
+* Task 6 fixture (explicit-library-bypass case): APP/CALLER.NSP
+* Demonstrates RUN with explicit library-id (second operand).
+* RUN 'PGM' 'COMMON' → bypasses the steplib chain and resolves directly
+* against the named library (COMMON).
+*
+* PGM exists in BOTH APP and COMMON:
+* - APP/PGM.NSP (current library would normally win)
+* - COMMON/PGM.NSP (explicitly named target)
+* Expected: resolves to COMMON/PGM.NSP (explicit library beats chain order)
+*
+* OQ-5: explicit library-id resolves against that library ONLY.
+* FR-16: Story 5/6 acceptance criterion — explicit library bypasses chain.
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* RUN with explicit library-id: resolves to COMMON/PGM.NSP, not APP/PGM.NSP
+RUN 'PGM' 'COMMON'
+
+MOVE 'OK' TO RESULT
+
+END

@@ -1,0 +1,5 @@
+# Minimal config for FR-18 placeholder fixture: flat namespace (no library map)
+[workspace]
+max_file_size_kb = 512
+
+# No [resolution] section — defaults to flat namespace

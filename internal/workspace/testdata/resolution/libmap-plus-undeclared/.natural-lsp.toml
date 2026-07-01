@@ -1,0 +1,18 @@
+# R1 remediation fixture: library map present, but caller is in undeclared path
+# Expected: caller under SCRATCH/ (undeclared) should fall back to flat-namespace resolution
+[workspace]
+max_file_size_kb = 512
+
+[resolution]
+# Two libraries declared in the config.
+# Files under SCRATCH/ are not under any declared path → undeclared, flat-namespace fallback.
+
+[[resolution.library]]
+name = "APP"
+path = "APP"
+steplibs = []
+
+[[resolution.library]]
+name = "COMMON"
+path = "COMMON"
+steplibs = []

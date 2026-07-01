@@ -1,0 +1,5 @@
+# Task 8b fixture: navigation/.natural-lsp.toml
+# Flat namespace (no library map).
+
+[extensions]
+
