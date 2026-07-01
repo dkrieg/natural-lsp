@@ -1,12 +1,14 @@
 # Configuration & TOML parsing
 
-**Status:** verified (2026-06-23) — go-toml/v2 version updated from v2.4.0 to v2.4.1 (released
-2026-06-22); API confirmed against pkg.go.dev and observed `go mod tidy` behavior in this repo.
+**Status:** verified (2026-06-30) — go-toml/v2 latest is now **v2.4.2** (released 2026-06-24; a
+single bug fix for embedded structs tagged `,inline`, no API changes); API confirmed against
+pkg.go.dev and observed `go mod tidy` behavior in this repo.
 
 ## Facts (verified)
 
-- **TOML decoder: `github.com/pelletier/go-toml/v2`**, adopted at **v2.4.1** (published
-  **2026-06-22**). It is the project's first third-party dependency (ADR-013 in
+- **TOML decoder: `github.com/pelletier/go-toml/v2`**, adopted at **v2.4.1**; latest upstream is
+  **v2.4.2** (published **2026-06-24** — one bug fix for `,inline` embedded structs, PR #1079, no API
+  change, safe to bump). It is the project's first third-party dependency (ADR-013 in
   `docs/architecture-decisions.md`). The import is **confined to `internal/config`** — never
   `internal/model` or `internal/analysis` (the Analyzer seam).
   - Package name is `toml` (path ends in `/v2`); idiomatic alias `toml "github.com/pelletier/go-toml/v2"`.
@@ -42,8 +44,10 @@
 
 ## Sources
 
-- pkg.go.dev/github.com/pelletier/go-toml/v2 (verified 2026-06-23: v2.4.1, 2026-06-22;
+- pkg.go.dev/github.com/pelletier/go-toml/v2 (verified 2026-06-30: latest v2.4.2, 2026-06-24;
   `DisallowUnknownFields` / `StrictMissingError`; last-two-Go-majors support).
+- go-toml v2.4.2 release notes: https://github.com/pelletier/go-toml/releases/tag/v2.4.2 (verified
+  2026-06-30: single bug fix for embedded structs tagged `,inline`, PR #1079; no API change).
 - go-toml v2 README & discussions: github.com/pelletier/go-toml (strict mode; BurntSushi
   migration trend).
 - `go help mod tidy` / observed behavior in this repo (tidy strips unimported requires; honors
