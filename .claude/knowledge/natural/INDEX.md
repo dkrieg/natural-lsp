@@ -11,7 +11,8 @@ holds verified facts with sources. Read this index first, then the relevant topi
 | File | Covers | Overall status |
 |------|--------|----------------|
 | [file-extensions.md](file-extensions.md) | `.NSx` object types and what each maps to | verified (2026-06-23) |
-| [calls-and-resolution.md](calls-and-resolution.md) | CALLNAT / PERFORM / FETCH / RUN / INCLUDE, steplib resolution | verified (2026-06-23) |
+| [calls-and-resolution.md](calls-and-resolution.md) | CALLNAT / PERFORM / FETCH / RUN / INCLUDE, steplib resolution | verified (2026-06-30) |
+| [embedded-sql.md](embedded-sql.md) | Native Natural SQL (SELECT/INSERT/…) + PROCESS SQL / flexible `<<…>>`, host-var colon rule (optional in native / mandatory in flexible), FROM-table→`.NSD` DDM binding, backends, error handling | verified (2026-06-30); no open items |
 | [data-definition.md](data-definition.md) | DEFINE DATA, LDA/GDA/PDA, level structure | verified (2026-06-20); array/REDEFINE grammar confirmed |
 | [modes-and-dialects.md](modes-and-dialects.md) | structured vs reporting mode, mainframe vs Linux/NaturalONE | verified (2026-06-23); column rules confirmed free-format |
 | [example-projects.md](example-projects.md) | public Natural source corpora & fixture candidates (licenses) | verified (2026-06-20) |
@@ -35,6 +36,83 @@ holds verified facts with sources. Read this index first, then the relevant topi
 
 ## Changelog
 
+- 2026-06-30 (KB audit sweep) — Full re-read of INDEX.md + all 7 topic files. NO `needs-verification`
+  or `unverified` markers remain anywhere; all topics are `verified`, and every remaining INDEX open
+  question is a corpus/license/tooling DECISION, not an unconfirmed language fact. Rather than
+  rubber-stamp, re-checked four decision-critical "verified" claims against the current live Software AG
+  docs; all four still match verbatim (no staleness found):
+    1. **Steplib search sequence & non-transitivity** (`use_mf_libs.htm`) — confirmed the exact
+       user-lib order (current → steplibs in sequence → `*STEPLIB` → SYSTEM/FUSER → SYSTEM/FNAT) and
+       system-lib order; doc describes single-level concatenation ("a library … concatenated with the
+       current library"), corroborating NON-transitive. The 2026-06-30 correction stands.
+    2. **CALLNAT name lengths + `&` substitution** (`natux 9.3.3 sm/callnat.htm`) — constant 1–32,
+       variable 1–8, `&` replaced at runtime by the `*LANGUAGE` one-char code. Verbatim match.
+    3. **SQL host-var colon rule + `ddm-name`** (`nat912win sm/sql-bsi.htm`) — colon OPTIONAL in native
+       SQL ("can also be prefixed by a colon"), MANDATORY in flexible SQL, always required for
+       reserved-word names; `ddm-name` "always refers to the name of a Natural data definition module
+       (DDM)". Verbatim match.
+    4. **All 15 `.NSx` extension→object-type mappings** (`natONE912 use-edis-geninfo.htm`) — the current
+       "Types of Natural Editors" table confirms all 15 (NSP/NSN/NSS/NS7/NSC/NSH/NST/NS3/NS8/NS4/NSG/
+       NSL/NSA/NSM/NSD) verbatim. `.NKR`/`.NR3` are not on this page but remain sourced from the
+       dedicated RESOURCE object-type page cited in file-extensions.md.
+  No corrections needed; no new language-fact open questions surfaced. KB confirmed clean.
+- 2026-06-30 (KB sweep) — RESOLVED both embedded-SQL open questions against the official Natural SQL
+  "Basic Syntactical Items" reference (`sm/sql-bsi.htm`), plus the DB2 table-access / DDM-generation
+  pages. Two decision-critical resolution facts confirmed:
+    - **Host-var colon is OPTIONAL in native Natural SQL** (doc: a host-variable "can *also* be prefixed
+      by a colon"), **MANDATORY in flexible SQL** (`<<…>>`), and **always required when the variable
+      name equals an SQL reserved word**. The binder must accept native-SQL host vars with OR without the
+      leading colon; bare `#`-prefixed names are the idiomatic native form. (Was needs-verification.)
+    - **A native-SQL `FROM`/`INTO`/SQL-`UPDATE`/`DELETE` table name IS a Natural DDM (`.NSD`)** — doc:
+      "`ddm-name` always refers to the name of a Natural data definition module (DDM)" and "A … DDM must
+      have been created for a table to be used. The name of such a DDM must be the same as the
+      corresponding database table name or view name." Bind it in the **same DDM namespace** as Adabas
+      `READ`/`FIND`/`VIEW OF`. Inside opaque `<<…>>` text, do NOT bind table names. (Was an open
+      question.)
+  Updated embedded-sql.md (status → no open items, host-var section, FROM-table section, lexer-impl
+  bullets, fixture rewritten to show colon-less native + colon flexible forms + DDM FROM, sources).
+  Removed both open questions. Also corrected calls-and-resolution.md citation hygiene: the bottom
+  "Sources" list still labeled the Predict XRef page "(transitive resolution)" — relabeled to match the
+  body's verified NON-transitive finding; bumped that topic's status header date to 2026-06-30. No new
+  Natural-fact open questions surfaced (remaining open questions are corpus/license/tooling decisions,
+  not language facts).
+- 2026-06-30 — ADDED topic `embedded-sql.md`: how Natural embeds SQL (groundwork for a future
+  data-access/SQL extraction feature). Key verified findings:
+    - **No `EXEC SQL … END-EXEC` block.** Natural has TWO embedding styles: (1) native Natural SQL
+      statements (`SELECT … END-SELECT`/`SELECT SINGLE`, `INSERT`, SQL-form `UPDATE`/`DELETE`, `MERGE`,
+      `COMMIT`, `ROLLBACK`, `CALLDBPROC`, `READ RESULT SET`) parsed by the Natural compiler; and
+      (2) `PROCESS SQL ddm-name <<text>>` + "flexible SQL" `<<…>>` — an opaque pass-through SQL string
+      the compiler does NOT parse (errors caught at runtime).
+    - **Host variables use a colon prefix** `:host-var`, optional qualifiers `:U:` (USING/in, default),
+      `:G:` (GIVING/out), `:T:` (text spliced as SQL), `INDICATOR`/`LINDICATOR`; arrays `:NAME(*)`.
+      Colon is mandatory in flexible SQL; appears OPTIONAL in native Natural SQL (open question added).
+      Host vars are ordinary `DEFINE DATA` fields (format→DB2-type mapping recorded).
+    - **`SELECT` is a DB loop** closed by `END-SELECT` (structured) / `LOOP` (reporting); Natural manages
+      the cursor automatically — no app-level DECLARE/OPEN/FETCH/CLOSE in native form. `INTO` is used on
+      cursor selects too (unlike ISO SQL).
+    - **No SQL `WHENEVER`.** Errors flow through Natural `ON ERROR`; `NDBNOERR`/`NDBERR` subprograms
+      suppress/inspect SQL errors (`SQLCODE`/`SQLSTATE`/`SQLCA`). `*ROWCOUNT` etc.
+    - **Lexer notes:** `<<`/`>>` are flexible-SQL delimiters ONLY in SQL context (`<`/`>` are otherwise
+      comparison ops); inner SQL is multi-line with no continuation char, may contain comments, must be
+      treated as opaque except for `:host-var` refs; no trailing `;`; same-keyword Adabas-vs-SQL
+      ambiguity for `UPDATE`/`DELETE`/`STORE`.
+    - **ADD-ON, not Adabas core:** provided by Natural for DB2 / Natural SQL Gateway (Adabas SQL Gateway)
+      / Natural for SQL/DS. Plain Adabas uses `READ`/`FIND` on DDMs, not these SQL statements. Common
+      Set (portable) vs Extended Set (DBMS-specific) split noted.
+    - **No special object type** — SQL appears in any procedural-body source (`.NSP`/`.NSN`/`.NSS`/`.NSH`
+      + `.NSC` fragments). Added 2 open questions (native colon optionality; `FROM`-table → `.NSD` DDM).
+- 2026-06-30 — CORRECTED a wrong "verified" steplib fact. The 2026-06-23 entry claimed the runtime
+  steplib search is **transitive** (steplib-of-steplib recursion), citing the Predict XRef "Steplib
+  Support" page. That was wrong on two counts: the cited page is the **XRef/cross-reference tool**, not
+  the runtime, AND it itself describes single-level (not transitive) search. The authoritative runtime
+  "Search Sequence for Object Execution" page defines a **flat ordered list bound to the current
+  library**: current lib → declared steplibs (in sequence) → `*STEPLIB` → SYSTEM(FUSER) → SYSTEM(FNAT)
+  [user-lib case]. **Steplib search is NON-transitive / one-level.** A steplib's own steplibs are not
+  followed; the invoking runtime's current-library chain is what's searched. Max steplibs = 8 per
+  library under Natural Security (1 via the STEPLIB param without NSC); the "20" figure was the XRef
+  tool's limit. Explicitly library-qualified `RUN program-id library-id` bypasses the chain (single
+  library). Matches natls (one level). Updated calls-and-resolution.md; closed the steplib-transitivity
+  open question below.
 - 2026-06-29 — VERIFIED comment syntax against official Software AG "User Comments" doc
   (decision-critical for the comment lexer). Both Natural comment forms are **REST-OF-LINE**; Natural
   has **NO C-style delimited `/* ... */` block comment** and no `*/` closer. `/*` marks the remainder

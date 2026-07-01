@@ -5,7 +5,10 @@ Dialect note: facts below verified against Natural for Linux/Unix/Windows + Main
 references (syntax is stable across these for the call statements). Mode: applies to both structured
 and reporting mode unless noted.
 
-**Status: verified (2026-06-20)** — confirmed against official Software AG statement references.
+**Status: verified (2026-06-30)** — confirmed against official Software AG statement references.
+CALLNAT/FETCH/RUN syntax, INCLUDE, PERFORM inline-first, and the steplib search sequence (flat,
+NON-transitive, one-level per current library) are all verified; the prior transitive-steplib claim was
+corrected on 2026-06-30 and the misleading "transitive" source citation was relabeled.
 
 | Construct | Meaning | Analyzer edge | Resolution |
 |-----------|---------|---------------|------------|
@@ -133,30 +136,72 @@ INCLUDE copycode-name [operand1 ... up to 99]
     the includer's context. Parameter substitution (`&n&`) means the included text can differ per call
     site — symbol extraction from the raw copycode may be incomplete.
 
-## Steplib resolution (critical) — verified (2026-06-23)
+## Steplib resolution (critical) — verified (2026-06-30)
 
-Natural resolves a module name by walking a **steplib chain**, not a file path. Documented search
-order for object execution:
+Natural resolves a module name by walking a **steplib chain**, not a file path. The authoritative
+"Search Sequence for Object Execution" (Using Natural → Natural Libraries) defines a **flat, ordered
+list** evaluated until the first hit. Two sequences, depending on whether the current library is a
+user library (FUSER) or a system library (FNAT):
 
-1. The **current library** in the FUSER system file (system variable `*LIBRARY-ID`).
-2. The **steplibs in sequence** — as specified in the Natural Security profile for the current
-   library, or in the steplib table.
+**User-library search (current lib in FUSER):**
+1. The **current library** (system variable `*LIBRARY-ID`).
+2. The **steplibs, in declared sequence** — as specified in the Natural Security profile for the
+   current library, or in the steplib table.
 3. The **default steplib** in system variable `*STEPLIB`.
-4. Library **SYSTEM in FUSER**, then library **SYSTEM in FNAT**.
+4. Library **SYSTEM in FUSER**.
+5. Library **SYSTEM in FNAT**.
+
+**System-library search (current "SYS…" lib in FNAT):**
+1. The current `SYS` library (`*LIBRARY-ID`).
+2. The steplibs, in declared sequence.
+3. **SYSLIBS in FNAT**.
+4. **SYSTEM in FNAT**.
+5. **SYSTEM in FUSER**.
 
 Additional (user) steplibs are searched BEFORE the standard `SYSTEM` libraries. The same module name
 can exist in multiple libraries; the search ORDER is what disambiguates. The analyzer models this via
 `[resolution]` config; with no library map it falls back to a flat namespace and emits a diagnostic on
 ambiguity. `RUN ... library-id` overrides this by naming a specific library.
 
-**Steplib-of-steplib recursion:** Natural **does search transitively** through chained steplibs. When a
-program in steplib A calls another program, the entire steplib chain is searched again for the called
-program. Up to 8 steplibs are supported in addition to the current library. This is confirmed in the
-Performance Considerations documentation which describes the recursive search behavior.
+### Steplib-of-steplib recursion — RESOLVED: NON-transitive (verified 2026-06-30)
+
+**Correction of a prior (2026-06-23) wrong entry.** An earlier KB revision claimed the runtime search
+is "transitive" and cited the Predict cross-reference "Steplib Support" page
+(`prd84x/.../natxref_steplib_5.htm`). That was a **double error**: (1) that page documents the
+**Predict / XRef cross-reference tool's** search, NOT the Natural runtime's object-execution search;
+and (2) even that page does **not** describe transitive search — it describes a single-level approach
+(it appends `*STEPLIB`/system refs to the structure) and notes a max of **20** steplibs for the XRef
+tool. So it never supported the "transitive" claim in the first place.
+
+**What the runtime actually does:** the documented object-execution search sequence is a **flat,
+ordered list bound to the current library** (steps above). The list of steplibs searched is the set
+**declared for the current library** plus `*STEPLIB` plus the SYSTEM terminals. There is **no
+documented statement that a steplib's own steplibs are followed.** When control transfers into a module
+that resides in steplib B (e.g. B's program issues a CALLNAT), the search context is the **invoking
+runtime's** current library + ITS steplib chain — resolution is re-evaluated against the SAME flat
+chain, NOT against B's own declared steplibs. Steplib assignment is a per-(current-library) runtime
+property, not a property that chains library-to-library.
+
+- **Max steplibs:** Natural Security allows up to **8** steplibs per library (Library/DBnr/Fnr
+  entries). Without Natural Security, exactly **1** additional steplib via the `STEPLIB` profile
+  parameter at session start. (The "20" figure belongs to the Predict XRef tool, not the runtime.)
+- **For a static analyzer this means: one level.** Model resolution as: current library → that
+  library's declared steplibs (in order) → implicit SYSTEM. Do NOT recursively expand a steplib's own
+  steplibs. This also matches natls's implementation (`NaturalLibrary.findModuleByReferableName` walks
+  one steplib level).
+- **Caveat — environment dependence:** the *contents* of the chain are configuration-driven (Natural
+  Security profile vs. `STEPLIB` parameter vs. NaturalONE `.natural` build file), and `*STEPLIB` can be
+  reset at runtime. But the *shape* is consistently a flat per-current-library list in all documented
+  variants; transitive expansion is not part of any documented variant.
 
 **Sources:**
-- Steplib Support: https://documentation.softwareag.com/natural/prd841/reference/natxref_steplib_5.htm
-- STEPLIB system variable: https://documentation.softwareag.com/natural/nat913unx/parms/steplib.htm
+- Search Sequence for Object Execution (Using Natural Libraries, runtime — authoritative):
+  https://documentation.softwareag.com/natural/nat911mf/using/use_mf_libs.htm
+- STEPLIB system variable: https://documentation.softwareag.com/natural/nat912unx/parms/steplib.htm
+- Defining Steplibs (Natural Security, max 8 per library):
+  https://documentation.softwareag.com/natural/nbs531/admin/define-steplibs-and-domains.htm
+- Predict XRef "Steplib Support" (NOT the runtime; max 20; single-level — the misread prior source):
+  https://documentation.softwareag.com/natural/prd842/reference/natxref_steplib_5.htm
 
 ## Sources (calls-and-resolution)
 
@@ -168,8 +213,10 @@ Performance Considerations documentation which describes the recursive search be
 - STEPLIB / object search order: https://documentation.softwareag.com/natural/nat912unx/parms/steplib.htm
 - Programs and Subordinate Routines (FETCH vs FETCH RETURN levels):
   https://documentation.softwareag.com/natural/nat913unx/pg/pg_obj_pgm_routine.htm
-- Steplib Support (transitive resolution):
-  https://documentation.softwareag.com/natural/prd841/reference/natxref_steplib_5.htm
+- Predict XRef "Steplib Support" — NOTE: this is the cross-reference TOOL, not the runtime; it does
+  NOT describe transitive resolution (single-level; max 20 for the XRef tool). Kept only to document
+  the prior misread; see "Steplib-of-steplib recursion — RESOLVED: NON-transitive" above:
+  https://documentation.softwareag.com/natural/prd842/reference/natxref_steplib_5.htm
 - natls steplib resolution (`NaturalLibrary`):
   https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/natural/project/NaturalLibrary.java
 - natls project/steplib wiring (`BuildFileProjectReader`):
@@ -191,8 +238,9 @@ above and adds concrete detail:
   call-like vs goto-like note.
 - **Resolution order (from `NaturalLibrary.findModuleByReferableName`):** current library first; if the
   name resolves to multiple files, prefer the file whose type matches the call (CALLNAT→`.NSN` etc.);
-  then steplibs **in order**. natls walks only ONE steplib level (no steplib-of-steplib recursion) —
-  unverified whether the real runtime does deeper; recorded as an open question.
+  then steplibs **in order**. natls walks only ONE steplib level (no steplib-of-steplib recursion).
+  RESOLVED 2026-06-30: the real runtime is ALSO one-level (flat per-current-library chain) — natls's
+  approach is correct. See "Steplib-of-steplib recursion" above.
 - **DDMs are a separate namespace** (`findDdmByReferableName`) — DDM names don't collide with module
   names; resolve READ/FIND/`VIEW OF` targets against DDMs only.
 - **Project layout / steplib config:** root = directory of the `.natural` (or `_naturalBuild`) build
