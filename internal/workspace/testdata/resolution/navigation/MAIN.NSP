@@ -1,0 +1,27 @@
+* Task 8b fixture: navigation/MAIN.NSP
+* Demonstrates both static and dynamic FETCH navigation statements.
+*
+* FETCH 'TARGETPG' (static literal)
+*   Expected: resolves to TARGETPG.NSP (program ObjectType)
+*   EdgeKind: EdgeNavigatesTo (distinct from CALLS)
+*
+* FETCH #PROGVAR (dynamic variable)
+*   Expected: Unresolved(ReasonDynamic), caller context preserved
+*   EdgeKind: EdgeNavigatesToDynamic
+*
+* FR-14/FR-15: navigation edges are handled separately from module calls,
+* and dynamic targets are unresolved rather than dropped.
+
+DEFINE DATA
+LOCAL
+  1 PROGNAME (A20)
+  1 TARGETPG (A20)
+END DEFINE
+
+* Static FETCH statement: resolves to TARGETPG.NSP.
+FETCH 'TARGETPG'
+
+* Dynamic FETCH statement: variable target, unresolvable.
+FETCH #PROGVAR
+
+END

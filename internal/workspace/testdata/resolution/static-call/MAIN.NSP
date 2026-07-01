@@ -1,0 +1,24 @@
+* Task 5 fixture: static CALLNAT binding in flat namespace (FR-10, M-3, NFR-7)
+* Demonstrates:
+* - CALLNAT 'MYSUB' (literal static target, matches one definition) → should resolve to MYSUB.NSN
+* - CALLNAT 'NOSUCH' (literal static target, no matching object) → should resolve as Unresolved(ReasonNoTarget)
+*
+* This fixture covers the flat-namespace, exactly-one-match case with no library map.
+* The two calls prove that resolution binds literal names correctly and distinguishes
+* "found the target" from "target not found" without inventing a definition.
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* Static call to resolvable external subprogram
+CALLNAT 'MYSUB'
+
+* Static call with no matching definition (literal target name not found)
+CALLNAT 'NOSUCH'
+
+* Use the result variable to complete the structure
+MOVE 'OK' TO RESULT
+
+END

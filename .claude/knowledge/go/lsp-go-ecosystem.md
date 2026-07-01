@@ -1,18 +1,21 @@
 # Go LSP / JSON-RPC ecosystem
 
-**Status:** verified (2026-06-21) — versions/maintenance confirmed via the Go module proxy
-(`proxy.golang.org/<module>/@latest`) and the GitHub API. **Major update (2026-06-21):** enumerated
-`go.lsp.dev/protocol`'s transitive dependencies (the prior open question) and found it now depends on
-the **experimental json/v2 library** (`github.com/go-json-experiment/json`) at runtime — a
-design-relevant caveat that changes the Option A recommendation. See "Transitive footprint" below.
+**Status:** verified (2026-06-30) — versions/maintenance re-confirmed via the Go module proxy
+(`proxy.golang.org/<module>/@latest`) and the GitHub API. **Update (2026-06-30):** both
+`go.lsp.dev/protocol` and `go.lsp.dev/jsonrpc2` released **v1.0.1 (2026-06-27)**; the experimental
+json/v2 dependency **persists at v1.0.1** (still requires `github.com/go-json-experiment/json`) — the
+key design caveat is unchanged. See "Transitive footprint" below. **Prior update (2026-06-21):**
+enumerated `go.lsp.dev/protocol`'s transitive dependencies (the then-open question) and found it
+depends on the **experimental json/v2 library** at runtime — a design-relevant caveat that changes the
+Option A recommendation.
 
-## Candidate libraries (verified versions as of 2026-06-20)
+## Candidate libraries (verified versions as of 2026-06-30)
 
 - **`go.lsp.dev/protocol`** (repo `github.com/go-language-server/protocol`) + **`go.lsp.dev/jsonrpc2`**
   (repo `github.com/go-language-server/jsonrpc2`) — Go types for LSP structures plus a JSON-RPC 2.0
-  layer. **Both reached `v1.0.0`** (proxy reports tag `refs/tags/v1.0.0` for each; jsonrpc2 v1.0.0 and
-  protocol v1.0.0). Prior tags went v0.11.x → v0.12.0 → v1.0.0, so this is a freshly stabilized 1.0.
-  Actively maintained. Best fit for "maintained types + JSON-RPC without a full framework."
+  layer. **Both at `v1.0.1` (2026-06-27)** (proxy reports tag `refs/tags/v1.0.1` for each). Prior tags
+  went v0.11.x → v0.12.0 → v1.0.0 → v1.0.1. Actively maintained. Best fit for "maintained types +
+  JSON-RPC without a full framework."
   - **Spec coverage (verified 2026-06-20):** the repo README states it is "a fast, spec-faithful
     implementation of the Language Server Protocol **3.18** for Go — types generated from the official
     LSP meta-model." 3.18 is a superset of 3.17, so the older client/editor capability negotiations
@@ -22,21 +25,29 @@ design-relevant caveat that changes the Option A recommendation. See "Transitive
     (CodeLens/CodeLensParams/CodeLensOptions), and work-done progress (WorkDoneProgress* types),
     plus definition/references/hover and publishDiagnostics. This resolves the prior open question
     on spec/method coverage — the dependency ADR is unblocked on this point.
-  - **Transitive footprint (verified 2026-06-21 — resolves the prior open question):** at v1.0.0 the
-    package's own `go.mod` declares `go 1.26` and just **four** direct requires:
-    `github.com/go-json-experiment/json` (a pseudo-version, e.g. `v0.0.0-20260601182631-...`),
-    `github.com/google/go-cmp v0.7.0` (test-only), `go.lsp.dev/jsonrpc2 v1.0.0`, and
-    `go.lsp.dev/uri v1.0.0`. The package *itself* imports only 4 non-stdlib packages:
-    `go.lsp.dev/uri`, `go.lsp.dev/jsonrpc2`, `github.com/go-json-experiment/json`, and
-    `github.com/go-json-experiment/json/jsontext`. So the runtime tree is small — but see the
-    json/v2 caveat next; the "22 imports" figure cited in the old open question was the package's
-    *total* import count (stdlib + third-party), not a transitive-module weight concern.
-  - **⚠ Depends on the experimental json/v2 library (verified 2026-06-21):** v1.0.0's serialization is
+  - **Transitive footprint (verified 2026-06-30 — re-confirmed at v1.0.1):** at v1.0.1 the package's
+    own `go.mod` still declares `go 1.26` and its **runtime** require block is just **four** modules:
+    `github.com/go-json-experiment/json` (a pseudo-version, at v1.0.1 `v0.0.0-20260623181947-...`),
+    `github.com/google/go-cmp v0.7.0` (test-only), `go.lsp.dev/jsonrpc2 v1.0.1`, and
+    `go.lsp.dev/uri v1.0.1`. (v1.0.1's `go.mod` also carries a large `tool (...)` block +
+    corresponding `// indirect` requires — golangci-lint, gofumpt, gotestsum, etc. — but those are Go
+    1.24+ `tool`-directive *dev* dependencies, pruned from any consumer's build graph; they do NOT
+    enter this project's binary or `go.sum` beyond what the tools need. The runtime footprint is
+    unchanged from v1.0.0.) The package *itself* imports only 4 non-stdlib packages: `go.lsp.dev/uri`,
+    `go.lsp.dev/jsonrpc2`, `github.com/go-json-experiment/json`, and
+    `github.com/go-json-experiment/json/jsontext`. So the runtime tree is small — but see the json/v2
+    caveat next.
+  - **⚠ Depends on the experimental json/v2 library (re-confirmed 2026-06-30 at v1.0.1):** the
+    serialization is
     built on `github.com/go-json-experiment/json` — the upstream experimental implementation of the
     proposed `encoding/json/v2`. Its generated types expose the json/v2 API surface
     (`MarshalJSONTo(enc)` / `UnmarshalJSONFrom(dec)` methods, confirmed on pkg.go.dev). That library's
-    own README warns: *"The API is unstable and breaking changes will regularly be made. Do not depend
-    on this in publicly available modules."* This **directly tensions** the project's standing
+    own README warns (re-checked 2026-06-30, text unchanged): *"This module hosts an experimental
+    implementation of v2 `encoding/json`. The API is unstable and breaking changes will regularly be
+    made. Do not depend on this in publicly available modules."* A proposal to bring it into the stdlib
+    as `encoding/json/v2` was opened 2025-01-30 but it remains experimental (see
+    `stdlib-for-lsp-server.md`: still `GOEXPERIMENT=jsonv2`-gated in Go 1.26). This **directly
+    tensions** the project's standing
     decision to NOT adopt json/v2 (see `stdlib-for-lsp-server.md`): choosing Option A pulls the
     experimental json/v2 in **transitively** as a hard runtime dependency, with breaking-change risk
     on every upgrade and govulncheck/dependency-policy friction (cf. chromedp issue #1595, which
@@ -70,7 +81,7 @@ design-relevant caveat that changes the Option A recommendation. See "Transitive
 - The decision is **ready to make**, but the json/v2 finding above **weakens Option A's "low-risk
   default" framing** — weigh it explicitly in the ADR. Two defensible paths:
   - **Option A (lean on `go.lsp.dev`):** depend on `go.lsp.dev/protocol` + `go.lsp.dev/jsonrpc2`
-    (both v1.0.0). Lowest *implementation* cost and maintained, BUT it pulls
+    (both v1.0.1). Lowest *implementation* cost and maintained, BUT it pulls
     `github.com/go-json-experiment/json` (experimental json/v2, "do not depend on this in publicly
     available modules") in transitively as a runtime dependency. That contradicts the project's
     decision to avoid json/v2 and adds breaking-change/govulncheck exposure on upgrades. Acceptable
@@ -86,9 +97,9 @@ design-relevant caveat that changes the Option A recommendation. See "Transitive
   `internal/analysis`/`internal/model`. Record the final pick as an ADR in the software-engineering
   KB. `tliron/glsp` is not recommended (pre-1.0, framework-heavy for our method set).
 
-## `workspace/didChangeWatchedFiles` types in `go.lsp.dev/protocol` v1.0.0 (verified 2026-06-22)
+## `workspace/didChangeWatchedFiles` types in `go.lsp.dev/protocol` v1.0.x (verified 2026-06-22)
 
-Confirmed against the module cache (`go.lsp.dev/protocol@v1.0.0`):
+Confirmed against the module cache (`go.lsp.dev/protocol@v1.0.0`; type set unchanged at v1.0.1):
 
 - **A2 (client-pushed events)** notification: method `workspace/didChangeWatchedFiles`, params
   `DidChangeWatchedFilesParams{ Changes []FileEvent }`. `FileEvent{ URI uri.URI; Type FileChangeType }`.
@@ -123,22 +134,26 @@ Confirmed against the module cache (`go.lsp.dev/protocol@v1.0.0`):
 
 ## Sources
 
-- Module proxy (authoritative version/tag data, verified 2026-06-20):
-  - `https://proxy.golang.org/go.lsp.dev/protocol/@latest` → v1.0.0
-  - `https://proxy.golang.org/go.lsp.dev/jsonrpc2/@latest` → v1.0.0
-  - `https://proxy.golang.org/github.com/tliron/glsp/@latest` → v0.2.2 (2024-03-09)
+- Module proxy (authoritative version/tag data, re-verified 2026-06-30):
+  - `https://proxy.golang.org/go.lsp.dev/protocol/@latest` → v1.0.1 (2026-06-27)
+  - `https://proxy.golang.org/go.lsp.dev/jsonrpc2/@latest` → v1.0.1 (2026-06-27)
+  - `https://proxy.golang.org/github.com/tliron/glsp/@latest` → v0.2.2 (2024-03-09, unchanged)
 - LSP spec/method coverage (verified 2026-06-20):
   - https://github.com/go-language-server/protocol (README: "Language Server Protocol 3.18")
   - https://pkg.go.dev/go.lsp.dev/protocol (godoc index: WorkspaceSymbol, DocumentSymbol, CodeLens,
     WorkDoneProgress types present)
-- Transitive footprint / json/v2 dependency (verified 2026-06-21):
-  - https://github.com/go-language-server/protocol/blob/main/go.mod (`go 1.26`; requires
-    `github.com/go-json-experiment/json`, `github.com/google/go-cmp v0.7.0`, `go.lsp.dev/jsonrpc2
-    v1.0.0`, `go.lsp.dev/uri v1.0.0`)
+- Transitive footprint / json/v2 dependency (re-verified 2026-06-30 at v1.0.1):
+  - `https://proxy.golang.org/go.lsp.dev/protocol/@v/v1.0.1.mod` (`go 1.26`; runtime requires
+    `github.com/go-json-experiment/json v0.0.0-20260623181947-...`, `github.com/google/go-cmp v0.7.0`,
+    `go.lsp.dev/jsonrpc2 v1.0.1`, `go.lsp.dev/uri v1.0.1`; plus a `tool (...)` block of dev-only deps)
+  - `https://proxy.golang.org/go.lsp.dev/jsonrpc2/@v/v1.0.1.mod` (`go 1.26`; requires
+    `github.com/go-json-experiment/json v0.0.0-20260601182631-...`, `github.com/google/go-cmp v0.7.0`)
   - https://pkg.go.dev/go.lsp.dev/protocol?tab=imports (3 third-party package imports:
     `go.lsp.dev/uri`, `go.lsp.dev/jsonrpc2`, `github.com/go-json-experiment/json` + `/jsontext`)
-  - https://github.com/go-json-experiment/json/blob/master/README.md ("API is unstable… Do not
-    depend on this in publicly available modules"; mirror of the upstream Go json/v2 experiment)
+  - https://github.com/go-json-experiment/json/blob/master/README.md (re-checked 2026-06-30: "The API
+    is unstable and breaking changes will regularly be made. Do not depend on this in publicly
+    available modules"; a stdlib-inclusion proposal as `encoding/json/v2` was opened 2025-01-30 but it
+    remains experimental)
   - https://pkg.go.dev/go.lsp.dev/protocol (generated types expose `MarshalJSONTo`/`UnmarshalJSONFrom`
     — the json/v2 method set)
 - GitHub API: `sourcegraph/go-lsp` `archived: true` (pushed 2024-02-23); `sourcegraph/jsonrpc2`

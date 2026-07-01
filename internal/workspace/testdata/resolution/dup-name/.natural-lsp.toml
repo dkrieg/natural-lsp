@@ -1,0 +1,32 @@
+# Task 6 fixture: steplib-chain resolution with duplicate module names
+# Libraries: APP and COMMON, where APP's steplibs include COMMON.
+# The same module name (SHARED) exists in both libraries.
+# Callers in different libraries should resolve to different targets
+# depending on their current library position in the steplib chain.
+
+[workspace]
+max_file_size_kb = 512
+
+[resolution]
+# Two libraries with explicit steplib chain.
+# APP's steplibs include COMMON, which is the fallback.
+# SYSTEM is implicit at the end of every chain (OQ-5).
+
+[[resolution.library]]
+name = "APP"
+path = "APP"
+steplibs = ["COMMON"]
+
+[[resolution.library]]
+name = "COMMON"
+path = "COMMON"
+steplibs = []
+
+[[resolution.library]]
+# OTHER is declared in the library map but is NOT a steplib of APP or COMMON.
+# Modules in OTHER are therefore unreachable from APP's chain [APP, COMMON, SYSTEM].
+# This verifies that chain-walk is scoped: a candidate in OTHER must not be returned
+# for a caller in APP even when the name index contains it. OQ-5.
+name = "OTHER"
+path = "OTHER"
+steplibs = []

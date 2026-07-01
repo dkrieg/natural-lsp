@@ -1,0 +1,14 @@
+* Task 6 fixture (dup-name case): OTHER/ORPHAN.NSN
+* This subprogram exists only in the OTHER library.
+* OTHER is declared in the library map but is NOT a steplib of APP.
+* APP's chain is: APP → COMMON → SYSTEM.
+* OTHER is outside that chain, so ORPHAN is unreachable from APP.
+* Expected: CALLNAT 'ORPHAN' from APP/CALLER.NSP → Unresolved(ReasonNoTarget).
+* OQ-5: chain is non-transitive and scoped to declared steplibs only.
+
+DEFINE DATA
+END DEFINE
+
+* This subprogram has no body; it exists only to populate the name index.
+
+END

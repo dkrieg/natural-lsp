@@ -1,0 +1,7 @@
+* MAIN program that includes a non-existent copycode
+PROGRAM MAIN
+
+INCLUDE MISSING
+
+MOVE 1 TO *RESULT
+END

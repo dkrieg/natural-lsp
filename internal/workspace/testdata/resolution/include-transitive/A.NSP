@@ -1,0 +1,7 @@
+* Program A includes copycode B
+PROGRAM A
+
+INCLUDE B
+
+MOVE 1 TO *RESULT
+END

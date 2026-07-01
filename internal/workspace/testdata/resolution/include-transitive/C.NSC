@@ -1,0 +1,7 @@
+* Copycode C (lowest in the chain)
+*
+DEFINE DATA
+  LOCAL
+    1 C-FIELD PIC X(10)
+  END-DEFINE
+*

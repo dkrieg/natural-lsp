@@ -1,8 +1,9 @@
 # Go version & tooling
 
-**Status:** verified (2026-06-21) — Go 1.26 release re-confirmed against go.dev release history (1.26.4
-still latest; no 1.27 yet) and the 1.26 release notes; the command set is from the repo's CLAUDE.md.
-Added the module `go`-directive max rule and its interaction with the LSP dependency choice.
+**Status:** verified (2026-06-30) — Go 1.26 release re-confirmed against go.dev release history (1.26.4
+released 2026-06-02 is still the latest patch; no Go 1.27 release or beta yet) and the 1.26 release
+notes; the command set is from the repo's CLAUDE.md. Module `go`-directive max rule and its interaction
+with the LSP dependency choice recorded below.
 
 ## Facts (verified)
 
@@ -56,5 +57,5 @@ Added the module `go`-directive max rule and its interaction with the LSP depend
   Go 1.21 a module's `go` directive must be ≥ the `go` directive of every (direct or indirect)
   dependency; the build fails otherwise. `go.lsp.dev/protocol` v1.0.0 declares `go 1.26`
   (https://github.com/go-language-server/protocol/blob/main/go.mod).
-- Go release history re-confirmed 2026-06-21: 1.26.4 (2026-06-02) still the latest patch; no Go 1.27
+- Go release history re-confirmed 2026-06-30: 1.26.4 (2026-06-02) still the latest patch; no Go 1.27
   release or beta yet (https://go.dev/doc/devel/release).

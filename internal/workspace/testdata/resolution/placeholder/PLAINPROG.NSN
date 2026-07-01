@@ -1,0 +1,10 @@
+* Clean subprogram target for placeholder fixture (FR-18)
+
+DEFINE DATA
+PARAMETER
+  1 P-RESULT (A10)
+END DEFINE
+
+MOVE 'SUCCESS' TO P-RESULT
+
+END

@@ -1,0 +1,17 @@
+# Task 10 fixture: channel-separation corpus (Story 7, FR-17, NFR-6, M-6)
+#
+# Mini-workspace covering all six reconciliation cases:
+#   1. CALLNAT 'GOODSUB' → Resolved to GOODSUB.NSN
+#   2. CALLNAT #VAR → Unresolved(dynamic), no diagnostic
+#   3. CALLNAT 'NOSUCH' → Unresolved(no-target), no diagnostic
+#   4. CALLNAT 'DUPLICATE-NAME' → Ambiguous (LOC1/DUPLICATE-NAME.NSN + LOC2/DUPLICATE-NAME.NSN) + 1 diagnostic
+#   5. CALLNAT 'PRG&X' → Unresolved(dynamic) [already marked dynamic at extraction], no edge
+#   6. Bare CALLNAT (no operand) → Parser diagnostic, NO resolution edge
+#
+# With NO [resolution] library map, the workspace is a single flat namespace.
+# Reconciliation assertion: every reference is EXACTLY ONE OF {resolution outcome, parser diagnostic}.
+
+[workspace]
+max_file_size_kb = 512
+
+# [resolution] is intentionally omitted — forces flat-namespace behavior for case 4 ambiguity.

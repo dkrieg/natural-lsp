@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–06 shipped** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, and call/dependency extraction (feature 06) are implemented. Features 07–08 (data-access extraction, completion, signature help, call hierarchy) remain as stubs (`data.go`, `hover.go`, `symbols.go` are package-doc + TODO only).
+**Features 00–07 shipped** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), and call/dependency resolution (feature 07) are implemented. Feature 08 (data-access extraction) and the higher-level LSP providers (completion, signature help, call hierarchy) remain as stubs (`data.go`, `hover.go`, `symbols.go` are package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -74,6 +74,30 @@ injection (avoiding circular import with `internal/server`) and removes entries 
 recovery on every analysis call (FR-43). `Watcher` uses `fsnotify` v1.10.1 for recursive workspace
 watching — `filepath.WalkDir` + per-directory `Add`, extension filtering, and a 100 ms trailing-edge
 debounce — with per-call panic recovery. `internal/workspace/` implements cross-file indexing (index.go) and persistent cache with content-hash invalidation (cache.go).
+
+`internal/workspace/resolution.go` implements **call/dependency resolution** (feature 07): `Resolve(idx,
+cfg)` walks every file's `FileAnalysis.Edges` (from feature 06) and binds each reference to a definition,
+returning a `ResolutionSet` keyed by (referencing file, edge `Source`) whose outcomes are `Resolved(path,
+ObjectType)` / `Unresolved(reason)` / `Ambiguous(candidates)`. Resolution follows Natural's **steplib
+chain** — current library → declared steplibs (in declared order) → implicit `SYSTEM`, **non-transitive**
+(a steplib's own steplibs are not followed; verified against Software AG docs), first library with a
+matching object wins; a candidate outside the caller's chain is unreachable and never resolved. The
+"current library" of a file is the longest-prefix match of its path against `config.Library.Path`; a file
+under no declared path (or with no library map) resolves in a **flat namespace** (single match → resolved;
+>1 match → `Ambiguous` + a warning diagnostic; 0 → unresolved). An explicit `RUN 'pgm' 'lib'` library-id
+(`EdgeEntry.Library`) resolves against that one library only, bypassing the chain. `PERFORM` resolves an
+inline `DEFINE SUBROUTINE` before an external `.NSS`. Per-kind target types: CALLNAT→subprogram,
+external PERFORM→external-subroutine, FETCH/RUN→program, INCLUDE→copycode. Modeled gaps stay distinct from
+parser diagnostics (FR-17): dynamic/`&`-placeholder targets are `Unresolved(dynamic)` (never bound, never
+a diagnostic); an unresolvable literal is `Unresolved(no-target)` (also not a diagnostic); only a
+flat-namespace ambiguity produces a resolution diagnostic, exposed via `ResolutionSet.DiagnosticsFor` (the
+server merges it into the referencing file's `publishDiagnostics`) — resolution never mutates the index.
+Per **ADR/OQ-1** this feature makes **no `internal/model` or cache-format change**: resolution is
+recomputed from cached `Edges` on load. `index.go` gained `LookupByName`/`buildNameIndex`/`Candidate` for
+name→definition lookup, and `Index.Invalidate` was migrated from a name-vs-path string compare to
+resolved object-name matching (uppercased copycode name vs `EdgeIncludes.TargetName`, transitive). A
+`FuzzResolve` target guards the resolver (never panics, always returns a non-nil `*ResolutionSet`).
+Fixtures live under `internal/workspace/testdata/resolution/`.
 
 `natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
 z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on
@@ -156,11 +180,16 @@ configuration" sections before changing related code.
     appear in find-references and outline rather than disappearing.
   - *Parse errors* are surfaced as LSP **diagnostics** so they are visible in the editor, not silently discarded.
 
-- **Module resolution follows Natural's steplib chain, not file paths.** `CALLNAT` / `PERFORM` / `FETCH` targets resolve
-  current-library → steplibs (in order) → SYSTEM. The same module name can exist in multiple libraries; search order is
-  what disambiguates. Library mapping is config-driven (`[resolution]` in `.natural-lsp.toml`). With no library map,
-  fall back to a single flat namespace and emit a diagnostic on ambiguous resolution. Do not assume globally-unique
-  names.
+- **Module resolution follows Natural's steplib chain, not file paths.** `CALLNAT` / `PERFORM` / `FETCH` / `RUN` targets
+  resolve current-library → steplibs (in declared order) → SYSTEM. The chain is **non-transitive** (a steplib's own
+  steplibs are not followed — verified against Software AG docs); the first library in the chain with a matching object
+  wins, and a candidate in a library outside the caller's chain is unreachable. The same module name can exist in
+  multiple libraries; search order is what disambiguates. Library mapping is config-driven (`[resolution]` in
+  `.natural-lsp.toml`; the current library is the longest-prefix path match). An explicit `RUN 'pgm' 'lib'` library-id
+  resolves against that one library only, bypassing the chain (`FETCH` has no source-level library qualifier). With no
+  library map — or for a file under no declared library path — fall back to a single flat namespace and emit an
+  ambiguity diagnostic (not a silent pick) on a name matching more than one object. Do not assume globally-unique names.
+  (Implemented in `internal/workspace/resolution.go`, feature 07.)
 
 - **Filesystem-scoped to NaturalONE / SPoD `.NSx` files.** The server operates on exported object files, not objects
   living only in the mainframe Natural/Adabas library system. Each extension maps to a construct and several features

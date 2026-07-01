@@ -1,0 +1,7 @@
+* Shared copycode included by MAIN
+*
+DEFINE DATA
+  LOCAL
+    1 SHARED-FIELD PIC X(10)
+  END-DEFINE
+*

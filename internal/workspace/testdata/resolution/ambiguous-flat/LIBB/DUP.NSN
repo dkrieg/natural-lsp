@@ -1,0 +1,12 @@
+* Task 7 fixture: LIBB/DUP.NSN
+* A module with the same name as LIBA/DUP.NSN.
+* In a flat namespace, this creates an ambiguity.
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A5)
+END DEFINE
+
+MOVE 'LIBB' TO RESULT
+
+END

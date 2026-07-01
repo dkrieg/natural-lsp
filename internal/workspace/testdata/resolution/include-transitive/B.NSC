@@ -1,0 +1,9 @@
+* Copycode B includes copycode C
+*
+INCLUDE C
+*
+DEFINE DATA
+  LOCAL
+    1 B-FIELD PIC X(10)
+  END-DEFINE
+*

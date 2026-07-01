@@ -1,0 +1,21 @@
+# Task 6 fixture: explicit-library-bypass case
+# RUN 'PGM' 'COMMON' resolves against COMMON only, bypassing the chain.
+# The same program name (PGM) exists in both APP and COMMON.
+# The explicit library-id forces resolution to the named library.
+
+[workspace]
+max_file_size_kb = 512
+
+[resolution]
+# Two libraries; APP's steplibs include COMMON.
+# The RUN statement with explicit library-id overrides the chain.
+
+[[resolution.library]]
+name = "APP"
+path = "APP"
+steplibs = ["COMMON"]
+
+[[resolution.library]]
+name = "COMMON"
+path = "COMMON"
+steplibs = []

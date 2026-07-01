@@ -1,0 +1,14 @@
+* Task 5 fixture: minimal subprogram definition (called by MAIN.NSP)
+* A .NSN subprogram that MAIN.NSP's CALLNAT 'MYSUB' should resolve to.
+
+DEFINE DATA
+LOCAL
+  1 INPUT-VALUE (A20)
+  1 OUTPUT-VALUE (A20)
+END DEFINE
+
+* Simple operation to demonstrate a real subroutine
+MOVE INPUT-VALUE TO OUTPUT-VALUE
+ADD 1 TO *COUNTER
+
+END

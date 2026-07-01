@@ -1,0 +1,13 @@
+* Task 6 fixture: APP/PGM.NSP
+* Program with the same name as COMMON/PGM.NSP.
+* The RUN statement in APP/CALLER.NSP explicitly names COMMON, so
+* this file should NOT be resolved (COMMON/PGM.NSP wins instead).
+
+DEFINE DATA
+LOCAL
+  1 X (A5)
+END DEFINE
+
+MOVE 'APP' TO X
+
+END

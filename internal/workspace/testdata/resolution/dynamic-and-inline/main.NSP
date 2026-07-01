@@ -1,0 +1,25 @@
+* Task 4 fixture: resolver skeleton for dynamic edges and inline PERFORM (FR-11, FR-12, M-4)
+* Demonstrates:
+* - CALLNAT #VAR (dynamic) → should resolve as Unresolved(ReasonDynamic) with caller context preserved
+* - PERFORM LOCAL-SUB (inline match) → should resolve to in-file definition at the Target range
+*
+* The dynamic call and inline PERFORM coexist to prove the resolver preserves
+* both outcomes correctly and does not attempt static binding on dynamic edges.
+
+DEFINE DATA
+LOCAL
+  1 PROGNAME (A30)
+END DEFINE
+
+* Dynamic call — variable target, no static binding possible
+CALLNAT #PROGNAME
+
+* Inline PERFORM — definition exists in the same file
+PERFORM LOCAL-SUB
+
+* Inline subroutine definition (same file)
+DEFINE SUBROUTINE LOCAL-SUB
+  MOVE 'DONE' TO PROGNAME
+END SUBROUTINE
+
+END

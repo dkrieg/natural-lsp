@@ -1,0 +1,12 @@
+* Task 6 fixture: COMMON/PGM.NSP
+* Program that is explicitly named as the target in APP/CALLER.NSP.
+* RUN 'PGM' 'COMMON' → resolves to this file (explicit library-id takes precedence).
+
+DEFINE DATA
+LOCAL
+  1 X (A5)
+END DEFINE
+
+MOVE 'COMMON' TO X
+
+END

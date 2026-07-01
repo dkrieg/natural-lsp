@@ -1,0 +1,19 @@
+* R1 remediation: ambiguity test - caller at undeclared path calling target with multiple definitions
+* This caller is under SCRATCH/, which is NOT declared in [resolution].libraries
+* The target DUP exists in both APP/ and COMMON/ (both declared libraries)
+* Expected: when library map exists but caller is undeclared, fall back to flat-namespace resolution
+* The DUP call should be AMBIGUOUS (currently returns Unresolved(ReasonNoTarget) — the RED failure)
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* Static call to DUP, which exists in both APP/ and COMMON/
+* In flat-namespace (undeclared caller), this should be ambiguous
+CALLNAT 'DUP'
+
+* Use the result variable to complete the structure
+MOVE 'OK' TO RESULT
+
+END

@@ -1,0 +1,20 @@
+* Task 8a fixture: perform-external/MAIN.NSP
+* Demonstrates PERFORM resolving to an external subroutine (.NSS).
+* No inline DEFINE SUBROUTINE matching the target name.
+*
+* PERFORM SHARED-SUB
+* Expected: resolves to SHARED-SUB.NSS via steplib chain (Task 8a / FR-12, M-4).
+*
+* Flat namespace (no library map), so resolution follows Task 5 logic.
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* PERFORM with external subroutine target (no inline match).
+PERFORM SHARED-SUB
+
+MOVE 'OK' TO RESULT
+
+END

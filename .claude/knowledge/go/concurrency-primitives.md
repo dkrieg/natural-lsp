@@ -52,4 +52,5 @@ prescriptive patterns; this topic records the underlying facts.
 - https://pkg.go.dev/golang.org/x/sync/errgroup (verified 2026-06-20: WithContext cancellation,
   SetLimit blocking semantics, TryGo)
 - https://pkg.go.dev/os/signal (verified 2026-06-20: NotifyContext)
-- errgroup maintenance: `https://proxy.golang.org/golang.org/x/sync/@latest` → v0.21.0 (2026-06-04)
+- errgroup maintenance: `https://proxy.golang.org/golang.org/x/sync/@latest` → v0.21.0 (2026-06-04),
+  re-confirmed still latest 2026-06-30.

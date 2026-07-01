@@ -1,0 +1,12 @@
+* Subprogram target in APP library
+* Single definition of ONLYSUB in the workspace (in APP/)
+
+DEFINE SUBROUTINE ONLYSUB
+  DEFINE DATA
+  LOCAL
+    1 INPUT (A10)
+    1 OUTPUT (A20)
+  END DEFINE
+
+  MOVE 'DONE' TO OUTPUT
+END SUBROUTINE

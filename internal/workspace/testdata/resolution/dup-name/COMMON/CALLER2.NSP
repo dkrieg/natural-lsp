@@ -1,0 +1,23 @@
+* Task 6 fixture (dup-name case): COMMON/CALLER2.NSP
+* Proves that order matters: SAME module name, SAME CALLNAT statement,
+* but different current library → different winner.
+* This caller's current library is COMMON (path prefix match).
+* When CALLNAT 'SHARED' is resolved:
+* - Current library COMMON → has SHARED.NSN
+* - Expected: resolves to COMMON/SHARED.NSN (different from APP/CALLER.NSP!)
+*
+* OQ-3, OQ-5: current library determines the chain start.
+* FR-16, FR-5: M-3 NFR-7 test case — order changes the resolved target.
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* Call to SHARED from COMMON — should resolve to COMMON/SHARED.NSN
+* (even though both modules have the same name, current library determines winner)
+CALLNAT 'SHARED'
+
+MOVE 'OK' TO RESULT
+
+END

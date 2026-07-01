@@ -1,0 +1,12 @@
+* Task 8b fixture: navigation/TARGETPG.NSP
+* Target program for FETCH 'TARGETPG' in MAIN.NSP.
+* This is a simple program that FETCH should navigate to.
+
+DEFINE DATA
+LOCAL
+  1 STATUS (A10)
+END DEFINE
+
+MOVE 'READY' TO STATUS
+
+END

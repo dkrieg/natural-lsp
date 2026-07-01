@@ -1,0 +1,11 @@
+* Subprogram DUP in APP library
+* Part of the ambiguity test: DUP exists in both APP and COMMON
+
+DEFINE SUBROUTINE DUP
+  DEFINE DATA
+  LOCAL
+    1 INPUT (A10)
+  END DEFINE
+
+  * This is the APP version
+END SUBROUTINE
