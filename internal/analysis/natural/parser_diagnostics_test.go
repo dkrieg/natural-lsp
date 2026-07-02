@@ -389,8 +389,9 @@ func TestAnalyzer_EmbeddedSQLEdgesDeferred(t *testing.T) {
 // readFixture is a helper that reads a fixture file from the testdata directory.
 func readFixture(t *testing.T, relativePath string) []byte {
 	t.Helper()
-	absPath := "/Users/daniel/Projects/natural-lsp/internal/analysis/natural/" + relativePath
-	data, err := os.ReadFile(absPath)
+	// Path is relative to the package directory (Go runs tests with the package
+	// dir as the working directory), matching how the other fixture tests read.
+	data, err := os.ReadFile(relativePath)
 	if err != nil {
 		t.Fatalf("readFixture: could not read %s: %v", relativePath, err)
 	}
