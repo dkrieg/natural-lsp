@@ -83,6 +83,13 @@ The capabilities below define the **target** feature set for the first stable re
 that enables completion, signature help, call hierarchy, real syntax diagnostics, and accurate symbol tables — features
 that regex extraction cannot deliver reliably.
 
+The parser also handles **embedded SQL**: native Natural SQL statements (`SELECT`/`SELECT SINGLE`, `INSERT`,
+SQL-form `UPDATE`/`DELETE`, `MERGE`, `COMMIT`, `ROLLBACK`, `CALLDBPROC`, `READ RESULT SET`) are parsed into the
+AST with syntax diagnostics, accepting both the structured (`END-SELECT`/`END-RESULT`) and reporting-mode
+(`LOOP`) loop terminators, and `PROCESS SQL` bodies are held as a single opaque, unparsed `<<…>>` span. This is
+**parse-only** — binding SQL table names to DDMs and host-variables to their declarations is deferred to the
+data-access/embedded-SQL extraction feature.
+
 Two kinds of analysis gap are handled separately, and neither is dropped silently:
 
 - **Unresolvable references** — e.g. `CALLNAT #VARIABLE`, whose target cannot be determined statically — are noted as

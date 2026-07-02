@@ -1,0 +1,17 @@
+* ES-9 fixture: UPDATE and DELETE statements (SQL DML)
+* Valid Natural embedded SQL demonstrating:
+* - UPDATE with SET and WHERE clauses
+* - DELETE with WHERE clause
+* - Multiple host-variable operands
+* - Distinct column and value operands in SET
+
+DEFINE DATA LOCAL
+  1 #A (A10)
+  1 #B (N5)
+END-DEFINE
+
+UPDATE DDMNAME SET COL = :#A WHERE KEY = :#B
+
+DELETE FROM DDMNAME WHERE KEY = :#B
+
+END

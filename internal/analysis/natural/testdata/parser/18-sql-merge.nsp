@@ -1,0 +1,12 @@
+* ES-9 fixture: MERGE statement (SQL DML)
+* Valid Natural embedded SQL demonstrating:
+* - MERGE statement with table operand
+* - Minimal form; merge internals not modeled
+
+DEFINE DATA LOCAL
+  1 #A (A10)
+END-DEFINE
+
+MERGE INTO EMPLOYEES
+
+END

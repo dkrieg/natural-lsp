@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–07 shipped** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), and call/dependency resolution (feature 07) are implemented. Feature 08 (data-access extraction) and the higher-level LSP providers (completion, signature help, call hierarchy) remain as stubs (`data.go`, `hover.go`, `symbols.go` are package-doc + TODO only).
+**Features 00–07 shipped, plus embedded-SQL parsing** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), and call/dependency resolution (feature 07) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only). Embedded-SQL **extraction** (DDM edges, host-var binding, `CALLDBPROC` call edges) is planned as a dedicated feature (`08b-embedded-sql-extraction`) alongside Adabas data-access extraction (feature 08); both, and the higher-level LSP providers (completion, signature help, call hierarchy), remain as stubs (`data.go`, `hover.go`, `symbols.go` are package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -29,9 +29,21 @@ comments, string/numeric literals, operators, and treats `\r\n` as one line term
 `DEFINE DATA` (level numbers, types/formats, array dimensions, `REDEFINE`, group nesting), `DEFINE
 SUBROUTINE`, and `DEFINE MAP` into AST nodes carrying real source positions, and emits ranged syntax
 diagnostics (`Program.Diagnostics`) for malformed statements while retaining valid surrounding ones (no
-silent gaps — FR-30/M-6). `Analyze` surfaces the parsed `*Program` as `FileAnalysis.AST` and copies the
-parser's ranged diagnostics into `FileAnalysis.Diagnostics`. A `FuzzParse` target guards the parser
-entry point (never panics, always returns a non-nil `*Program`). Fixtures live under `testdata/parser/`.
+silent gaps — FR-30/M-6). It also parses native **embedded SQL** (feature `00-parser-embedded-sql`) —
+`SELECT`/`SELECT SINGLE`, `INSERT`, SQL-form `UPDATE`/`DELETE`, `MERGE`, `COMMIT`, `ROLLBACK`,
+`CALLDBPROC`, and `READ RESULT SET` — into AST nodes, accepting BOTH the structured (`END-SELECT`/
+`END-RESULT`) and reporting-mode (`LOOP`) loop terminators, disambiguating SQL-form `UPDATE`/`DELETE`
+from their Adabas record forms by clause shape (`SET`/`WHERE`/`FROM` table ⇒ SQL; else Adabas), and
+emitting ranged diagnostics for malformed/unterminated SQL. `PROCESS SQL` is captured with its `<<…>>`
+flexible-SQL body held as a single **opaque, unparsed span** (`TokenSQLOpaque` via the lexer's
+`ScanOpaqueSpan`/`ScanOpaqueSpanFrom`); native host-vars are accepted with or without the leading colon
+and stored without it. This is **parse-only**: SQL nodes expose *unbound* `OperandRef` lists (columns,
+tables, host-vars) — edge extraction, DDM binding, and host-var binding (including scanning the opaque
+`<<…>>` body) are deferred to feature `08b-embedded-sql-extraction`; no `internal/model` or cache-format
+change. `Analyze` surfaces the parsed `*Program` as `FileAnalysis.AST` and copies the parser's ranged
+diagnostics into `FileAnalysis.Diagnostics`. A `FuzzParse` target guards the parser entry point (never
+panics, always returns a non-nil `*Program`). Fixtures live under `testdata/parser/` (SQL fixtures
+`09`–`19`).
 
 `internal/analysis/natural/calls.go` implements **call/dependency extraction** (feature 06):
 `extractEdges(*Program)` walks the AST and emits `model.EdgeEntry` values into `FileAnalysis.Edges` (wired

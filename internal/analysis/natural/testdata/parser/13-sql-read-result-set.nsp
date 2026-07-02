@@ -1,0 +1,19 @@
+* ES-7 fixture: READ RESULT SET with loop body and END-RESULT terminator
+* Demonstrates READ RESULT SET parsing with structured loop form.
+* - CALLDBPROC to establish a result set
+* - READ RESULT SET loop with body containing INCLUDE (non-CALLNAT/PERFORM statement)
+* - Terminated with END-RESULT
+* - Zero diagnostics expected for valid syntax
+
+DEFINE DATA LOCAL
+  1 #RS (A20)
+  1 #ROW (A100)
+END-DEFINE
+
+CALLDBPROC 'GET_DATA'
+
+READ RESULT SET #RS INTO #ROW
+  INCLUDE COPY-RECORD
+END-RESULT
+
+END

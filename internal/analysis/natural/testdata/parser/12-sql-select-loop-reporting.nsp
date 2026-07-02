@@ -1,0 +1,17 @@
+* ES-6 fixture: SELECT with cursor loop and LOOP terminator (reporting mode)
+* Valid Natural embedded SQL with loop body, demonstrating:
+* - SELECT with INTO targets, FROM table, WHERE host-vars
+* - Loop body with at least one statement
+* - Terminated with LOOP (reporting mode) instead of END-SELECT
+
+DEFINE DATA LOCAL
+  1 #A (A10)
+  1 #B (A10)
+  1 #K (N5)
+END-DEFINE
+
+SELECT COL1, COL2 INTO #A, #B FROM EMPLOYEES WHERE DEPT = :#K
+  PERFORM REPORT-EMP
+LOOP
+
+END

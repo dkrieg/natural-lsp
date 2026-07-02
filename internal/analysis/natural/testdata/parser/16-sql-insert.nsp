@@ -1,0 +1,15 @@
+* ES-9 fixture: INSERT statement (SQL DML)
+* Valid Natural embedded SQL demonstrating:
+* - INSERT INTO table
+* - Column list and VALUES clause
+* - Host-variable operands with and without colon prefix
+* - No loop body
+
+DEFINE DATA LOCAL
+  1 #A (A10)
+  1 #B (N5)
+END-DEFINE
+
+INSERT INTO DDMNAME (COL1, COL2) VALUES (:#A, :#B)
+
+END

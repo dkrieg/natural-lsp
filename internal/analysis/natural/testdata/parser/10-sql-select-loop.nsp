@@ -1,0 +1,19 @@
+* ES-6 fixture: SELECT with cursor loop and END-SELECT terminator (structured mode)
+* Valid Natural embedded SQL with loop body, demonstrating:
+* - SELECT with INTO targets, FROM table, WHERE host-vars
+* - Both colon-less (#A, #B) and colon-prefixed (:#K) host-var forms
+* - Loop body with statements (PERFORM, CALLNAT)
+* - Terminated with END-SELECT
+
+DEFINE DATA LOCAL
+  1 #A (A10)
+  1 #B (A10)
+  1 #K (N5)
+END-DEFINE
+
+SELECT COL1, COL2 INTO #A, #B FROM EMPLOYEES WHERE DEPT = :#K
+  PERFORM CHECK-EMP
+  CALLNAT 'PROCESS'
+END-SELECT
+
+END

@@ -1,0 +1,20 @@
+* ES-8 fixture: PROCESS SQL statement with opaque body (<<...>>)
+* Valid Natural PROCESS SQL demonstrating:
+* - DEFINE DATA LOCAL section with host variables
+* - PROCESS SQL DDMNAME with multi-line opaque body
+* - Literal :#PERS-ID inside << >> treated as opaque (unparsed)
+* - Trailing CALLNAT after PROCESS SQL body parses successfully
+
+DEFINE DATA LOCAL
+  1 #PERS-ID (N9)
+  1 #SALARY-PCT (P3.2)
+END-DEFINE
+
+PROCESS SQL DDMNAME
+  << UPDATE SOME_TABLE
+       SET SALARY = SALARY * 1.05
+       WHERE PERS_ID = :#PERS-ID >>
+
+CALLNAT 'NDBERR'
+
+END
