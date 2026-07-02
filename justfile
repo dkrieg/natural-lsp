@@ -20,6 +20,20 @@ fmt-check:
 fmt:
     gofmt -w .
 
+# Reject hard-coded absolute home paths in test files. Such paths resolve on the
+# author's machine (so `just verify` and the pre-push hook pass locally) but break
+# in CI, where the repo is checked out elsewhere. Tests must read fixtures via
+# package-relative paths (Go runs tests with the package dir as the working dir).
+lint-tests:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    hits="$(grep -rnE '"(/Users/|/home/|/root/)|[A-Za-z]:\\\\' --include='*_test.go' . || true)"
+    if [ -n "$hits" ]; then
+      echo "absolute machine paths found in test files — use package-relative paths instead:"
+      echo "$hits"
+      exit 1
+    fi
+
 # Static analysis
 vet:
     go vet ./...
@@ -33,8 +47,8 @@ test-integration:
     go build -o natural-lsp ./cmd/natural-lsp
     go test -tags integration ./...
 
-# Full pre-push / CI gate: format + vet + build + unit (race) + integration
-verify: fmt-check vet build test test-integration
+# Full pre-push / CI gate: format + test-path lint + vet + build + unit (race) + integration
+verify: fmt-check lint-tests vet build test test-integration
     @echo "verify: OK — safe to push"
 
 # Enable the repo git hooks (pre-push then runs `just verify`)
