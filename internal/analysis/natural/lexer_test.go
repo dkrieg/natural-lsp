@@ -612,3 +612,511 @@ func TestLexer_CRLFLineCounting(t *testing.T) {
 		})
 	}
 }
+
+// TestLexer_EmbeddedSQLKeywords (ES-1) verifies that embedded-SQL keywords
+// lex as TokenKeyword, not TokenIdentifier. This includes single-word keywords
+// (SINGLE, INTO, VALUES, MERGE, COMMIT, ROLLBACK, CALLDBPROC, PROCESS, RESULT)
+// and hyphenated keywords (END-SELECT, END-RESULT) which must be lexed as a
+// single token with the full hyphenated literal.
+//
+// Acceptance (from plan.md ES-1):
+//   - Each new SQL keyword → TokenKeyword with uppercased literal
+//   - END-SELECT/END-RESULT lex as ONE token (whole hyphenated word), not two
+//   - Existing keywords (SELECT, FROM, WHERE, SET, etc.) remain unchanged (regression)
+func TestLexer_EmbeddedSQLKeywords(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantTokens []Token
+	}{
+		{
+			name:  "single_keyword",
+			input: "SINGLE",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "SINGLE", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "into_keyword",
+			input: "INTO",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "INTO", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "values_keyword",
+			input: "VALUES",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "VALUES", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "merge_keyword",
+			input: "MERGE",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "MERGE", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "commit_keyword",
+			input: "COMMIT",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "COMMIT", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "rollback_keyword",
+			input: "ROLLBACK",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "ROLLBACK", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "calldbproc_keyword",
+			input: "CALLDBPROC",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "CALLDBPROC", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "process_keyword",
+			input: "PROCESS",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "PROCESS", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "result_keyword",
+			input: "RESULT",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "RESULT", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "end_select_as_single_token",
+			input: "END-SELECT",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "END-SELECT", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "end_result_as_single_token",
+			input: "END-RESULT",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "END-RESULT", Line: 1, Column: 1},
+			},
+		},
+		{
+			name:  "all_sql_keywords_mixed",
+			input: "SINGLE INTO VALUES MERGE COMMIT ROLLBACK CALLDBPROC PROCESS RESULT END-SELECT END-RESULT",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "SINGLE", Line: 1, Column: 1},
+				{Type: TokenKeyword, Literal: "INTO", Line: 1, Column: 8},
+				{Type: TokenKeyword, Literal: "VALUES", Line: 1, Column: 13},
+				{Type: TokenKeyword, Literal: "MERGE", Line: 1, Column: 20},
+				{Type: TokenKeyword, Literal: "COMMIT", Line: 1, Column: 26},
+				{Type: TokenKeyword, Literal: "ROLLBACK", Line: 1, Column: 33},
+				{Type: TokenKeyword, Literal: "CALLDBPROC", Line: 1, Column: 42},
+				{Type: TokenKeyword, Literal: "PROCESS", Line: 1, Column: 53},
+				{Type: TokenKeyword, Literal: "RESULT", Line: 1, Column: 61},
+				{Type: TokenKeyword, Literal: "END-SELECT", Line: 1, Column: 68},
+				{Type: TokenKeyword, Literal: "END-RESULT", Line: 1, Column: 79},
+			},
+		},
+		{
+			name:  "regression_existing_sql_keywords",
+			input: "SELECT FROM WHERE SET INSERT UPDATE DELETE STORE LOOP",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "SELECT", Line: 1, Column: 1},
+				{Type: TokenKeyword, Literal: "FROM", Line: 1, Column: 8},
+				{Type: TokenKeyword, Literal: "WHERE", Line: 1, Column: 13},
+				{Type: TokenKeyword, Literal: "SET", Line: 1, Column: 19},
+				{Type: TokenKeyword, Literal: "INSERT", Line: 1, Column: 23},
+				{Type: TokenKeyword, Literal: "UPDATE", Line: 1, Column: 30},
+				{Type: TokenKeyword, Literal: "DELETE", Line: 1, Column: 37},
+				{Type: TokenKeyword, Literal: "STORE", Line: 1, Column: 44},
+				{Type: TokenKeyword, Literal: "LOOP", Line: 1, Column: 50},
+			},
+		},
+		{
+			name:  "case_insensitive_single",
+			input: "single SiNgLe sInGlE",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "SINGLE", Line: 1, Column: 1},
+				{Type: TokenKeyword, Literal: "SINGLE", Line: 1, Column: 8},
+				{Type: TokenKeyword, Literal: "SINGLE", Line: 1, Column: 15},
+			},
+		},
+		{
+			name:  "case_insensitive_end_select",
+			input: "end-select END-SELECT EnD-sElEcT",
+			wantTokens: []Token{
+				{Type: TokenKeyword, Literal: "END-SELECT", Line: 1, Column: 1},
+				{Type: TokenKeyword, Literal: "END-SELECT", Line: 1, Column: 12},
+				{Type: TokenKeyword, Literal: "END-SELECT", Line: 1, Column: 23},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lexer := NewLexer(tc.input)
+			var gotTokens []Token
+
+			for {
+				token := lexer.NextToken()
+				if token.Type == TokenEOF || token.Type == TokenError {
+					break
+				}
+				gotTokens = append(gotTokens, token)
+			}
+
+			if len(gotTokens) != len(tc.wantTokens) {
+				t.Fatalf("got %d tokens, want %d tokens: got=%v", len(gotTokens), len(tc.wantTokens), gotTokens)
+			}
+
+			for i, want := range tc.wantTokens {
+				got := gotTokens[i]
+				if got.Type != want.Type {
+					t.Errorf("token[%d] type: got %d, want %d (literal %q)", i, got.Type, want.Type, got.Literal)
+				}
+				if got.Literal != want.Literal {
+					t.Errorf("token[%d] literal: got %q, want %q", i, got.Literal, want.Literal)
+				}
+				if got.Line != want.Line {
+					t.Errorf("token[%d] line: got %d, want %d", i, got.Line, want.Line)
+				}
+				if got.Column != want.Column {
+					t.Errorf("token[%d] column: got %d, want %d", i, got.Column, want.Column)
+				}
+			}
+		})
+	}
+}
+
+// TestLexer_SQLOpaqueSpan_Regression (ES-2) verifies that outside SQL context,
+// <, >, <>, <=, >= lex unchanged (regression assertion).
+// This is the critical AC-1 from the ES-2 task: non-SQL `<`/`>` operators
+// must be byte-for-byte unchanged from today's lexer behavior.
+func TestLexer_SQLOpaqueSpan_Regression(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantTokens []Token
+	}{
+		{
+			name:  "regression_less_than_outside_sql",
+			input: "A < B",
+			wantTokens: []Token{
+				{Type: TokenIdentifier, Literal: "A", Line: 1, Column: 1},
+				{Type: TokenOperator, Literal: "<", Line: 1, Column: 3},
+				{Type: TokenIdentifier, Literal: "B", Line: 1, Column: 5},
+			},
+		},
+		{
+			name:  "regression_greater_than_outside_sql",
+			input: "A > B",
+			wantTokens: []Token{
+				{Type: TokenIdentifier, Literal: "A", Line: 1, Column: 1},
+				{Type: TokenOperator, Literal: ">", Line: 1, Column: 3},
+				{Type: TokenIdentifier, Literal: "B", Line: 1, Column: 5},
+			},
+		},
+		{
+			name:  "regression_not_equal_outside_sql",
+			input: "A <> B",
+			wantTokens: []Token{
+				{Type: TokenIdentifier, Literal: "A", Line: 1, Column: 1},
+				{Type: TokenOperator, Literal: "<>", Line: 1, Column: 3},
+				{Type: TokenIdentifier, Literal: "B", Line: 1, Column: 6},
+			},
+		},
+		{
+			name:  "regression_less_equal_outside_sql",
+			input: "A <= B",
+			wantTokens: []Token{
+				{Type: TokenIdentifier, Literal: "A", Line: 1, Column: 1},
+				{Type: TokenOperator, Literal: "<=", Line: 1, Column: 3},
+				{Type: TokenIdentifier, Literal: "B", Line: 1, Column: 6},
+			},
+		},
+		{
+			name:  "regression_greater_equal_outside_sql",
+			input: "A >= B",
+			wantTokens: []Token{
+				{Type: TokenIdentifier, Literal: "A", Line: 1, Column: 1},
+				{Type: TokenOperator, Literal: ">=", Line: 1, Column: 3},
+				{Type: TokenIdentifier, Literal: "B", Line: 1, Column: 6},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lexer := NewLexer(tc.input)
+			var gotTokens []Token
+
+			for {
+				token := lexer.NextToken()
+				if token.Type == TokenEOF || token.Type == TokenError {
+					break
+				}
+				gotTokens = append(gotTokens, token)
+			}
+
+			if len(gotTokens) != len(tc.wantTokens) {
+				t.Fatalf("got %d tokens, want %d tokens: got=%v", len(gotTokens), len(tc.wantTokens), gotTokens)
+			}
+
+			for i, want := range tc.wantTokens {
+				got := gotTokens[i]
+				if got.Type != want.Type {
+					t.Errorf("token[%d] type: got %d, want %d (literal %q)", i, got.Type, want.Type, got.Literal)
+				}
+				if got.Literal != want.Literal {
+					t.Errorf("token[%d] literal: got %q, want %q", i, got.Literal, want.Literal)
+				}
+				if got.Line != want.Line {
+					t.Errorf("token[%d] line: got %d, want %d", i, got.Line, want.Line)
+				}
+				if got.Column != want.Column {
+					t.Errorf("token[%d] column: got %d, want %d", i, got.Column, want.Column)
+				}
+			}
+		})
+	}
+}
+
+// TestLexer_SQLOpaqueSpan_OpaqueCapture (ES-2) verifies that a ScanOpaqueSpan
+// entry point (called by the parser after detecting "PROCESS SQL") captures
+// the <<...>> region as a single opaque token with the raw interior text.
+// AC-2: Opaque span captures multi-line interior verbatim.
+// AC-3: Embedded newlines and comment characters (* / /* etc.) are preserved, not re-lexed.
+func TestLexer_SQLOpaqueSpan_OpaqueCapture(t *testing.T) {
+	tests := []struct {
+		name                string
+		input               string
+		wantTokensBeforeSQL []Token
+		wantOpaqueInterior  string
+	}{
+		{
+			name:  "opaque_span_single_line",
+			input: "PROCESS SQL DDMNAME << UPDATE table SET col = #var >>",
+			wantTokensBeforeSQL: []Token{
+				{Type: TokenKeyword, Literal: "PROCESS", Line: 1, Column: 1},
+				{Type: TokenKeyword, Literal: "SQL", Line: 1, Column: 9},
+				{Type: TokenIdentifier, Literal: "DDMNAME", Line: 1, Column: 13},
+			},
+			wantOpaqueInterior: " UPDATE table SET col = #var ",
+		},
+		{
+			name:  "opaque_span_multi_line_with_comments",
+			input: "PROCESS SQL DDMNAME << UPDATE table\n  SET col = #var\n  /* this is NOT lexed as comment */\n  * asterisk also not lexed\n>>",
+			wantTokensBeforeSQL: []Token{
+				{Type: TokenKeyword, Literal: "PROCESS", Line: 1, Column: 1},
+				{Type: TokenKeyword, Literal: "SQL", Line: 1, Column: 9},
+				{Type: TokenIdentifier, Literal: "DDMNAME", Line: 1, Column: 13},
+			},
+			wantOpaqueInterior: " UPDATE table\n  SET col = #var\n  /* this is NOT lexed as comment */\n  * asterisk also not lexed\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lexer := NewLexer(tc.input)
+			var gotTokens []Token
+
+			// Collect tokens up to DDMNAME.
+			for {
+				token := lexer.NextToken()
+				if token.Type == TokenEOF || token.Type == TokenError {
+					break
+				}
+				gotTokens = append(gotTokens, token)
+				if token.Type == TokenIdentifier && token.Literal == "DDMNAME" {
+					break
+				}
+			}
+
+			// Verify tokens before opaque span match expectations.
+			if len(gotTokens) != len(tc.wantTokensBeforeSQL) {
+				t.Fatalf("tokens before ScanOpaqueSpan: got %d, want %d", len(gotTokens), len(tc.wantTokensBeforeSQL))
+			}
+
+			// Call ScanOpaqueSpan — this method does not exist yet (ES-2 green will add it).
+			// The test assumes the signature: ScanOpaqueSpan() (Token, bool)
+			// where the bool indicates whether the span was unterminated.
+			opaqueToken, unterminated := lexer.ScanOpaqueSpan()
+
+			// Verify the opaque token type.
+			if opaqueToken.Type != TokenSQLOpaque {
+				t.Errorf("ScanOpaqueSpan returned type %d, want TokenSQLOpaque", opaqueToken.Type)
+			}
+
+			// Verify the interior is verbatim (including newlines, *, /*, etc. without re-lexing).
+			if opaqueToken.Literal != tc.wantOpaqueInterior {
+				t.Errorf("opaque literal mismatch.\nGot:\n%q\nWant:\n%q", opaqueToken.Literal, tc.wantOpaqueInterior)
+			}
+
+			// Verify it's not unterminated (proper >> closure).
+			if unterminated {
+				t.Errorf("ScanOpaqueSpan reported unterminated=true, but test input has closing >>")
+			}
+		})
+	}
+}
+
+// TestLexer_SQLOpaqueSpan_LineStateAfterClose (ES-2 refactor) verifies that the
+// lexer's line-tracking state is consistent after ScanOpaqueSpan returns:
+//
+//   - startLine/startCol of the returned token point to << (not pre-whitespace).
+//   - lineHasNonWhitespace is true after >> (so a subsequent * on the same line is
+//     NOT treated as a full-line comment by NextToken).
+//   - lineHasNonWhitespace is false after crossing a newline inside the span, so a
+//   - at the start of the line following the >> IS treated as a full-line comment.
+func TestLexer_SQLOpaqueSpan_LineStateAfterClose(t *testing.T) {
+	t.Run("token_position_marks_open_delimiter", func(t *testing.T) {
+		// << is at line 1 col 1 (no leading whitespace after DDMNAME).
+		input := "PROCESS SQL DDMNAME << body >>"
+		lexer := NewLexer(input)
+		for {
+			tok := lexer.NextToken()
+			if tok.Type == TokenEOF || tok.Type == TokenError {
+				break
+			}
+			if tok.Type == TokenIdentifier && tok.Literal == "DDMNAME" {
+				break
+			}
+		}
+		opaqueToken, unterminated := lexer.ScanOpaqueSpan()
+		if unterminated {
+			t.Fatal("expected terminated span, got unterminated=true")
+		}
+		// The token position must mark the << delimiter, not pre-whitespace.
+		if opaqueToken.Line != 1 {
+			t.Errorf("opaqueToken.Line = %d, want 1 (position of <<)", opaqueToken.Line)
+		}
+		// Column of << = column of 'D'+len("DDMNAME")+" " = 21 (PROCESS=1..7 + space + SQL=9..11 + space + DDMNAME=13..19 + space=20 + <<starts at 21)
+		if opaqueToken.Column != 21 {
+			t.Errorf("opaqueToken.Column = %d, want 21 (column of <<)", opaqueToken.Column)
+		}
+	})
+
+	t.Run("star_on_line_after_close_is_comment", func(t *testing.T) {
+		// >> closes the span; the next line starts with *, which must be a full-line comment.
+		input := "PROCESS SQL DDMNAME << body\n>>\n* this must be a comment\nCALLNAT 'X'"
+		lexer := NewLexer(input)
+		for {
+			tok := lexer.NextToken()
+			if tok.Type == TokenEOF || tok.Type == TokenError {
+				break
+			}
+			if tok.Type == TokenIdentifier && tok.Literal == "DDMNAME" {
+				break
+			}
+		}
+		_, unterminated := lexer.ScanOpaqueSpan()
+		if unterminated {
+			t.Fatal("expected terminated span, got unterminated=true")
+		}
+
+		// Next token must be the full-line comment (not a * operator).
+		next := lexer.NextToken()
+		if next.Type != TokenComment {
+			t.Errorf("NextToken after >>: got type %d literal %q, want TokenComment", next.Type, next.Literal)
+		}
+	})
+
+	t.Run("star_on_same_line_as_close_is_operator", func(t *testing.T) {
+		// >> and * appear on the same physical line; * must be an operator (not a comment).
+		input := "PROCESS SQL DDMNAME << body >> * 2"
+		lexer := NewLexer(input)
+		for {
+			tok := lexer.NextToken()
+			if tok.Type == TokenEOF || tok.Type == TokenError {
+				break
+			}
+			if tok.Type == TokenIdentifier && tok.Literal == "DDMNAME" {
+				break
+			}
+		}
+		_, unterminated := lexer.ScanOpaqueSpan()
+		if unterminated {
+			t.Fatal("expected terminated span, got unterminated=true")
+		}
+
+		// Next token must be * as an operator (>> is non-whitespace, so not line-start).
+		next := lexer.NextToken()
+		if next.Type != TokenOperator || next.Literal != "*" {
+			t.Errorf("NextToken after >>: got type %d literal %q, want TokenOperator '*'", next.Type, next.Literal)
+		}
+	})
+}
+
+// TestLexer_SQLOpaqueSpan_Unterminated (ES-2) verifies that an unterminated << span
+// (no closing >>) does not panic, does not loop forever, and returns the interior-to-EOF
+// as the literal with an unterminated signal. AC-4 from the ES-2 task.
+func TestLexer_SQLOpaqueSpan_Unterminated(t *testing.T) {
+	tests := []struct {
+		name               string
+		input              string
+		expectedLiteral    string
+		expectUnterminated bool
+	}{
+		{
+			name:               "unterminated_double_lt_at_eof",
+			input:              "PROCESS SQL DDMNAME << UPDATE table SET col = #var",
+			expectedLiteral:    " UPDATE table SET col = #var",
+			expectUnterminated: true,
+		},
+		{
+			name:               "unterminated_double_lt_multi_line",
+			input:              "PROCESS SQL DDMNAME << UPDATE table\nSET col = #var\n* comment chars stay\n/* comment not lexed",
+			expectedLiteral:    " UPDATE table\nSET col = #var\n* comment chars stay\n/* comment not lexed",
+			expectUnterminated: true,
+		},
+		{
+			name:               "unterminated_empty_span",
+			input:              "PROCESS SQL DDMNAME <<",
+			expectedLiteral:    "",
+			expectUnterminated: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lexer := NewLexer(tc.input)
+
+			// Consume tokens up to DDMNAME.
+			for {
+				token := lexer.NextToken()
+				if token.Type == TokenEOF || token.Type == TokenError {
+					break
+				}
+				if token.Type == TokenIdentifier && token.Literal == "DDMNAME" {
+					break
+				}
+			}
+
+			// Call ScanOpaqueSpan — this method does not exist yet.
+			// If it panics or loops forever, the test framework detects it.
+			// The signature is assumed: ScanOpaqueSpan() (Token, bool)
+			opaqueToken, unterminated := lexer.ScanOpaqueSpan()
+
+			// Verify the token type.
+			if opaqueToken.Type != TokenSQLOpaque {
+				t.Errorf("ScanOpaqueSpan type: got %d, want TokenSQLOpaque", opaqueToken.Type)
+			}
+
+			// Verify the literal matches expected interior-to-EOF.
+			if opaqueToken.Literal != tc.expectedLiteral {
+				t.Errorf("ScanOpaqueSpan literal mismatch.\nGot:\n%q\nWant:\n%q", opaqueToken.Literal, tc.expectedLiteral)
+			}
+
+			// Verify the unterminated signal.
+			if unterminated != tc.expectUnterminated {
+				t.Errorf("ScanOpaqueSpan unterminated: got %v, want %v", unterminated, tc.expectUnterminated)
+			}
+		})
+	}
+}

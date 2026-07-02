@@ -34,32 +34,56 @@ func (p *Parser) Parse() (*Program, error) {
 	}
 
 	for p.current.Type != TokenEOF {
-		switch {
-		case p.matches(TokenKeyword, "DEFINE"):
-			p.parseDefine(ast)
-		case p.matches(TokenKeyword, "CALLNAT"):
-			p.parseCallStatement(ast)
-		case p.matches(TokenKeyword, "PERFORM"):
-			p.parsePerformStatement(ast)
-		case p.matches(TokenKeyword, "INCLUDE"):
-			p.parseIncludeStatement(ast)
-		case p.matches(TokenKeyword, "FETCH"):
-			p.parseFetchStatement(ast)
-		case p.matches(TokenKeyword, "RUN"):
-			p.parseRunStatement(ast)
-		case p.matches(TokenKeyword, "READ"):
-			p.parseReadStatement(ast)
-		case p.matches(TokenKeyword, "STORE"):
-			p.parseStoreStatement(ast)
-		default:
-			// Skip unrecognized tokens (partial parsing)
-			p.advance()
-		}
+		p.dispatchStatement(ast)
 	}
 
 	ast.EndPos = p.prevPos()
 	ast.Diagnostics = p.diagnostics
 	return ast, nil
+}
+
+// dispatchStatement handles statement dispatch for both Parse() top-level and loop bodies.
+// It dispatches to the appropriate parser method and appends results to the Program.
+func (p *Parser) dispatchStatement(ast *Program) {
+	switch {
+	case p.matches(TokenKeyword, "DEFINE"):
+		p.parseDefine(ast)
+	case p.matches(TokenKeyword, "CALLNAT"):
+		p.parseCallStatement(ast)
+	case p.matches(TokenKeyword, "PERFORM"):
+		p.parsePerformStatement(ast)
+	case p.matches(TokenKeyword, "INCLUDE"):
+		p.parseIncludeStatement(ast)
+	case p.matches(TokenKeyword, "FETCH"):
+		p.parseFetchStatement(ast)
+	case p.matches(TokenKeyword, "RUN"):
+		p.parseRunStatement(ast)
+	case p.matches(TokenKeyword, "READ"):
+		p.parseReadStatement(ast)
+	case p.matches(TokenKeyword, "STORE"):
+		p.parseStoreStatement(ast)
+	case p.matches(TokenKeyword, "COMMIT"):
+		p.parseCommitStatement(ast)
+	case p.matches(TokenKeyword, "ROLLBACK"):
+		p.parseRollbackStatement(ast)
+	case p.matches(TokenKeyword, "CALLDBPROC"):
+		p.parseCallDBProcStatement(ast)
+	case p.matches(TokenKeyword, "SELECT"):
+		p.parseSelectStatement(ast)
+	case p.matches(TokenKeyword, "INSERT"):
+		p.parseInsertStatement(ast)
+	case p.matches(TokenKeyword, "UPDATE"):
+		p.parseUpdateStatement(ast)
+	case p.matches(TokenKeyword, "DELETE"):
+		p.parseDeleteStatement(ast)
+	case p.matches(TokenKeyword, "MERGE"):
+		p.parseMergeStatement(ast)
+	case p.matches(TokenKeyword, "PROCESS"):
+		p.parseProcessSQLStatement(ast)
+	default:
+		// Skip unrecognized tokens (partial parsing)
+		p.advance()
+	}
 }
 
 // parseDefine handles DEFINE DATA, DEFINE SUBROUTINE, and DEFINE MAP.
@@ -106,7 +130,7 @@ func (p *Parser) parseDataSection(ast *Program, startPos model.Position) {
 
 	for p.current.Type != TokenEOF {
 		// Stop at END keyword or other statement keywords (if DEFINE DATA block wasn't properly closed)
-		if p.matches(TokenKeyword, "END", "CALLNAT", "PERFORM", "INCLUDE", "FETCH", "RUN", "DEFINE", "READ", "STORE") {
+		if p.matches(TokenKeyword, "END", "CALLNAT", "PERFORM", "INCLUDE", "FETCH", "RUN", "DEFINE", "READ", "STORE", "COMMIT", "ROLLBACK", "CALLDBPROC", "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "PROCESS") {
 			break
 		}
 
@@ -676,13 +700,35 @@ func (p *Parser) matchesLiteral(literals ...string) bool {
 }
 
 // skipToNextStatement advances past tokens that do not start a new top-level
-// statement, stopping at the first statement keyword or EOF.
-// This is the single authoritative stop-set for recovery; add new top-level
-// keywords here (and in the Parse dispatch switch) to keep them in sync.
+// statement or loop terminator, stopping at the first statement keyword, loop terminator, or EOF.
+// Loop terminators (END-SELECT, LOOP, END-RESULT) are included in the stop set because they
+// must be preserved for the enclosing parseLoopBodyWithDiagnostic (ES-10 fix: prevent recovery
+// from consuming terminators that should close the loop). This is safe because loop terminators
+// never appear at top level in valid Natural code; in malformed code a stray terminator is
+// skipped by dispatchStatement's default branch, which always advances past unrecognized tokens.
+// Also stops at END and END-DEFINE (hard program boundaries) to prevent operand over-extension.
+//
+// This is the single authoritative stop-set for recovery. Every new top-level
+// statement keyword must be added in three places to keep them in sync:
+//  1. isStatementKeyword (here, via the predicate)
+//  2. The Parse() dispatch switch
+//  3. The DEFINE DATA break-set (parseDataSection loop guard)
+//
+// Omitting any of the three causes recovery or data-section termination to drift.
 func (p *Parser) skipToNextStatement() {
 	for p.current.Type != TokenEOF {
-		if p.current.Type == TokenKeyword && isStatementKeyword(p.current.Literal) {
-			return
+		if p.current.Type == TokenKeyword {
+			if isStatementKeyword(p.current.Literal) {
+				return
+			}
+			// Also stop at loop terminators to preserve them for loop body parsing.
+			if p.matchesLiteral("END-SELECT", "LOOP", "END-RESULT") {
+				return
+			}
+			// Stop at program terminators (hard boundary).
+			if p.isProgramBoundary() {
+				return
+			}
 		}
 		p.advance()
 	}
@@ -716,13 +762,57 @@ func (p *Parser) parseReadStatement(ast *Program) {
 	startPos := p.currentPos()
 	startLine := p.current.Line
 	keywordEndCol := startPos.Column + len("READ") - 1
-
-	read := &ReadStatement{
-		StartPos: startPos,
-	}
+	readToken := p.current // Save READ token for loop body diagnostics
 
 	// Consume READ keyword.
 	p.advance()
+
+	// Check for READ RESULT SET form by peeking ahead.
+	// If the next token is RESULT followed by SET, parse as READ RESULT SET.
+	if p.matchesLiteral("RESULT") {
+		// Look ahead to verify SET follows RESULT.
+		// Peek by checking current and hypothetically advancing.
+		savedCurrent := p.current
+		savedPrev := p.prev
+		p.advance() // Tentatively consume RESULT
+
+		if p.matchesLiteral("SET") {
+			// Confirmed: READ RESULT SET form
+			p.advance() // Consume SET
+
+			rrs := &ReadResultSetStatement{
+				StartPos: startPos,
+			}
+
+			// Parse the result-set operand (identifier after SET).
+			if p.matches(TokenIdentifier) {
+				rrs.ResultSetOperand = OperandRef{
+					Name:  p.current.Literal,
+					Range: tokenRange(p.current),
+				}
+				p.advance()
+			}
+
+			// Parse optional INTO clause and other operands until loop body.
+			p.skipToNextLoopBody()
+
+			// Parse loop body with terminators END-RESULT or LOOP.
+			rrs.Body = p.parseLoopBodyWithDiagnostic([]string{"END-RESULT", "LOOP"}, "READ RESULT SET", readToken)
+
+			rrs.EndPos = p.prevPos()
+			ast.ReadResultSets = append(ast.ReadResultSets, rrs)
+			return
+		}
+
+		// Not READ RESULT SET; restore and fall through to plain READ parsing.
+		p.current = savedCurrent
+		p.prev = savedPrev
+	}
+
+	// Plain READ statement logic.
+	read := &ReadStatement{
+		StartPos: startPos,
+	}
 
 	// Skip optional same-line parenthesized row-limit: READ (10) <view>.
 	if p.current.Line == startLine && p.matches(TokenPunctuation, "(") {
@@ -804,11 +894,481 @@ func (p *Parser) parseStoreStatement(ast *Program) {
 	ast.Stores = append(ast.Stores, store)
 }
 
+// parseCommitStatement parses a COMMIT statement (SQL transaction).
+// COMMIT takes no operands.
+func (p *Parser) parseCommitStatement(ast *Program) {
+	// Capture position of COMMIT keyword before advancing.
+	startPos := p.currentPos()
+	keyword := p.current
+
+	commit := &CommitStatement{
+		StartPos: startPos,
+	}
+
+	// Consume COMMIT keyword.
+	p.advance()
+
+	// Skip remaining tokens in this statement until the next statement keyword.
+	p.skipToNextStatement()
+
+	// Set EndPos to cover the keyword text (not prevPos which collapses to column 1).
+	commit.EndPos = model.Position{
+		Line:   keyword.Line,
+		Column: keyword.Column + len(keyword.Literal) - 1,
+	}
+	ast.Commits = append(ast.Commits, commit)
+}
+
+// parseRollbackStatement parses a ROLLBACK statement (SQL transaction).
+// ROLLBACK takes no operands.
+func (p *Parser) parseRollbackStatement(ast *Program) {
+	// Capture position of ROLLBACK keyword before advancing.
+	startPos := p.currentPos()
+	keyword := p.current
+
+	rollback := &RollbackStatement{
+		StartPos: startPos,
+	}
+
+	// Consume ROLLBACK keyword.
+	p.advance()
+
+	// Skip remaining tokens in this statement until the next statement keyword.
+	p.skipToNextStatement()
+
+	// Set EndPos to cover the keyword text (not prevPos which collapses to column 1).
+	rollback.EndPos = model.Position{
+		Line:   keyword.Line,
+		Column: keyword.Column + len(keyword.Literal) - 1,
+	}
+	ast.Rollbacks = append(ast.Rollbacks, rollback)
+}
+
+// parseCallDBProcStatement parses a CALLDBPROC statement.
+// Consumes proc-name operand and remaining operands via skipToNextStatement.
+func (p *Parser) parseCallDBProcStatement(ast *Program) {
+	// Capture position of CALLDBPROC keyword before advancing.
+	startPos := p.currentPos()
+
+	calldbproc := &CallDBProcStatement{
+		StartPos: startPos,
+	}
+
+	// Consume CALLDBPROC keyword.
+	p.advance()
+
+	// Skip remaining tokens in this statement until the next statement keyword.
+	p.skipToNextStatement()
+
+	calldbproc.EndPos = p.prevPos()
+	ast.CallDBProcs = append(ast.CallDBProcs, calldbproc)
+}
+
+// parseSelectStatement parses a SELECT statement (embedded SQL).
+// Grammar: SELECT [SINGLE] ... [INTO ...] [FROM ...] [WHERE ...] [... loop body ...] [END-SELECT|LOOP]
+// Two forms:
+// 1. SELECT SINGLE ...: singleton (no loop body, no terminator) -> SelectSingleStatement
+// 2. SELECT ... [loop body] (END-SELECT|LOOP): cursor loop -> SelectStatement with Body
+func (p *Parser) parseSelectStatement(ast *Program) {
+	// Capture position of SELECT keyword before advancing.
+	startPos := p.currentPos()
+	selectToken := p.current // Save SELECT token for loop body diagnostics
+
+	// Consume SELECT keyword.
+	p.advance()
+
+	// Check for SINGLE form: SELECT SINGLE ... (no body, no terminator)
+	if p.matchesLiteral("SINGLE") {
+		p.advance()
+		sel := &SelectSingleStatement{
+			StartPos: startPos,
+		}
+
+		// Parse operands until line end or statement end.
+		sel.Columns = p.parseSelectColumns()
+		sel.IntoTargets = p.parseSelectInto()
+		sel.FromTables = p.parseSelectFrom()
+		sel.WhereOperands = p.parseSelectWhere()
+
+		// Skip any remaining tokens on the statement until the next statement keyword.
+		p.skipToNextStatement()
+
+		sel.EndPos = p.prevPos()
+		ast.SelectSingles = append(ast.SelectSingles, sel)
+		return
+	}
+
+	// Cursor loop form: SELECT ... [loop body] [END-SELECT|LOOP]
+	sel := &SelectStatement{
+		StartPos: startPos,
+	}
+
+	// Parse operands until loop body or terminator.
+	sel.Columns = p.parseSelectColumns()
+	sel.IntoTargets = p.parseSelectInto()
+	sel.FromTables = p.parseSelectFrom()
+	sel.WhereOperands = p.parseSelectWhere()
+
+	// Parse loop body: statements until END-SELECT or LOOP terminator.
+	sel.Body = p.parseSelectBodyWithToken(selectToken)
+
+	sel.EndPos = p.prevPos()
+	ast.Selects = append(ast.Selects, sel)
+}
+
+// parseSelectColumns extracts column operands from SELECT ... until INTO, FROM, or WHERE.
+func (p *Parser) parseSelectColumns() []OperandRef {
+	var columns []OperandRef
+
+	// Collect column names until we hit INTO, FROM, WHERE, END-SELECT, LOOP, or next statement keyword.
+	for p.current.Type != TokenEOF && !p.isSelectStopKeyword() {
+		if p.matchesLiteral("INTO", "FROM", "WHERE") {
+			break
+		}
+
+		// Capture operand (identifier or keyword that acts as a column name).
+		if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
+			columns = append(columns, OperandRef{
+				Name:  p.current.Literal,
+				Range: tokenRange(p.current),
+			})
+		}
+
+		p.advance()
+	}
+
+	return columns
+}
+
+// parseSelectInto extracts host-variable targets from INTO clause.
+func (p *Parser) parseSelectInto() []OperandRef {
+	var targets []OperandRef
+
+	if !p.matchesLiteral("INTO") {
+		return targets
+	}
+
+	p.advance() // Consume INTO keyword.
+
+	// Collect host-vars until FROM, WHERE, END-SELECT, LOOP, or next statement keyword.
+	for p.current.Type != TokenEOF && !p.isSelectStopKeyword() {
+		if p.matchesLiteral("FROM", "WHERE") {
+			break
+		}
+
+		// Host-vars can be identifiers starting with # or keywords (in rare cases).
+		if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
+			targets = append(targets, OperandRef{
+				Name:  p.current.Literal,
+				Range: tokenRange(p.current),
+			})
+		}
+
+		p.advance()
+	}
+
+	return targets
+}
+
+// parseSelectFrom extracts table operands from FROM clause.
+func (p *Parser) parseSelectFrom() []OperandRef {
+	var tables []OperandRef
+
+	if !p.matchesLiteral("FROM") {
+		return tables
+	}
+
+	p.advance() // Consume FROM keyword.
+
+	// Collect table names until WHERE, END-SELECT, LOOP, or next statement keyword.
+	for p.current.Type != TokenEOF && !p.isSelectStopKeyword() {
+		if p.matchesLiteral("WHERE") {
+			break
+		}
+
+		// Table names are identifiers or keywords.
+		if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
+			tables = append(tables, OperandRef{
+				Name:  p.current.Literal,
+				Range: tokenRange(p.current),
+			})
+		}
+
+		p.advance()
+	}
+
+	return tables
+}
+
+// parseSelectWhere extracts host-variable operands from WHERE clause.
+func (p *Parser) parseSelectWhere() []OperandRef {
+	var operands []OperandRef
+
+	if !p.matchesLiteral("WHERE") {
+		return operands
+	}
+
+	p.advance() // Consume WHERE keyword.
+
+	// Collect operands until END-SELECT, LOOP, or next statement keyword.
+	// Skip GROUP BY, HAVING, ORDER BY with their operands.
+	for p.current.Type != TokenEOF && !p.isSelectStopKeyword() {
+		if p.matchesLiteral("GROUP", "HAVING", "ORDER") {
+			// Skip these clauses and their operands until we reach a terminator or new statement.
+			p.skipSQLClause()
+			continue
+		}
+
+		// Consume optional leading colon before host-var operand.
+		if p.matches(TokenPunctuation, ":") {
+			p.advance()
+		}
+
+		// Capture operand (identifier or keyword).
+		if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
+			operands = append(operands, OperandRef{
+				Name:  p.current.Literal,
+				Range: tokenRange(p.current),
+			})
+			p.advance()
+		} else {
+			p.advance()
+		}
+	}
+
+	return operands
+}
+
+// parseSelectBodyWithToken parses the loop body statements until END-SELECT or LOOP terminator,
+// passing the opening SELECT token for diagnostic range reporting.
+func (p *Parser) parseSelectBodyWithToken(selectToken Token) []Node {
+	return p.parseLoopBodyWithDiagnostic([]string{"END-SELECT", "LOOP"}, "SELECT", selectToken)
+}
+
+// parseLoopBodyWithDiagnostic parses statements in a loop body until one of the given terminators
+// is reached, emitting a diagnostic if EOF is reached before the terminator.
+// openingKeyword is the name of the statement (e.g., "SELECT", "READ RESULT SET") for the diagnostic message.
+// openingToken is the opening statement's token for range reporting.
+func (p *Parser) parseLoopBodyWithDiagnostic(terminators []string, openingKeyword string, openingToken Token) []Node {
+	var body []Node
+
+	for p.current.Type != TokenEOF {
+		// Check if we've reached a terminator.
+		if p.matchesLiteral(terminators...) {
+			break
+		}
+
+		// Record position before dispatching so we can detect a stuck state.
+		prevLine, prevCol := p.current.Line, p.current.Column
+
+		// Parse a single statement using the full dispatch.
+		stmt := p.parseStatement()
+		if stmt != nil {
+			body = append(body, stmt)
+		}
+
+		// Defense-in-depth: if parseStatement returned without advancing (possible only
+		// if a new parser path is added that neither consumes a token nor returns early),
+		// force-advance one token to prevent spinning.
+		if p.current.Type != TokenEOF &&
+			p.current.Line == prevLine && p.current.Column == prevCol {
+			p.advance()
+		}
+	}
+
+	// ES-10: emit diagnostic if EOF reached without finding terminator.
+	if p.current.Type == TokenEOF && !p.matchesLiteral(terminators...) {
+		var termStr string
+		if len(terminators) == 2 && terminators[0] == "END-SELECT" {
+			termStr = "END-SELECT/LOOP"
+		} else if len(terminators) == 2 && terminators[0] == "END-RESULT" {
+			termStr = "END-RESULT/LOOP"
+		} else {
+			termStr = strings.Join(terminators, "/")
+		}
+		p.addDiagnostic(
+			"unterminated "+openingKeyword+" loop: missing "+termStr,
+			tokenRange(openingToken).Start,
+			p.prevPos(),
+			model.DiagnosticError,
+		)
+	}
+
+	// Consume the terminator.
+	if p.matchesLiteral(terminators...) {
+		p.advance()
+	}
+
+	return body
+}
+
+// skipToNextLoopBody skips tokens until a statement keyword that starts a loop body.
+// Used between operand parsing (SELECT clauses, READ RESULT SET INTO) and the body itself.
+func (p *Parser) skipToNextLoopBody() {
+	for p.current.Type != TokenEOF {
+		// Stop at statement keywords that can appear in loop bodies.
+		if p.current.Type == TokenKeyword && isStatementKeyword(p.current.Literal) {
+			return
+		}
+		// Also stop at loop terminators.
+		if p.matchesLiteral("END-SELECT", "LOOP", "END-RESULT") {
+			return
+		}
+		p.advance()
+	}
+}
+
+// parseStatement parses a single statement inside a loop body (e.g. a SELECT or READ RESULT SET
+// loop) and returns the AST node. It uses the full statement dispatch via a throwaway Program,
+// so all statement types are supported uniformly.
+func (p *Parser) parseStatement() Node {
+	// DEFINE blocks are not allowed inside loop bodies. Skip to the next statement keyword
+	// using skipToNextLoopBody (not skipToNextStatement) so that loop terminators such as
+	// END-RESULT, END-SELECT, and LOOP are never consumed during the skip — otherwise the
+	// enclosing parseLoopBodyWithDiagnostic would never see the terminator and run to EOF.
+	if p.matches(TokenKeyword, "DEFINE") {
+		p.skipToNextLoopBody()
+		return nil
+	}
+
+	// Use the full dispatch with a throwaway Program to parse the statement.
+	tmp := &Program{}
+	p.dispatchStatement(tmp)
+
+	// Extract the single statement node that was appended to tmp.
+	return firstStatementNode(tmp)
+}
+
+// firstStatementNode extracts the single statement node from a throwaway Program
+// populated by dispatchStatement. Checks all statement slices and returns the one
+// non-empty slice's first element (or nil if no statements were appended).
+//
+// MAINTAINER NOTE: this function MUST be kept in sync with dispatchStatement.
+// Whenever a new statement kind is added to dispatchStatement (e.g., ES-8 INSERT/
+// UPDATE/DELETE/MERGE, ES-8 PROCESS SQL), add a corresponding check here or that
+// statement type will silently disappear from loop bodies (SELECT body, READ RESULT
+// SET body) with no compile-time error. The current set covers every case that
+// dispatchStatement can populate: see the checks below in dispatch order.
+func firstStatementNode(tmp *Program) Node {
+	// Check each statement type in the order they appear in dispatchStatement.
+	if len(tmp.Calls) > 0 {
+		return tmp.Calls[0]
+	}
+	if len(tmp.Performs) > 0 {
+		return tmp.Performs[0]
+	}
+	if len(tmp.Includes) > 0 {
+		return tmp.Includes[0]
+	}
+	if len(tmp.Fetches) > 0 {
+		return tmp.Fetches[0]
+	}
+	if len(tmp.Runs) > 0 {
+		return tmp.Runs[0]
+	}
+	if len(tmp.Reads) > 0 {
+		return tmp.Reads[0]
+	}
+	if len(tmp.Stores) > 0 {
+		return tmp.Stores[0]
+	}
+	if len(tmp.Commits) > 0 {
+		return tmp.Commits[0]
+	}
+	if len(tmp.Rollbacks) > 0 {
+		return tmp.Rollbacks[0]
+	}
+	if len(tmp.CallDBProcs) > 0 {
+		return tmp.CallDBProcs[0]
+	}
+	if len(tmp.Selects) > 0 {
+		return tmp.Selects[0]
+	}
+	if len(tmp.SelectSingles) > 0 {
+		return tmp.SelectSingles[0]
+	}
+	if len(tmp.ReadResultSets) > 0 {
+		return tmp.ReadResultSets[0]
+	}
+	if len(tmp.ProcessSQLs) > 0 {
+		return tmp.ProcessSQLs[0]
+	}
+	if len(tmp.Inserts) > 0 {
+		return tmp.Inserts[0]
+	}
+	if len(tmp.SQLUpdates) > 0 {
+		return tmp.SQLUpdates[0]
+	}
+	if len(tmp.SQLDeletes) > 0 {
+		return tmp.SQLDeletes[0]
+	}
+	if len(tmp.Merges) > 0 {
+		return tmp.Merges[0]
+	}
+	// Statements not reachable from loop bodies: DataSections, Subroutines, Maps
+	// are omitted because DEFINE is filtered out in parseStatement before dispatch.
+	return nil
+}
+
+// skipSQLClause skips tokens that are part of a SQL clause (GROUP BY, HAVING, ORDER BY)
+// until a SELECT terminator or statement keyword.
+// FIRST consumes the clause keyword (GROUP [BY], ORDER [BY], HAVING), then skips
+// operands until the next clause keyword, SELECT terminator, or statement keyword.
+// Guarantees forward progress: always advances at least one token.
+func (p *Parser) skipSQLClause() {
+	// Consume the clause keyword itself (GROUP, ORDER, or HAVING).
+	// This must happen first to guarantee we advance past the keyword that triggered this call.
+	if p.matchesLiteral("GROUP", "HAVING", "ORDER") {
+		p.advance()
+		// Optional: skip "BY" keyword after GROUP or ORDER.
+		if p.matchesLiteral("BY") {
+			p.advance()
+		}
+	}
+
+	// Now skip operand tokens until we hit a stop condition.
+	for p.current.Type != TokenEOF {
+		// Stop at SELECT terminators.
+		if p.matchesLiteral("END-SELECT", "LOOP") {
+			return
+		}
+		// Stop at program terminator (hard boundary).
+		if p.isProgramBoundary() {
+			return
+		}
+		// Stop at statement keywords.
+		if p.current.Type == TokenKeyword && isStatementKeyword(p.current.Literal) {
+			return
+		}
+		// Stop at next SQL clause keyword (would start a new clause).
+		if p.matchesLiteral("GROUP", "HAVING", "ORDER", "WHERE", "FROM", "INTO") {
+			return
+		}
+		p.advance()
+	}
+}
+
+// isProgramBoundary returns true if the current token is a hard program
+// boundary keyword (END or END-DEFINE). These are stop sentinels shared by all
+// operand-scanning loops and the clause-skip helper — defined once here so the
+// boundary set cannot drift across the eight call sites.
+func (p *Parser) isProgramBoundary() bool {
+	return p.matchesLiteral("END", "END-DEFINE")
+}
+
+// isSelectStopKeyword returns true if the current token is a terminator or stop keyword for SELECT operand parsing.
+func (p *Parser) isSelectStopKeyword() bool {
+	return p.matchesLiteral("END-SELECT", "LOOP") || p.isProgramBoundary() || (p.current.Type == TokenKeyword && isStatementKeyword(p.current.Literal))
+}
+
 // isStatementKeyword checks if a literal is a top-level statement keyword.
 func isStatementKeyword(literal string) bool {
 	return literal == "DEFINE" || literal == "CALLNAT" || literal == "PERFORM" ||
 		literal == "INCLUDE" || literal == "FETCH" || literal == "RUN" ||
-		literal == "READ" || literal == "STORE"
+		literal == "READ" || literal == "STORE" || literal == "COMMIT" ||
+		literal == "ROLLBACK" || literal == "CALLDBPROC" || literal == "SELECT" ||
+		literal == "INSERT" || literal == "UPDATE" || literal == "DELETE" ||
+		literal == "MERGE" || literal == "PROCESS"
 }
 
 // consumeStringTarget extracts the target name from the current TokenLiteralString
@@ -858,4 +1418,463 @@ func unquoteString(s string) string {
 // carry only the raw scanned content without surrounding quotes.
 func isTerminatedString(s string) bool {
 	return len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\''
+}
+
+// parseInsertStatement parses an INSERT statement (SQL DML, ES-9).
+// Syntax: INSERT INTO <table> [<columns>] VALUES (:<host-vars>)
+// Captures table operand and all VALUES clause operands (stored without leading colon).
+//
+// Disambiguation: INSERT is always SQL DML in Natural/SQL; there is no Adabas
+// INSERT statement. If INTO is absent the statement is malformed and skipped
+// (no node produced) — residual ambiguous shapes are never silently mis-produced.
+// Infinite-loop safety: p.advance() is called unconditionally before any early
+// return, so dispatchStatement always makes forward progress on this keyword.
+func (p *Parser) parseInsertStatement(ast *Program) {
+	startPos := p.currentPos()
+	ins := &InsertStatement{
+		StartPos: startPos,
+	}
+
+	// Consume INSERT keyword
+	p.advance()
+
+	if !p.matchesLiteral("INTO") {
+		p.skipToNextStatement()
+		ins.EndPos = p.prevPos()
+		return
+	}
+
+	// Consume INTO
+	p.advance()
+
+	// Parse table operand (identifier)
+	if p.matches(TokenIdentifier) {
+		ins.IntoTable = append(ins.IntoTable, OperandRef{
+			Name:  p.current.Literal,
+			Range: tokenRange(p.current),
+		})
+		p.advance()
+	}
+
+	// Parse column list (optional, skip for now)
+	// Skip to VALUES keyword, stopping at program terminators (hard boundary)
+	for p.current.Type != TokenEOF && !p.matchesLiteral("VALUES") {
+		// Stop at program terminators.
+		if p.isProgramBoundary() {
+			break
+		}
+		// Stop at next statement keyword
+		if p.current.Type == TokenKeyword && isStatementKeyword(p.current.Literal) {
+			break
+		}
+		p.advance()
+	}
+
+	// Parse VALUES clause
+	if p.matchesLiteral("VALUES") {
+		p.advance()
+
+		// Skip to opening paren
+		if p.matches(TokenPunctuation, "(") {
+			p.advance()
+
+			// Collect operands until closing paren
+			for p.current.Type != TokenEOF && !p.matches(TokenPunctuation, ")") {
+				// Consume optional leading colon
+				if p.matches(TokenPunctuation, ":") {
+					p.advance()
+				}
+
+				// Capture operand (identifier, keyword, or literal)
+				if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword || p.current.Type == TokenLiteralNumeric {
+					ins.Values = append(ins.Values, OperandRef{
+						Name:  p.current.Literal,
+						Range: tokenRange(p.current),
+					})
+					p.advance()
+				} else {
+					p.advance()
+				}
+			}
+
+			// Consume closing paren
+			if p.matches(TokenPunctuation, ")") {
+				p.advance()
+			}
+		}
+	}
+
+	// Skip to next statement
+	p.skipToNextStatement()
+
+	ins.EndPos = p.prevPos()
+	ast.Inserts = append(ast.Inserts, ins)
+}
+
+// parseUpdateStatement parses an UPDATE statement (SQL DML, ES-9).
+// Disambiguates SQL form (UPDATE <table> SET ... [WHERE ...]) from Adabas UPDATE.
+//
+// Disambiguation heuristic: identifier (table name) immediately after UPDATE AND
+// followed by SET or WHERE ⇒ SQL form. Any other shape (keyword, variable, missing
+// SET/WHERE) ⇒ Adabas / genuinely-ambiguous — skipped, no node produced. Residual
+// ambiguous shapes are never silently mis-produced as SQL nodes.
+// Infinite-loop safety: p.advance() is called unconditionally on entry, so
+// dispatchStatement always makes forward progress on the UPDATE keyword regardless
+// of which branch is taken.
+func (p *Parser) parseUpdateStatement(ast *Program) {
+	startPos := p.currentPos()
+
+	// Consume UPDATE keyword
+	p.advance()
+
+	// Check if this looks like SQL UPDATE: identifier followed by SET/WHERE
+	if p.current.Type != TokenIdentifier {
+		// Not SQL form
+		p.skipToNextStatement()
+		return
+	}
+
+	// Save table identifier for potential consumption
+	tableName := p.current.Literal
+	tableRange := tokenRange(p.current)
+	p.advance()
+
+	// Now check if we see SET or WHERE
+	isSQL := p.matchesLiteral("SET") || p.matchesLiteral("WHERE")
+
+	// If it doesn't look like SQL, just skip and don't produce a node
+	if !isSQL {
+		p.skipToNextStatement()
+		return
+	}
+
+	// Parse as SQL UPDATE
+	// Table name was already consumed above during disambiguation check
+	upd := &SQLUpdateStatement{
+		StartPos: startPos,
+	}
+
+	// Add the already-consumed table name to Table list
+	upd.Table = append(upd.Table, OperandRef{
+		Name:  tableName,
+		Range: tableRange,
+	})
+
+	// Parse SET clause
+	if p.matchesLiteral("SET") {
+		p.advance() // Now at COL
+
+		// Collect operands in SET until WHERE or next statement
+		for p.current.Type != TokenEOF && !p.matchesLiteral("WHERE") && !isStatementKeyword(p.current.Literal) {
+			if p.current.Type == TokenEOF || p.matchesLiteral("WHERE") {
+				break
+			}
+			// Stop at program terminators (hard boundary).
+			if p.isProgramBoundary() {
+				break
+			}
+
+			// Consume optional leading colon
+			if p.matches(TokenPunctuation, ":") {
+				p.advance()
+				continue
+			}
+
+			// Skip operators (=, <, >, etc.)
+			if p.matches(TokenOperator) {
+				p.advance()
+				continue
+			}
+
+			// Capture operand (identifier or keyword)
+			if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
+				upd.SetTargets = append(upd.SetTargets, OperandRef{
+					Name:  p.current.Literal,
+					Range: tokenRange(p.current),
+				})
+				p.advance()
+			} else {
+				// Skip any other token type (punctuation, literals, etc.)
+				p.advance()
+			}
+		}
+	}
+
+	// Parse WHERE clause
+	if p.matchesLiteral("WHERE") {
+		p.advance()
+
+		// Collect operands until next statement keyword or program terminator
+		for p.current.Type != TokenEOF && !isStatementKeyword(p.current.Literal) {
+			// Check for end of WHERE clause
+			if p.current.Type == TokenEOF || isStatementKeyword(p.current.Literal) {
+				break
+			}
+			// Stop at program terminators (hard boundary).
+			if p.isProgramBoundary() {
+				break
+			}
+
+			// Consume optional leading colon
+			if p.matches(TokenPunctuation, ":") {
+				p.advance()
+				continue
+			}
+
+			// Skip operators (=, <, >, etc.)
+			if p.matches(TokenOperator) {
+				p.advance()
+				continue
+			}
+
+			// Capture operand (identifier or keyword)
+			if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
+				upd.WhereOperands = append(upd.WhereOperands, OperandRef{
+					Name:  p.current.Literal,
+					Range: tokenRange(p.current),
+				})
+				p.advance()
+			} else {
+				// Skip any other token type
+				p.advance()
+			}
+		}
+	}
+
+	// Skip to next statement
+	p.skipToNextStatement()
+
+	upd.EndPos = p.prevPos()
+	ast.SQLUpdates = append(ast.SQLUpdates, upd)
+}
+
+// parseDeleteStatement parses a DELETE statement (SQL DML, ES-9).
+// Disambiguates SQL form (DELETE FROM <table> [WHERE ...]) from Adabas DELETE.
+//
+// Disambiguation heuristic: FROM immediately after DELETE ⇒ SQL form (Adabas
+// DELETE never uses FROM). Any other shape ⇒ Adabas / genuinely-ambiguous —
+// skipped, no node produced. Residual ambiguous shapes are never silently
+// mis-produced as SQL nodes.
+// Infinite-loop safety: p.advance() is called unconditionally on entry, so
+// dispatchStatement always makes forward progress on the DELETE keyword regardless
+// of which branch is taken.
+func (p *Parser) parseDeleteStatement(ast *Program) {
+	startPos := p.currentPos()
+
+	// Consume DELETE keyword
+	p.advance()
+
+	// Check for FROM keyword (SQL indicator)
+	if !p.matchesLiteral("FROM") {
+		// Not SQL DELETE form; skip and don't produce a node
+		p.skipToNextStatement()
+		return
+	}
+
+	p.advance() // Consume FROM
+
+	del := &SQLDeleteStatement{
+		StartPos: startPos,
+	}
+
+	// Parse table operand
+	if p.matches(TokenIdentifier) {
+		del.FromTable = append(del.FromTable, OperandRef{
+			Name:  p.current.Literal,
+			Range: tokenRange(p.current),
+		})
+		p.advance()
+	}
+
+	// Parse WHERE clause
+	if p.matchesLiteral("WHERE") {
+		p.advance()
+
+		// Collect operands until next statement or program terminator
+		for p.current.Type != TokenEOF && !isStatementKeyword(p.current.Literal) {
+			// Stop at program terminators (hard boundary).
+			if p.isProgramBoundary() {
+				break
+			}
+
+			// Consume optional leading colon
+			if p.matches(TokenPunctuation, ":") {
+				p.advance()
+			}
+
+			// Capture operand
+			if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
+				del.WhereOperands = append(del.WhereOperands, OperandRef{
+					Name:  p.current.Literal,
+					Range: tokenRange(p.current),
+				})
+				p.advance()
+			} else {
+				p.advance()
+			}
+		}
+	}
+
+	// Skip to next statement
+	p.skipToNextStatement()
+
+	del.EndPos = p.prevPos()
+	ast.SQLDeletes = append(ast.SQLDeletes, del)
+}
+
+// parseMergeStatement parses a MERGE statement (SQL DML, ES-9).
+// Syntax: MERGE INTO <table> [... internals not modeled ...]
+// Captures table operand only; MERGE internals are not modeled.
+//
+// Disambiguation: MERGE is always SQL DML in Natural/SQL; there is no Adabas
+// MERGE statement. The table operand is captured; all MERGE WHEN/THEN internals
+// are skipped (not modeled). If INTO is absent the statement is malformed and
+// skipped — residual ambiguous shapes are never silently mis-produced.
+// Infinite-loop safety: p.advance() is called unconditionally on entry, so
+// dispatchStatement always makes forward progress on the MERGE keyword.
+func (p *Parser) parseMergeStatement(ast *Program) {
+	startPos := p.currentPos()
+
+	merge := &MergeStatement{
+		StartPos: startPos,
+	}
+
+	// Consume MERGE keyword
+	p.advance()
+
+	// Expect INTO keyword
+	if !p.matchesLiteral("INTO") {
+		p.skipToNextStatement()
+		merge.EndPos = p.prevPos()
+		return
+	}
+
+	// Consume INTO
+	p.advance()
+
+	// Skip table operand (captured but not stored in model)
+	if p.matches(TokenIdentifier) {
+		p.advance()
+	}
+
+	// Skip to next statement (merge internals not modeled)
+	p.skipToNextStatement()
+
+	merge.EndPos = p.prevPos()
+	ast.Merges = append(ast.Merges, merge)
+}
+
+// parseProcessSQLStatement parses a PROCESS SQL statement (ES-8).
+// Syntax: PROCESS SQL <ddm-name> << <opaque-body> >>
+// The opaque body is captured as raw text (no tokenization of interior).
+func (p *Parser) parseProcessSQLStatement(ast *Program) {
+	// Capture position of PROCESS keyword before advancing.
+	startPos := p.currentPos()
+	startLine := p.current.Line
+
+	ps := &ProcessSQLStatement{
+		StartPos: startPos,
+	}
+
+	// Consume PROCESS keyword.
+	p.advance()
+
+	// Expect SQL literal on the same line.
+	if p.current.Type == TokenEOF || p.current.Line != startLine {
+		// PROCESS at EOF or without SQL on the same line — malformed (FR-30/M-6).
+		p.addDiagnostic(
+			"malformed PROCESS SQL statement: expected SQL keyword",
+			startPos,
+			p.prevPos(),
+			model.DiagnosticError,
+		)
+		ps.EndPos = p.prevPos()
+		return
+	}
+
+	if !p.matchesLiteral("SQL") {
+		// Not a PROCESS SQL statement; skip and bail.
+		p.skipToNextStatement()
+		ps.EndPos = p.prevPos()
+		return
+	}
+
+	// Consume SQL literal.
+	p.advance()
+
+	// Expect DDM name (identifier) on the same line.
+	if p.current.Type == TokenEOF || p.current.Line != startLine {
+		// PROCESS SQL with DDM name missing — malformed (FR-30/M-6).
+		p.addDiagnostic(
+			"malformed PROCESS SQL statement: expected DDM name",
+			startPos,
+			p.prevPos(),
+			model.DiagnosticError,
+		)
+		ps.EndPos = p.prevPos()
+		return
+	}
+
+	if !p.matches(TokenIdentifier) {
+		// PROCESS SQL followed by a non-identifier (e.g. a lone '<') — malformed (FR-30/M-6).
+		p.addDiagnostic(
+			"malformed PROCESS SQL statement: expected DDM name identifier",
+			startPos,
+			p.prevPos(),
+			model.DiagnosticError,
+		)
+		ps.EndPos = p.prevPos()
+		return
+	}
+
+	// Capture DDM name and its range.
+	ps.DDMName = p.current.Literal
+	ps.DDMNameRange = tokenRange(p.current)
+
+	// Consume the DDM name token. The parser keeps a one-token lookahead, so after
+	// this advance p.current holds the token that begins the `<<` opener — which the
+	// lexer has already lexed as a lone `<` operator (the lexer does not treat `<<`
+	// as a delimiter outside this SQL context). p.lexer.ScanOpaqueSpanFrom rewinds
+	// past that `<` and captures the raw span; the interior is never tokenized
+	// (Option B). If there is no `<<` opener, this is a malformed PROCESS SQL with no
+	// body — leave Body empty and let ES-10 own the diagnostic; never panic.
+	p.advance()
+
+	if p.current.Type == TokenOperator && p.current.Literal == "<" {
+		opaqueToken, endLine, endCol, unterminated := p.lexer.ScanOpaqueSpanFrom(p.current)
+
+		ps.Body = opaqueToken.Literal
+		// ScanOpaqueSpanFrom returns the position just after the closing `>>`
+		// (or EOF for an unterminated span), so `>>` ends at endCol-1.
+		ps.BodyRange = model.Range{
+			Start: model.Position{Line: opaqueToken.Line, Column: opaqueToken.Column},
+			End:   model.Position{Line: endLine, Column: endCol - 1},
+		}
+		ps.EndPos = ps.BodyRange.End
+
+		// ES-10: emit diagnostic for unterminated << ... >> span.
+		if unterminated {
+			p.addDiagnostic(
+				"unterminated PROCESS SQL << ... >> block: missing >>",
+				ps.BodyRange.Start,
+				ps.BodyRange.End,
+				model.DiagnosticError,
+			)
+		}
+
+		// Re-prime the lookahead so parsing resumes after the closing `>>`.
+		p.current = p.lexer.NextToken()
+	} else {
+		// ES-10: PROCESS SQL missing its << ... >> body.
+		p.addDiagnostic(
+			"PROCESS SQL requires a << ... >> body",
+			startPos,
+			ps.DDMNameRange.End,
+			model.DiagnosticError,
+		)
+		ps.EndPos = p.prevPos()
+	}
+
+	// Append the ProcessSQLStatement to the AST.
+	ast.ProcessSQLs = append(ast.ProcessSQLs, ps)
 }

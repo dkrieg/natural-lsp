@@ -1794,3 +1794,89 @@ func TestParser_TargetLiteralAndRange_Task1(t *testing.T) {
 		})
 	}
 }
+
+// TestParser_SQLTransactionAndCallDBProc verifies that the parser correctly
+// parses SQL transaction statements (COMMIT, ROLLBACK) and CALLDBPROC
+// statements (FR-30, ES-5). These are simple unambiguous SQL statements with no
+// operands (COMMIT/ROLLBACK) or with proc-name + operands (CALLDBPROC).
+//
+// Behavior (ES-5 acceptance criteria):
+//   - COMMIT statement: no operands, parses to CommitStatement with correct positions
+//   - ROLLBACK statement: no operands, parses to RollbackStatement with correct positions
+//   - CALLDBPROC statement: proc-name + operands, parses to CallDBProcStatement with correct positions
+//   - All statements parsed from fixture 09-sql-txn-calldbproc.nsp
+//   - Zero diagnostics for the valid fixture
+func TestParser_SQLTransactionAndCallDBProc(t *testing.T) {
+	// Read the fixture (09-sql-txn-calldbproc.nsp)
+	content, err := os.ReadFile(filepath.Join("testdata", "parser", "09-sql-txn-calldbproc.nsp"))
+	if err != nil {
+		t.Fatalf("Failed to read fixture 09-sql-txn-calldbproc.nsp: %v", err)
+	}
+
+	// Act: parse the fixture
+	lexer := NewLexer(string(content))
+	parser := NewParser(lexer)
+	prog, err := parser.Parse()
+
+	// Assert: parser must not crash and must return a non-nil AST
+	if prog == nil {
+		t.Fatal("Parser returned nil AST")
+	}
+	if err != nil {
+		t.Errorf("Parse returned error %v; malformed input must surface as diagnostics, not errors", err)
+	}
+
+	// Assert: zero diagnostics for the valid fixture (ES-5 requirement)
+	if len(prog.Diagnostics) != 0 {
+		t.Errorf("fixture 09-sql-txn-calldbproc.nsp produced %d diagnostics, want 0: %+v",
+			len(prog.Diagnostics), prog.Diagnostics)
+	}
+
+	// Assert: exactly one CommitStatement
+	if len(prog.Commits) != 1 {
+		t.Errorf("len(prog.Commits) = %d, want 1", len(prog.Commits))
+	} else {
+		commit := prog.Commits[0]
+		// Verify the statement has valid positions (start and end should span the statement)
+		if commit.StartPos.Line == 0 || commit.EndPos.Line == 0 {
+			t.Errorf("CommitStatement has zero-valued positions; StartPos=%+v, EndPos=%+v",
+				commit.StartPos, commit.EndPos)
+		}
+		if commit.StartPos.Line > commit.EndPos.Line {
+			t.Errorf("CommitStatement StartPos.Line (%d) > EndPos.Line (%d)",
+				commit.StartPos.Line, commit.EndPos.Line)
+		}
+	}
+
+	// Assert: exactly one RollbackStatement
+	if len(prog.Rollbacks) != 1 {
+		t.Errorf("len(prog.Rollbacks) = %d, want 1", len(prog.Rollbacks))
+	} else {
+		rollback := prog.Rollbacks[0]
+		// Verify the statement has valid positions
+		if rollback.StartPos.Line == 0 || rollback.EndPos.Line == 0 {
+			t.Errorf("RollbackStatement has zero-valued positions; StartPos=%+v, EndPos=%+v",
+				rollback.StartPos, rollback.EndPos)
+		}
+		if rollback.StartPos.Line > rollback.EndPos.Line {
+			t.Errorf("RollbackStatement StartPos.Line (%d) > EndPos.Line (%d)",
+				rollback.StartPos.Line, rollback.EndPos.Line)
+		}
+	}
+
+	// Assert: exactly one CallDBProcStatement
+	if len(prog.CallDBProcs) != 1 {
+		t.Errorf("len(prog.CallDBProcs) = %d, want 1", len(prog.CallDBProcs))
+	} else {
+		calldbproc := prog.CallDBProcs[0]
+		// Verify the statement has valid positions
+		if calldbproc.StartPos.Line == 0 || calldbproc.EndPos.Line == 0 {
+			t.Errorf("CallDBProcStatement has zero-valued positions; StartPos=%+v, EndPos=%+v",
+				calldbproc.StartPos, calldbproc.EndPos)
+		}
+		if calldbproc.StartPos.Line > calldbproc.EndPos.Line {
+			t.Errorf("CallDBProcStatement StartPos.Line (%d) > EndPos.Line (%d)",
+				calldbproc.StartPos.Line, calldbproc.EndPos.Line)
+		}
+	}
+}

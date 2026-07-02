@@ -1,0 +1,18 @@
+* ES-10 fixture: malformed embedded SQL — recovery + diagnostics (FR-30, M-6).
+* Intentionally malformed; excluded from the zero-diagnostics fixture harness.
+*
+* The malformed statement below is RECOVERABLE: a PROCESS SQL with no << opaque
+* body. The parser must emit a diagnostic for it AND still parse the valid
+* statement that follows (no silent gap — M-6).
+
+DEFINE DATA
+LOCAL
+END-DEFINE
+*
+* Malformed: PROCESS SQL missing its << ... >> opaque body.
+PROCESS SQL PAYROLL
+*
+* Valid statement after the malformed one — must still be parsed (retained).
+CALLNAT 'ERROR-HANDLER'
+*
+END

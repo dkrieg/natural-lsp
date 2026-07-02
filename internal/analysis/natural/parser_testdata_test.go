@@ -48,8 +48,9 @@ func TestParser_TestDataFixtures(t *testing.T) {
 			// Valid fixtures must produce zero diagnostics — the parser must not
 			// flag good Natural. Only malformed fixtures are excluded:
 			//   04-parser-parse-errors.nsp — intentionally malformed (diagnostics expected).
+			//   19-sql-parse-errors.nsp — intentionally malformed SQL (diagnostics expected).
 			switch entry.Name() {
-			case "04-parser-parse-errors.nsp":
+			case "04-parser-parse-errors.nsp", "19-sql-parse-errors.nsp":
 				// expectations handled elsewhere
 			default:
 				if len(prog.Diagnostics) != 0 {

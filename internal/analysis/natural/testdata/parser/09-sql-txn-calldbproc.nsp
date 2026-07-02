@@ -1,0 +1,15 @@
+* ES-5 fixture: COMMIT, ROLLBACK, CALLDBPROC statements
+* Valid Natural with transaction and stored procedure calls.
+
+DEFINE DATA LOCAL
+  1 EMPLOYEE-ID (N8)
+  1 EMPLOYEE-NAME (A30)
+END-DEFINE
+
+COMMIT
+
+ROLLBACK
+
+CALLDBPROC FETCH_EMPLOYEE EMPLOYEE-ID EMPLOYEE-NAME
+
+END

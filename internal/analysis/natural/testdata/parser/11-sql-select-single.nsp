@@ -1,0 +1,15 @@
+* ES-6 fixture: SELECT SINGLE statement (no loop body, no terminator)
+* Valid Natural embedded SQL demonstrating:
+* - SELECT SINGLE keyword form
+* - INTO target, FROM table, WHERE clause
+* - No terminator (END-SELECT or LOOP)
+* - No loop body
+
+DEFINE DATA LOCAL
+  1 #A (A10)
+  1 #K (N5)
+END-DEFINE
+
+SELECT SINGLE COL1 INTO #A FROM EMPLOYEES WHERE DEPT = :#K
+
+END

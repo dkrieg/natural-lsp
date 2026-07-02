@@ -27,6 +27,12 @@ const (
 	// TokenComment represents comments
 	TokenComment
 
+	// TokenSQLOpaque represents an opaque SQL span (<<...>>) — ES-2 feature.
+	// The Literal field contains the raw interior text between << and >>,
+	// with no inner tokenization or comment scanning. Used by the parser
+	// when in SQL context (PROCESS SQL body).
+	TokenSQLOpaque
+
 	// TokenEOF represents end of file
 	TokenEOF
 
@@ -56,9 +62,12 @@ func NewLexer(input string) *Lexer {
 	return &Lexer{input: input, pos: 0, line: 1, col: 1, lineHasNonWhitespace: false}
 }
 
-// NextToken returns the next token from the input.
-func (l *Lexer) NextToken() Token {
-	// Skip whitespace and track position
+// skipWhitespace advances past whitespace characters (space, tab, LF, CR, CRLF),
+// updating line/column counters and resetting lineHasNonWhitespace on each new line.
+// It stops at the first non-whitespace character or EOF. Both NextToken and
+// ScanOpaqueSpan use this helper so CRLF handling and position tracking stay
+// consistent in one place.
+func (l *Lexer) skipWhitespace() {
 	for l.pos < len(l.input) {
 		ch := l.input[l.pos]
 		if ch == '\r' {
@@ -66,8 +75,7 @@ func (l *Lexer) NextToken() Token {
 			l.col = 1
 			l.lineHasNonWhitespace = false // reset for new line
 			l.pos++
-			// If the next character is \n, consume it as part of the same CRLF terminator
-			// without incrementing the line counter again
+			// Consume \n of a CRLF pair without a second line increment.
 			if l.pos < len(l.input) && l.input[l.pos] == '\n' {
 				l.pos++
 			}
@@ -83,6 +91,11 @@ func (l *Lexer) NextToken() Token {
 			break
 		}
 	}
+}
+
+// NextToken returns the next token from the input.
+func (l *Lexer) NextToken() Token {
+	l.skipWhitespace()
 
 	// Check for EOF
 	if l.pos >= len(l.input) {
@@ -345,9 +358,124 @@ func (l *Lexer) isKeyword(s string) bool {
 		"HALT", "RESUME", "RETRY", "RESTART", "REINIT", "RESET", "CLEAR",
 		"FLUSH", "SYNC", "SYNCNAT", "FLUSHNAT", "ID", "IDNAT", "VERSION",
 		"VERSIONNAT", "DATE", "DATENAT", "TIME", "TIMENAT", "DATETIME",
-		"DATETIMENAT", "DATA", "LOCAL", "PARAMETER", "REDEFINE":
+		"DATETIMENAT", "DATA", "LOCAL", "PARAMETER", "REDEFINE",
+		// Embedded-SQL keywords (ES-1): statement/clause words that must lex as
+		// TokenKeyword so the parser can dispatch on them.  SELECT/FROM/WHERE/SET/
+		// INSERT/UPDATE/DELETE/STORE/LOOP are already listed above.
+		"SINGLE", "INTO", "VALUES", "MERGE", "COMMIT", "ROLLBACK", "CALLDBPROC",
+		"PROCESS", "RESULT", "END-SELECT", "END-RESULT":
 		return true
 	default:
 		return false
 	}
+}
+
+// ScanOpaqueSpan (ES-2) scans a <<...>> opaque SQL span.
+// It is called by the parser after detecting "PROCESS SQL" to capture the raw
+// interior text (no inner tokenization) as a single TokenSQLOpaque token.
+// The method returns:
+//   - Token: a TokenSQLOpaque with Literal = raw interior text (everything between << and >>)
+//   - bool: true if the span was unterminated (no closing >> before EOF)
+//
+// Precondition: the lexer's current position is immediately after the DDM name
+// (or wherever << is expected to be lexed next). The method consumes the << and >>
+// delimiters and returns the interior.
+//
+// Unterminated spans: if << is found but no >> appears before EOF, the interior-to-EOF
+// is returned as the Literal with unterminated=true. The method never panics or loops.
+func (l *Lexer) ScanOpaqueSpan() (Token, bool) {
+	// Skip leading whitespace first so that startLine/startCol mark the << delimiter,
+	// consistent with NextToken's convention of recording position after whitespace skip.
+	l.skipWhitespace()
+
+	// Record position of the << delimiter (or EOF if nothing found).
+	startLine := l.line
+	startCol := l.col
+
+	// Expect << at the current position. The guard handles both EOF (pos >= len)
+	// and single-remaining-char (pos+1 >= len) cases, ensuring l.input[pos+1] is safe.
+	if l.pos+1 >= len(l.input) || l.input[l.pos] != '<' || l.input[l.pos+1] != '<' {
+		// Parser precondition violated or no opening delimiter; return empty without
+		// signalling unterminated (the << body was never opened).
+		return Token{Type: TokenSQLOpaque, Literal: "", Line: startLine, Column: startCol}, false
+	}
+
+	// Consume the << opening delimiter.
+	l.pos += 2
+	l.col += 2
+	l.lineHasNonWhitespace = true // << is non-whitespace on its line
+
+	// Record start of interior content (everything between << and >>).
+	interiorStart := l.pos
+
+	// Scan for the closing >>. Each iteration advances l.pos by at least 1, so
+	// termination is guaranteed within len(l.input) steps — no infinite loop is possible.
+	for l.pos < len(l.input) {
+		ch := l.input[l.pos]
+
+		switch {
+		case ch == '\r':
+			// CR or CRLF: advance line, reset column and line-start tracker.
+			l.line++
+			l.col = 1
+			l.lineHasNonWhitespace = false
+			l.pos++
+			// Consume \n of a CRLF pair without a second line increment.
+			if l.pos < len(l.input) && l.input[l.pos] == '\n' {
+				l.pos++
+			}
+		case ch == '\n':
+			// LF: advance line, reset column and line-start tracker.
+			l.line++
+			l.col = 1
+			l.lineHasNonWhitespace = false
+			l.pos++
+		case ch == '>' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '>':
+			// Found closing >>: capture interior, consume delimiter, update state.
+			interior := l.input[interiorStart:l.pos]
+			l.pos += 2
+			l.col += 2
+			l.lineHasNonWhitespace = true // >> is non-whitespace on its line
+			return Token{Type: TokenSQLOpaque, Literal: interior, Line: startLine, Column: startCol}, false
+		default:
+			// Interior character: advance position and column.
+			l.pos++
+			l.col++
+		}
+	}
+
+	// Reached EOF without finding >>. Return interior-to-EOF with unterminated=true.
+	interior := l.input[interiorStart:]
+	return Token{Type: TokenSQLOpaque, Literal: interior, Line: startLine, Column: startCol}, true
+}
+
+// ScanOpaqueSpanFrom captures a PROCESS SQL <<...>> opaque span in the situation
+// where the parser's one-token lookahead has already lexed the FIRST '<' of the
+// '<<' opener (as a lone operator token). It rewinds the lexer past that opener
+// token — by the token literal's length, guarded against underflow — so that
+// ScanOpaqueSpan sees the intact '<<', then delegates to it. A '<' operator token
+// is always a single character on one line, so rewinding pos/col by its length is
+// exact and cannot cross a line boundary.
+//
+// In addition to the opaque token and the unterminated flag, it returns the source
+// position (line, column) immediately AFTER the closing '>>' (or at EOF for an
+// unterminated span), so the caller can build an accurate body/statement range
+// without re-deriving it by counting newlines. The '>>' therefore ends at
+// (endLine, endCol-1).
+func (l *Lexer) ScanOpaqueSpanFrom(opener Token) (tok Token, endLine, endCol int, unterminated bool) {
+	n := len(opener.Literal)
+	if n > 0 {
+		if l.pos >= n {
+			l.pos -= n
+		} else {
+			l.pos = 0
+		}
+		if l.col > n {
+			l.col -= n
+		} else {
+			l.col = 1
+		}
+	}
+	tok, unterminated = l.ScanOpaqueSpan()
+	return tok, l.line, l.col, unterminated
 }

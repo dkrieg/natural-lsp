@@ -11,14 +11,19 @@ import (
 // arbitrary input — even malformed, garbage, or edge-case bytes.
 //
 // The seed corpus is drawn from the committed testdata/parser fixtures
-// (01-08) representing real, known-interesting Natural constructs (lexer
+// (01-19) representing real, known-interesting Natural constructs (lexer
 // tokens, statements, READ/STORE, DEFINE DATA arrays/redefine, parse errors,
-// inline comments), plus hand-written edge cases (empty, unterminated string,
-// lone parentheses, deeply nested parens, multi-byte UTF-8, very long line).
+// inline comments, embedded SQL, parse error recovery), plus hand-written edge
+// cases (empty, unterminated string, lone parentheses, deeply nested parens,
+// multi-byte UTF-8, very long line, unterminated SELECT loop, unterminated
+// PROCESS SQL << >> span).
 //
-// Feature 00 Task 11; M-6, FR-43, ADR-013.
+// Feature 00 Task 11; M-6, FR-43, ADR-013. ES-10 adds fixtures 09-19 and
+// unterminated-SQL seeds. Refactor phase adds seeds for the clause-skip path
+// (SELECT/SELECT SINGLE with GROUP BY, ORDER BY, HAVING — both terminated and
+// unterminated) to cover the infinite-loop class that was the blocker.
 func FuzzParse(f *testing.F) {
-	// Seed from the existing testdata/parser fixtures (01-08).
+	// Seed from the existing testdata/parser fixtures (01-19).
 	// Read at fuzz-setup time; if a read fails, skip that seed with a warning
 	// (fixture not found is not a test failure — it's a missing file that the
 	// build will have flagged already).
@@ -31,6 +36,17 @@ func FuzzParse(f *testing.F) {
 		"06-read-store.nsp",
 		"07-data-arrays.nsp",
 		"08-data-redefine.nsp",
+		"09-sql-txn-calldbproc.nsp",
+		"10-sql-select-loop.nsp",
+		"11-sql-select-single.nsp",
+		"12-sql-select-loop-reporting.nsp",
+		"13-sql-read-result-set.nsp",
+		"14-sql-read-result-set-loop.nsp",
+		"15-sql-process-sql.nsp",
+		"16-sql-insert.nsp",
+		"17-sql-update-delete.nsp",
+		"18-sql-merge.nsp",
+		"19-sql-parse-errors.nsp",
 	}
 
 	for _, name := range fixtureNames {
@@ -80,6 +96,27 @@ func FuzzParse(f *testing.F) {
 
 	// Leading/trailing whitespace.
 	f.Add([]byte("  \t\n  CALLNAT 'PROG'  \t\n  "))
+
+	// ES-10: Unterminated SELECT loop (loop body never terminated by END-SELECT/LOOP).
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nSELECT COL INTO #V FROM EMPLOYEES WHERE ID = #K\n  PERFORM 'DO-IT'\nEND\n"))
+
+	// ES-10: Unterminated PROCESS SQL << >> opaque span (no closing >>).
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nPROCESS SQL PAYROLL <<\n  UPDATE T SET C = :#A WHERE K = :#B\nEND\n"))
+
+	// Clause-skip path seeds: SELECT with GROUP BY, ORDER BY, HAVING (terminated).
+	// These exercise the skipSQLClause path that previously infinite-looped (blocker).
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #V (A10)\nEND-DEFINE\nSELECT COL INTO #V FROM T WHERE X = 1 GROUP BY COL\nEND-SELECT\nEND\n"))
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #V (A10)\nEND-DEFINE\nSELECT COL INTO #V FROM T WHERE X = 1 ORDER BY COL\nEND-SELECT\nEND\n"))
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #V (A10)\nEND-DEFINE\nSELECT COL INTO #V FROM T WHERE X = 1 GROUP BY COL HAVING COUNT(*) > 1\nEND-SELECT\nEND\n"))
+
+	// Clause-skip path seeds: SELECT SINGLE with GROUP BY, ORDER BY, HAVING (no terminator).
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #V (A10)\nEND-DEFINE\nSELECT SINGLE COL INTO #V FROM T WHERE X = 1 GROUP BY COL\nEND\n"))
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #V (A10)\nEND-DEFINE\nSELECT SINGLE COL INTO #V FROM T WHERE X = 1 ORDER BY COL\nEND\n"))
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #V (A10)\nEND-DEFINE\nSELECT SINGLE COL INTO #V FROM T WHERE X = 1 HAVING COUNT(*) > 1\nEND\n"))
+
+	// Unterminated SELECT with GROUP BY (no END-SELECT/LOOP — exercises clause-skip + unterminated path).
+	f.Add([]byte("SELECT COL INTO #V FROM T WHERE X = 1 GROUP BY COL\n  PERFORM DOSOMETHING\n"))
+	f.Add([]byte("SELECT SINGLE COL INTO #V FROM T WHERE X = 1 ORDER BY COL\n"))
 
 	f.Fuzz(func(t *testing.T, input []byte) {
 		// Arrange: construct the lexer and parser from the arbitrary input.
