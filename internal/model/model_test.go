@@ -165,7 +165,7 @@ func TestFileAnalysisSymbolEdgesDataAccessFields(t *testing.T) {
 				return FileAnalysis{
 					DataAccess: []DataAccessEntry{
 						{
-							File:   "MYFILE",
+							Name:   "MYFILE",
 							Kind:   EdgeReads,
 							Source: Range{Start: Position{Line: 15}, End: Position{Line: 15}},
 						},
@@ -179,8 +179,8 @@ func TestFileAnalysisSymbolEdgesDataAccessFields(t *testing.T) {
 				if len(fa.DataAccess) != 1 {
 					t.Errorf("FileAnalysis.DataAccess length = %d, want 1", len(fa.DataAccess))
 				}
-				if fa.DataAccess[0].File != "MYFILE" {
-					t.Errorf("DataAccessEntry.File = %q, want %q", fa.DataAccess[0].File, "MYFILE")
+				if fa.DataAccess[0].Name != "MYFILE" {
+					t.Errorf("DataAccessEntry.Name = %q, want %q", fa.DataAccess[0].Name, "MYFILE")
 				}
 				if fa.DataAccess[0].Kind != EdgeReads {
 					t.Errorf("DataAccessEntry.Kind = %q, want %q", fa.DataAccess[0].Kind, EdgeReads)
@@ -238,7 +238,7 @@ func TestFileAnalysisSymbolEdgesDataAccessFields(t *testing.T) {
 						{TargetName: "CALLED", Kind: EdgeCalls},
 					},
 					DataAccess: []DataAccessEntry{
-						{File: "DATAFILE", Kind: EdgeReads},
+						{Name: "DATAFILE", Kind: EdgeReads},
 					},
 				}
 			},

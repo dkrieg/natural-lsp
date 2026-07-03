@@ -13,7 +13,7 @@ import (
 	"os"
 )
 
-const cacheFormatVersion = "0.3.0"
+const cacheFormatVersion = "0.4.0"
 
 // CacheFile represents the on-disk cache format.
 type CacheFile struct {
@@ -27,6 +27,8 @@ type cacheEntry struct {
 	Symbols     []model.SymbolEntry     `json:"symbols"`
 	Edges       []model.EdgeEntry       `json:"edges"`
 	DataAccess  []model.DataAccessEntry `json:"dataAccess"`
+	Definitions []model.DataDefinition  `json:"definitions"`
+	WorkFiles   []model.WorkFile        `json:"workFiles"`
 	ContentHash string                  `json:"contentHash"`
 }
 
@@ -48,6 +50,8 @@ func Save(idx *Index, path string) error {
 			Symbols:     fa.Symbols,
 			Edges:       fa.Edges,
 			DataAccess:  fa.DataAccess,
+			Definitions: fa.Definitions,
+			WorkFiles:   fa.WorkFiles,
 			ContentHash: hash,
 		}
 	})
@@ -100,10 +104,12 @@ func Load(path string, currentHashes map[string]string, logger *slog.Logger) (*I
 
 	for path, entry := range cache.Entries {
 		fa := model.FileAnalysis{
-			ObjectType: model.ObjectType(entry.ObjectType),
-			Symbols:    entry.Symbols,
-			Edges:      entry.Edges,
-			DataAccess: entry.DataAccess,
+			ObjectType:  model.ObjectType(entry.ObjectType),
+			Symbols:     entry.Symbols,
+			Edges:       entry.Edges,
+			DataAccess:  entry.DataAccess,
+			Definitions: entry.Definitions,
+			WorkFiles:   entry.WorkFiles,
 		}
 		idx.Add(path, fa)
 

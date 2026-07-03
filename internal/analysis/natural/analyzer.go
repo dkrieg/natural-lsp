@@ -74,6 +74,9 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 	// from extraction — syntax errors are already in result.Diagnostics.
 	if ast != nil {
 		result.Edges = extractEdges(ast)
+		result.DataAccess = extractDataAccess(ast)
+		result.Definitions = extractDefinitions(ast)
+		result.WorkFiles = extractWorkFiles(ast)
 	}
 
 	return result, nil

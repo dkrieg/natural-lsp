@@ -1,0 +1,18 @@
+* Task 6 fixture: GET data-access extraction
+* Contains GET EMPLOYEES (#ISN) and GET SAME to prove that:
+* - GET with a valid operand produces one EdgeReads entry
+* - GET SAME (no operand) produces NO entry (modeled gap: read with no resolvable file/DDM name)
+
+DEFINE DATA
+LOCAL
+  1 EMPLOYEES-ISN (N9)
+END DEFINE
+
+READ EMPLOYEES
+
+GET EMPLOYEES (#EMPLOYEES-ISN)
+
+GET SAME
+
+END
+

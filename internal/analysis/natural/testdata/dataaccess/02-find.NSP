@@ -1,0 +1,21 @@
+* Task 4 fixture: FIND data-access extraction
+* Contains FIND statements interleaved with READ and STORE
+* to prove FIND reads are extracted with normalized names and NameRange,
+* and source-order interleaving is preserved.
+
+DEFINE DATA
+LOCAL
+  1 ISN (P9)
+  1 NAME (A30)
+END DEFINE
+
+READ DEPARTMENTS
+
+FIND EMPLOYEES WITH NAME = 'SMITH'
+
+STORE EMPLOYEES
+
+FIND (3) VEHICLES
+
+END
+

@@ -1,0 +1,22 @@
+* Task 8 fixture: Record UPDATE/DELETE write edges with empty Name
+* Tests extraction of record-form UPDATE and DELETE (no file operand).
+* These statements have no explicit target; they operate on the record
+* from the enclosing READ/FIND/GET loop.
+* Acceptance criterion: extract writes with empty Name and statement Source range.
+
+DEFINE DATA
+LOCAL
+  1 ISN (P9.9)
+END DEFINE
+
+READ EMPLOYEES
+  UPDATE
+END
+
+STORE EMPLOYEES
+
+READ VEHICLES
+  DELETE (VAR1)
+END
+
+END

@@ -1,0 +1,9 @@
+* Task 5 fixture: GET statements
+* GET statements with view name and GET SAME special case (FR-19).
+* GET SAME has NO view operand and must produce NO diagnostic (valid Natural).
+
+GET EMPLOYEES (#ISN)
+
+GET SAME
+
+END

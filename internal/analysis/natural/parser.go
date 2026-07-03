@@ -60,6 +60,10 @@ func (p *Parser) dispatchStatement(ast *Program) {
 		p.parseRunStatement(ast)
 	case p.matches(TokenKeyword, "READ"):
 		p.parseReadStatement(ast)
+	case p.current.Type == TokenKeyword && p.matchesLiteral("FIND", "FINDNAT"):
+		p.parseFindStatement(ast)
+	case p.matches(TokenKeyword, "GET"):
+		p.parseGetStatement(ast)
 	case p.matches(TokenKeyword, "STORE"):
 		p.parseStoreStatement(ast)
 	case p.matches(TokenKeyword, "COMMIT"):
@@ -86,7 +90,7 @@ func (p *Parser) dispatchStatement(ast *Program) {
 	}
 }
 
-// parseDefine handles DEFINE DATA, DEFINE SUBROUTINE, and DEFINE MAP.
+// parseDefine handles DEFINE DATA, DEFINE SUBROUTINE, DEFINE MAP, and DEFINE WORK FILE.
 func (p *Parser) parseDefine(ast *Program) {
 	if !p.matches(TokenKeyword, "DEFINE") {
 		return
@@ -104,127 +108,219 @@ func (p *Parser) parseDefine(ast *Program) {
 		p.parseSubroutine(ast, defStartPos)
 	} else if p.matchesLiteral("MAP") {
 		p.parseMap(ast, defStartPos)
+	} else if p.matchesLiteral("WORK") {
+		p.parseWorkFile(ast, defStartPos)
 	} else {
 		// Unknown DEFINE, skip to next statement
 		p.skipToNextStatement()
 	}
 }
 
-// parseDataSection parses a DEFINE DATA block.
-func (p *Parser) parseDataSection(ast *Program, startPos model.Position) {
-	section := &DataSection{
-		StartPos: startPos,
-	}
+// isSectionKeyword reports whether the current token opens a DEFINE DATA section.
+// Valid section keywords: LOCAL, PARAMETER, GLOBAL, LINKAGE, INDEPENDENT, CONTEXT, OBJECT
+// (case-normalised by the lexer).
+func (p *Parser) isSectionKeyword() bool {
+	return p.matchesLiteral("LOCAL", "PARAMETER", "GLOBAL", "LINKAGE", "INDEPENDENT", "CONTEXT", "OBJECT")
+}
 
-	// Consume DATA keyword
+// parseDataSection parses a DEFINE DATA block, which may contain multiple
+// section keywords (LOCAL, PARAMETER, GLOBAL, LINKAGE, INDEPENDENT, CONTEXT, OBJECT).
+// Each section keyword creates a separate DataSection node with its Kind set to the lowercase keyword.
+//
+// StartPos convention: the first section inherits the position of the enclosing
+// DEFINE keyword (passed in via startPos) so that "DataSections[0].StartPos"
+// points to the start of the whole DEFINE DATA construct — callers (and tests)
+// that want the position of the construct can read it from any section. Subsequent
+// sections start at their own keyword position.
+func (p *Parser) parseDataSection(ast *Program, startPos model.Position) {
+	// Consume DATA keyword.
 	p.advance()
 
-	// Skip section keywords (LOCAL, PARAMETER, GLOBAL, etc.)
-	for p.matchesLiteral("LOCAL", "PARAMETER", "GLOBAL", "LINKAGE") {
-		p.advance()
-	}
+	firstSection := true
 
-	// Parse fields until END keyword
-	// Track parent stack for nesting by level
-	parentStack := make([]*DataField, 0)
+	for p.isSectionKeyword() {
+		// Record the section's Kind (lowercased for case-insensitive comparison).
+		sectionKind := strings.ToLower(p.current.Literal)
+
+		// The first section anchors its StartPos at the DEFINE keyword so that the
+		// overall DEFINE DATA construct is reachable via DataSections[0].StartPos.
+		// Every subsequent section starts at its own keyword.
+		var sectionStartPos model.Position
+		if firstSection {
+			sectionStartPos = startPos
+		} else {
+			sectionStartPos = p.currentPos()
+		}
+		firstSection = false
+
+		// Consume the section keyword.
+		p.advance()
+
+		// Handle optional USING clause (GLOBAL USING <gda-name>).
+		// The GDA name is consumed but not stored; it will be bound in feature 08b.
+		if p.matchesLiteral("USING") {
+			p.advance()
+			if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
+				p.advance()
+			}
+		}
+
+		section := &DataSection{
+			StartPos: sectionStartPos,
+			Kind:     sectionKind,
+		}
+
+		// Parse field lines until the next section boundary.
+		// Boundaries (all stop the current section without consuming the boundary token):
+		//   • another section keyword (LOCAL / PARAMETER / GLOBAL / LINKAGE / INDEPENDENT / CONTEXT / OBJECT)
+		//   • END or END-DEFINE  (isProgramBoundary — hard block terminator)
+		//   • any top-level statement keyword (graceful degradation: unclosed DEFINE DATA)
+		p.parseDataFields(section)
+
+		section.EndPos = p.prevPos()
+		ast.DataSections = append(ast.DataSections, section)
+	}
+}
+
+// parseDataFields fills section.Fields by consuming field lines from the current
+// token position until a section boundary is reached. It manages the parent stack
+// for level-based nesting and delegates individual field parsing to parseDataField.
+//
+// Boundary tokens are LEFT unconsumed so the caller can inspect them (e.g. the
+// outer loop can test isSectionKeyword() before starting the next section).
+func (p *Parser) parseDataFields(section *DataSection) {
+	parentStack := make([]*DataField, 0, 8)
 
 	for p.current.Type != TokenEOF {
-		// Stop at END keyword or other statement keywords (if DEFINE DATA block wasn't properly closed)
-		if p.matches(TokenKeyword, "END", "CALLNAT", "PERFORM", "INCLUDE", "FETCH", "RUN", "DEFINE", "READ", "STORE", "COMMIT", "ROLLBACK", "CALLDBPROC", "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "PROCESS") {
+		// Stop at the next section keyword or any hard block/statement boundary.
+		if p.isSectionKeyword() || p.isProgramBoundary() {
+			break
+		}
+		if p.current.Type == TokenKeyword && isStatementKeyword(p.current.Literal) {
 			break
 		}
 
-		// Expect a numeric level number
+		// Each valid field line begins with a numeric level number.
 		if !p.matches(TokenLiteralNumeric) {
-			p.advance()
+			p.advance() // skip non-level tokens (e.g. malformed or unrecognised lines — FR-43)
 			continue
 		}
 
-		// Parse level
-		level, _ := strconv.Atoi(p.current.Literal)
-		fieldStartPos := p.currentPos()
-		p.advance()
-
-		// Check for an optional REDEFINE clause immediately after the level number.
-		// Syntax: <level> REDEFINE <target-field>
-		// The redefine node itself carries no name; its Children hold the subfields.
-		// If the target identifier is absent (malformed input), redefineTarget stays "".
-		// A diagnostic for that case is deferred to Task 7; we never panic here.
-		var isRedefine bool
-		var redefineTarget string
-		if p.matches(TokenKeyword, "REDEFINE") {
-			isRedefine = true
-			p.advance()
-			// The token after REDEFINE is the field being redefined.
-			if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
-				redefineTarget = p.current.Literal
-				p.advance()
-			}
+		field := p.parseDataField()
+		if field == nil {
+			continue // field was incomplete (bare level number with nothing after it)
 		}
 
-		// Parse the field name for normal (non-redefine) fields.
-		// The lexer yields the full hyphenated name including any # prefix as a
-		// single token (e.g. "#EMPLOYEE-ID"). Keywords like ID are also accepted
-		// here because they can legally appear inside Natural variable names.
-		// For REDEFINE nodes this branch is skipped; name stays "".
-		var name string
-		if !isRedefine {
-			if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
-				name = p.current.Literal
-				p.advance()
-			}
-		}
-
-		// Skip fields that have neither a name nor a redefine target (e.g. a bare
-		// level number with no following tokens).
-		if !isRedefine && name == "" {
-			continue
-		}
-
-		// Parse the optional type/format specification: "(TYPE-CODE)" or
-		// "(TYPE-CODE/DIM1,DIM2)".  REDEFINE nodes carry no type — their
-		// subfields (Children) carry individual types instead.
-		fieldType := ""
-		dimensions := []ArrayBound{}
-		if !isRedefine && p.matches(TokenPunctuation, "(") {
-			p.advance()
-			spec := p.parseTypeSpec()
-			fieldType, dimensions = p.parseTypeAndDimensions(spec)
-			if p.matches(TokenPunctuation, ")") {
-				p.advance()
-			}
-		}
-
-		// Create field
-		field := &DataField{
-			Level:      level,
-			Name:       name,
-			Type:       fieldType,
-			Dimensions: dimensions,
-			Redefines:  redefineTarget,
-			StartPos:   fieldStartPos,
-			EndPos:     p.prevPos(),
-			Children:   make([]*DataField, 0),
-		}
-
-		// Handle nesting: trim parentStack to have only parents with level < current level
-		for len(parentStack) > 0 && parentStack[len(parentStack)-1].Level >= level {
+		// Maintain parent stack: pop entries whose level is >= the new field's level.
+		for len(parentStack) > 0 && parentStack[len(parentStack)-1].Level >= field.Level {
 			parentStack = parentStack[:len(parentStack)-1]
 		}
 
-		// Add to parent or top-level
 		if len(parentStack) == 0 {
 			section.Fields = append(section.Fields, field)
 		} else {
 			parentStack[len(parentStack)-1].Children = append(parentStack[len(parentStack)-1].Children, field)
 		}
 
-		// Add to stack as potential parent for next fields
 		parentStack = append(parentStack, field)
 	}
+}
 
-	section.EndPos = p.prevPos()
-	ast.DataSections = append(ast.DataSections, section)
+// parseDataField parses a single data field starting from the current level-number token.
+// Returns nil if the field has neither a name nor a redefine target (bare level number).
+// Never panics on malformed input (FR-43).
+func (p *Parser) parseDataField() *DataField {
+	level, _ := strconv.Atoi(p.current.Literal)
+	fieldStartPos := p.currentPos()
+	p.advance() // consume level number
+
+	// Check for an optional REDEFINE clause immediately after the level number.
+	// Syntax: <level> REDEFINE <target-field>
+	// The redefine node itself carries no name; its Children hold the subfields.
+	// If the target identifier is absent (malformed input), redefineTarget stays "".
+	// A diagnostic for that case is deferred to Task 7; we never panic here (FR-43).
+	var isRedefine bool
+	var redefineTarget string
+	if p.matches(TokenKeyword, "REDEFINE") {
+		isRedefine = true
+		p.advance()
+		if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
+			redefineTarget = p.current.Literal
+			p.advance()
+		}
+	}
+
+	// Parse the field name for normal (non-redefine) fields.
+	// The lexer yields the full hyphenated name including any # prefix as a
+	// single token (e.g. "#EMPLOYEE-ID"). Keywords like ID are also accepted
+	// here because they can legally appear inside Natural variable names.
+	// For REDEFINE nodes this branch is skipped; name stays "".
+	//
+	// Task 18 (AIV fields): If the current token is '+' (operator), we need to check
+	// if it's part of a `+NAME` field name (Application-Independent Variables in
+	// INDEPENDENT sections). Since the lexer cannot distinguish `+` as an identifier
+	// sigil from arithmetic `+`, we handle this at the parser level: if we see `+`
+	// followed immediately by an identifier (same line, adjacent column), combine them.
+	var name string
+	if !isRedefine {
+		// Check for +NAME pattern (+ operator immediately followed by identifier)
+		if p.matches(TokenOperator, "+") {
+			// Save current position to potentially restore
+			savedPlus := p.current
+			savedPlusPrev := p.prev
+			plusLine := p.current.Line
+			plusCol := p.current.Column
+			p.advance() // tentatively consume the +
+
+			// Check if the next token is an identifier on the same line, adjacent column
+			if (p.matches(TokenIdentifier) || p.matches(TokenKeyword)) &&
+				p.current.Line == plusLine && p.current.Column == plusCol+1 {
+				// This is a +NAME pattern. Combine them.
+				name = "+" + p.current.Literal
+				p.advance() // consume the identifier
+				// Update the field's start position to the + sigil
+				fieldStartPos = model.Position{Line: plusLine, Column: plusCol}
+			} else {
+				// Not a +NAME pattern. This is a bare + operator (malformed field).
+				// Restore state and let the field be invalid (return nil below).
+				p.current = savedPlus
+				p.prev = savedPlusPrev
+			}
+		} else if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
+			name = p.current.Literal
+			p.advance()
+		}
+	}
+
+	// A bare level number with no name and no redefine keyword is not a valid field.
+	if !isRedefine && name == "" {
+		return nil
+	}
+
+	// Parse the optional type/format specification: "(TYPE-CODE)" or
+	// "(TYPE-CODE/DIM1,DIM2)". REDEFINE nodes carry no type — their
+	// subfields (Children) carry individual types instead.
+	fieldType := ""
+	dimensions := []ArrayBound{}
+	if !isRedefine && p.matches(TokenPunctuation, "(") {
+		p.advance()
+		spec := p.parseTypeSpec()
+		fieldType, dimensions = p.parseTypeAndDimensions(spec)
+		if p.matches(TokenPunctuation, ")") {
+			p.advance()
+		}
+	}
+
+	return &DataField{
+		Level:      level,
+		Name:       name,
+		Type:       fieldType,
+		Dimensions: dimensions,
+		Redefines:  redefineTarget,
+		StartPos:   fieldStartPos,
+		EndPos:     p.prevPos(),
+		Children:   make([]*DataField, 0),
+	}
 }
 
 // parseTypeSpec reads tokens until closing paren and concatenates them without spaces
@@ -235,6 +331,27 @@ func (p *Parser) parseTypeSpec() string {
 		p.advance()
 	}
 	return spec
+}
+
+// parseLabelParens reads an optional (label) clause and returns the label text.
+// The label is formed by concatenating the literals of every token between the
+// parentheses without spaces — e.g. "(0250)" → "0250", "(RD.)" → "RD." (two
+// tokens: identifier "RD" + punctuation "."). If no opening "(" is present,
+// an empty string is returned without consuming any token.
+func (p *Parser) parseLabelParens() string {
+	if !p.matches(TokenPunctuation, "(") {
+		return ""
+	}
+	p.advance() // consume (
+	var b strings.Builder
+	for p.current.Type != TokenEOF && !p.matches(TokenPunctuation, ")") {
+		b.WriteString(p.current.Literal)
+		p.advance()
+	}
+	if p.matches(TokenPunctuation, ")") {
+		p.advance() // consume )
+	}
+	return b.String()
 }
 
 // parseTypeAndDimensions splits a spec like "N7", "P9.2", "A3/1:12", "N3/1:5,1:3"
@@ -362,6 +479,95 @@ func (p *Parser) parseMap(ast *Program, startPos model.Position) {
 
 	m.EndPos = p.prevPos()
 	ast.Maps = append(ast.Maps, m)
+}
+
+// parseWorkFile parses a DEFINE WORK FILE statement.
+//
+// Diagnostics are emitted (and the partial node discarded) when:
+//   - the FILE keyword is absent after WORK,
+//   - the file-number token is missing or not an integer,
+//   - the file-name operand is missing.
+//
+// None of these conditions can panic; all are treated as recoverable errors
+// per FR-43 (graceful degradation: emit a diagnostic, skip to the next
+// statement, and continue indexing the rest of the file).
+func (p *Parser) parseWorkFile(ast *Program, startPos model.Position) {
+	wf := &WorkFileDefinition{
+		StartPos: startPos,
+	}
+
+	// Consume WORK keyword.
+	p.advance()
+
+	// Expect FILE keyword; emit a diagnostic if it is absent.
+	if !p.matchesLiteral("FILE") {
+		p.addDiagnostic(
+			"DEFINE WORK requires FILE keyword",
+			startPos,
+			p.prevPos(),
+			model.DiagnosticError,
+		)
+		p.skipToNextStatement()
+		return
+	}
+	p.advance()
+
+	// Parse the work-file number.  The lexer produces TokenLiteralNumeric for
+	// any numeric token (including decimals and scientific notation), so a
+	// non-integer value (e.g. "1.5") requires an explicit Atoi check.
+	if !p.matches(TokenLiteralNumeric) {
+		p.addDiagnostic(
+			"DEFINE WORK FILE requires an integer file number",
+			startPos,
+			p.prevPos(),
+			model.DiagnosticError,
+		)
+		p.skipToNextStatement()
+		return
+	}
+	numStr := p.current.Literal
+	num, err := strconv.Atoi(numStr)
+	if err != nil {
+		// A fractional or scientific-notation literal (e.g. "1.5", "1E10") is
+		// lexed as TokenLiteralNumeric but is not a valid work-file number.
+		p.addDiagnostic(
+			"DEFINE WORK FILE number must be a plain integer",
+			startPos,
+			p.prevPos(),
+			model.DiagnosticError,
+		)
+		p.skipToNextStatement()
+		return
+	}
+	wf.Number = num
+	p.advance()
+
+	// Parse the file name: a quoted string literal or a variable identifier.
+	if p.matches(TokenLiteralString) {
+		tok := p.current
+		wf.NameRange = tokenRange(tok)
+		wf.Name = unquoteString(tok.Literal)
+		p.advance()
+	} else if p.matches(TokenIdentifier) {
+		tok := p.current
+		wf.NameRange = tokenRange(tok)
+		wf.Name = tok.Literal // variable captured verbatim (e.g. "#DYNNAME")
+		p.advance()
+	} else {
+		// Name operand is absent or of an unexpected token type.
+		p.addDiagnostic(
+			"DEFINE WORK FILE requires a file name (string literal or variable)",
+			startPos,
+			p.prevPos(),
+			model.DiagnosticError,
+		)
+		p.skipToNextStatement()
+		return
+	}
+
+	wf.EndPos = p.prevPos()
+	ast.WorkFiles = append(ast.WorkFiles, wf)
+	p.skipToNextStatement()
 }
 
 // parseCallStatement parses a CALLNAT statement.
@@ -839,7 +1045,9 @@ func (p *Parser) parseReadStatement(ast *Program) {
 	}
 
 	if p.matches(TokenIdentifier) {
-		read.Target = p.current.Literal
+		tok := p.current
+		read.Target = tok.Literal
+		read.TargetRange = tokenRange(tok)
 		p.advance()
 	}
 
@@ -848,6 +1056,127 @@ func (p *Parser) parseReadStatement(ast *Program) {
 
 	read.EndPos = p.prevPos()
 	ast.Reads = append(ast.Reads, read)
+}
+
+// parseFindStatement parses a FIND statement.
+func (p *Parser) parseFindStatement(ast *Program) {
+	// Capture position of FIND keyword before advancing.
+	startPos := p.currentPos()
+	startLine := p.current.Line
+	keywordEndCol := startPos.Column + len("FIND") - 1
+
+	find := &FindStatement{
+		StartPos: startPos,
+	}
+
+	// Consume FIND keyword.
+	p.advance()
+
+	// Skip optional same-line parenthesized row-limit: FIND (10) <view>.
+	if p.current.Line == startLine && p.matches(TokenPunctuation, "(") {
+		p.advance()
+		for p.current.Type != TokenEOF && !p.matches(TokenPunctuation, ")") {
+			p.advance()
+		}
+		if p.matches(TokenPunctuation, ")") {
+			p.advance()
+		}
+	}
+
+	// Skip optional NUMBER keyword: FIND NUMBER <view>.
+	if p.current.Line == startLine && p.matchesLiteral("NUMBER") {
+		p.advance()
+	}
+
+	// The view name must be on the same line as FIND (possibly after row-limit paren and/or NUMBER).
+	if p.current.Type == TokenEOF || p.current.Line != startLine {
+		p.addDiagnostic(
+			"FIND requires a target operand",
+			startPos,
+			model.Position{Line: startPos.Line, Column: keywordEndCol},
+			model.DiagnosticError,
+		)
+		// Malformed FIND (missing target): emit diagnostic but do not create an AST node.
+		return
+	}
+
+	if p.matches(TokenIdentifier) {
+		tok := p.current
+		find.Target = tok.Literal
+		find.TargetRange = tokenRange(tok)
+		p.advance()
+	}
+
+	// Skip remaining tokens in this statement until the next statement keyword.
+	p.skipToNextStatement()
+
+	find.EndPos = p.prevPos()
+	ast.Finds = append(ast.Finds, find)
+}
+
+// parseGetStatement parses a GET statement (Task 5 / FR-19).
+// GET SAME is a special case: it has no view operand (re-reads current record)
+// and must NOT produce a diagnostic (it is valid Natural, distinct from malformed).
+// Otherwise, captures the view name operand like FIND does.
+func (p *Parser) parseGetStatement(ast *Program) {
+	// Capture position of GET keyword before advancing.
+	startPos := p.currentPos()
+	startLine := p.current.Line
+	keywordEndCol := startPos.Column + len("GET") - 1
+
+	get := &GetStatement{
+		StartPos: startPos,
+	}
+
+	// Consume GET keyword.
+	p.advance()
+
+	// Check for the GET SAME special case: SAME literal on the same line.
+	if p.current.Line == startLine && p.matchesLiteral("SAME") {
+		// GET SAME: no view operand, no diagnostic (valid Natural, re-reads the current record).
+		// Target remains "" and TargetRange remains zero-valued — both are intentional.
+		p.advance()
+		p.skipToNextStatement()
+		get.EndPos = p.prevPos()
+		ast.Gets = append(ast.Gets, get)
+		return
+	}
+
+	// The view name must be on the same line as GET (not GET SAME).
+	if p.current.Type == TokenEOF || p.current.Line != startLine {
+		p.addDiagnostic(
+			"GET requires a target operand",
+			startPos,
+			model.Position{Line: startPos.Line, Column: keywordEndCol},
+			model.DiagnosticError,
+		)
+		// Malformed GET (missing target): emit diagnostic but do not create an AST node.
+		return
+	}
+
+	if p.matches(TokenIdentifier) {
+		tok := p.current
+		get.Target = tok.Literal
+		get.TargetRange = tokenRange(tok)
+		p.advance()
+	}
+
+	// Skip optional same-line parenthesized clause: GET EMPLOYEES (#ISN)
+	if p.current.Line == startLine && p.matches(TokenPunctuation, "(") {
+		p.advance()
+		for p.current.Type != TokenEOF && !p.matches(TokenPunctuation, ")") {
+			p.advance()
+		}
+		if p.matches(TokenPunctuation, ")") {
+			p.advance()
+		}
+	}
+
+	// Skip remaining tokens in this statement until the next statement keyword.
+	p.skipToNextStatement()
+
+	get.EndPos = p.prevPos()
+	ast.Gets = append(ast.Gets, get)
 }
 
 // parseStoreStatement parses a STORE statement.
@@ -883,7 +1212,9 @@ func (p *Parser) parseStoreStatement(ast *Program) {
 	}
 
 	if p.matches(TokenIdentifier) {
-		store.Target = p.current.Literal
+		tok := p.current
+		store.Target = tok.Literal
+		store.TargetRange = tokenRange(tok)
 		p.advance()
 	}
 
@@ -1365,9 +1696,9 @@ func (p *Parser) isSelectStopKeyword() bool {
 func isStatementKeyword(literal string) bool {
 	return literal == "DEFINE" || literal == "CALLNAT" || literal == "PERFORM" ||
 		literal == "INCLUDE" || literal == "FETCH" || literal == "RUN" ||
-		literal == "READ" || literal == "STORE" || literal == "COMMIT" ||
-		literal == "ROLLBACK" || literal == "CALLDBPROC" || literal == "SELECT" ||
-		literal == "INSERT" || literal == "UPDATE" || literal == "DELETE" ||
+		literal == "READ" || literal == "FIND" || literal == "FINDNAT" || literal == "STORE" ||
+		literal == "GET" || literal == "COMMIT" || literal == "ROLLBACK" || literal == "CALLDBPROC" ||
+		literal == "SELECT" || literal == "INSERT" || literal == "UPDATE" || literal == "DELETE" ||
 		literal == "MERGE" || literal == "PROCESS"
 }
 
@@ -1527,9 +1858,19 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 	// Consume UPDATE keyword
 	p.advance()
 
-	// Check if this looks like SQL UPDATE: identifier followed by SET/WHERE
+	// No identifier immediately after UPDATE ⇒ cannot be SQL form (SQL UPDATE
+	// requires a table name); parse as Adabas record UPDATE.
 	if p.current.Type != TokenIdentifier {
-		// Not SQL form
+		// Not SQL form; check if it's a record UPDATE
+		// Record UPDATE form: UPDATE or UPDATE (label)
+		label := p.parseLabelParens()
+		// Emit record UPDATE node
+		rec := &RecordUpdateStatement{
+			StartPos: startPos,
+			EndPos:   p.prevPos(),
+			Label:    label,
+		}
+		ast.RecordUpdates = append(ast.RecordUpdates, rec)
 		p.skipToNextStatement()
 		return
 	}
@@ -1542,7 +1883,9 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 	// Now check if we see SET or WHERE
 	isSQL := p.matchesLiteral("SET") || p.matchesLiteral("WHERE")
 
-	// If it doesn't look like SQL, just skip and don't produce a node
+	// Identifier-led but without SET or WHERE: genuinely ambiguous between SQL and
+	// Adabas forms — skip without producing any node. This is deliberate: we never
+	// emit a spurious SQL node for a shape we cannot classify confidently (FR-43).
 	if !isSQL {
 		p.skipToNextStatement()
 		return
@@ -1649,12 +1992,12 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 }
 
 // parseDeleteStatement parses a DELETE statement (SQL DML, ES-9).
-// Disambiguates SQL form (DELETE FROM <table> [WHERE ...]) from Adabas DELETE.
+// Disambiguates SQL form (DELETE FROM <table> [WHERE ...]) from Adabas record DELETE (Task 7 / FR-20).
 //
 // Disambiguation heuristic: FROM immediately after DELETE ⇒ SQL form (Adabas
-// DELETE never uses FROM). Any other shape ⇒ Adabas / genuinely-ambiguous —
-// skipped, no node produced. Residual ambiguous shapes are never silently
-// mis-produced as SQL nodes.
+// DELETE never uses FROM). If no FROM, check for parentheses ⇒ Adabas record DELETE.
+// Any other shape ⇒ genuinely-ambiguous — skipped, no node produced. Residual ambiguous
+// shapes are never silently mis-produced as SQL nodes.
 // Infinite-loop safety: p.advance() is called unconditionally on entry, so
 // dispatchStatement always makes forward progress on the DELETE keyword regardless
 // of which branch is taken.
@@ -1664,62 +2007,74 @@ func (p *Parser) parseDeleteStatement(ast *Program) {
 	// Consume DELETE keyword
 	p.advance()
 
-	// Check for FROM keyword (SQL indicator)
-	if !p.matchesLiteral("FROM") {
-		// Not SQL DELETE form; skip and don't produce a node
+	// FROM immediately after DELETE ⇒ SQL form (DELETE FROM <table>).
+	// Adabas record DELETE never uses FROM — this is the definitive discriminator.
+	// Any other shape that is not an explicit (label) clause falls through to the
+	// record-DELETE path; genuinely-ambiguous shapes are never mis-produced as SQL.
+	if p.matchesLiteral("FROM") {
+		p.advance() // Consume FROM
+
+		del := &SQLDeleteStatement{
+			StartPos: startPos,
+		}
+
+		// Parse table operand
+		if p.matches(TokenIdentifier) {
+			del.FromTable = append(del.FromTable, OperandRef{
+				Name:  p.current.Literal,
+				Range: tokenRange(p.current),
+			})
+			p.advance()
+		}
+
+		// Parse WHERE clause
+		if p.matchesLiteral("WHERE") {
+			p.advance()
+
+			// Collect operands until next statement or program terminator
+			for p.current.Type != TokenEOF && !isStatementKeyword(p.current.Literal) {
+				// Stop at program terminators (hard boundary).
+				if p.isProgramBoundary() {
+					break
+				}
+
+				// Consume optional leading colon
+				if p.matches(TokenPunctuation, ":") {
+					p.advance()
+				}
+
+				// Capture operand
+				if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
+					del.WhereOperands = append(del.WhereOperands, OperandRef{
+						Name:  p.current.Literal,
+						Range: tokenRange(p.current),
+					})
+					p.advance()
+				} else {
+					p.advance()
+				}
+			}
+		}
+
+		// Skip to next statement
 		p.skipToNextStatement()
+
+		del.EndPos = p.prevPos()
+		ast.SQLDeletes = append(ast.SQLDeletes, del)
 		return
 	}
 
-	p.advance() // Consume FROM
-
-	del := &SQLDeleteStatement{
+	// Not SQL DELETE; this is a record DELETE.
+	// Record DELETE form: DELETE or DELETE (label)
+	label := p.parseLabelParens()
+	// Emit record DELETE node
+	rec := &RecordDeleteStatement{
 		StartPos: startPos,
+		EndPos:   p.prevPos(),
+		Label:    label,
 	}
-
-	// Parse table operand
-	if p.matches(TokenIdentifier) {
-		del.FromTable = append(del.FromTable, OperandRef{
-			Name:  p.current.Literal,
-			Range: tokenRange(p.current),
-		})
-		p.advance()
-	}
-
-	// Parse WHERE clause
-	if p.matchesLiteral("WHERE") {
-		p.advance()
-
-		// Collect operands until next statement or program terminator
-		for p.current.Type != TokenEOF && !isStatementKeyword(p.current.Literal) {
-			// Stop at program terminators (hard boundary).
-			if p.isProgramBoundary() {
-				break
-			}
-
-			// Consume optional leading colon
-			if p.matches(TokenPunctuation, ":") {
-				p.advance()
-			}
-
-			// Capture operand
-			if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
-				del.WhereOperands = append(del.WhereOperands, OperandRef{
-					Name:  p.current.Literal,
-					Range: tokenRange(p.current),
-				})
-				p.advance()
-			} else {
-				p.advance()
-			}
-		}
-	}
-
-	// Skip to next statement
+	ast.RecordDeletes = append(ast.RecordDeletes, rec)
 	p.skipToNextStatement()
-
-	del.EndPos = p.prevPos()
-	ast.SQLDeletes = append(ast.SQLDeletes, del)
 }
 
 // parseMergeStatement parses a MERGE statement (SQL DML, ES-9).

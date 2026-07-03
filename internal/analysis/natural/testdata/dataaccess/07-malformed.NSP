@@ -1,0 +1,30 @@
+* Task 16 fixture: malformed statements in data-access extraction
+* Deliberately includes malformed lines (READ with no target, broken DEFINE WORK FILE)
+* to prove extraction degrades gracefully: parser emits diagnostics for malformed lines,
+* extraction skips them, but valid edges/definitions are still produced.
+* Channel separation: diagnostics and extraction stay separate.
+
+DEFINE DATA
+LOCAL
+  1 #VALID-FIELD (N5)
+  1 #ANOTHER (A20)
+END-DEFINE
+
+* Valid READ
+READ EMPLOYEES
+
+* Malformed READ (no target) — parser emits diagnostic, extractor skips
+READ
+
+* Valid STORE
+STORE EMPLOYEES
+
+* Malformed DEFINE WORK FILE (no file number) — parser diagnostic
+DEFINE WORK FILE 'NO-NUMBER'
+
+* Valid FIND
+FIND VEHICLES
+
+WRITE 'End'
+
+END

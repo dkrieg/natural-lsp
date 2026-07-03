@@ -1,0 +1,15 @@
+* Task 17 regression fixture: DEFINE DATA with INDEPENDENT, CONTEXT, OBJECT sections
+* Verifies that these extended section kinds are recognized and their fields are not silently dropped.
+* Note: AIV names typically use + prefix (e.g. +AIV-NAME), but the lexer does not yet support +.
+* This fixture uses regular identifiers in INDEPENDENT/CONTEXT sections to prove section recognition.
+
+DEFINE DATA
+LOCAL
+1 #LOCAL-COUNTER (N5)
+INDEPENDENT
+1 #APP-STATE (A20)
+CONTEXT
+1 #RPC-SESSION (N7)
+END-DEFINE
+
+END

@@ -1,0 +1,9 @@
+* Task 14 fixture: DEFINE WORK FILE statements
+* Minimal examples for parsing DEFINE WORK FILE into AST nodes.
+* FR-22: work-file definitions with literal and variable names.
+
+DEFINE WORK FILE 1 'REPORT.TXT'
+
+DEFINE WORK FILE 2 #DYNNAME
+
+END

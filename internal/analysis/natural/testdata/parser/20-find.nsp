@@ -1,0 +1,12 @@
+* Task 3 fixture: FIND statements
+* Minimal examples for parsing FIND into AST nodes (FR-19).
+
+FIND EMPLOYEES WITH NAME = 'SMITH'
+
+FIND NUMBER VEHICLES
+
+FIND (3) EMPLOYEES
+
+FIND
+
+END

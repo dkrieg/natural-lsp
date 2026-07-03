@@ -25,7 +25,11 @@ exported to files before it can be indexed.
 > dynamic distinguished). **Cross-file resolution of those edges is now implemented** (feature 07): the
 > steplib chain (current library → declared steplibs → SYSTEM, non-transitive), explicit-library bypass
 > for `RUN 'pgm' 'lib'`, inline-before-external `PERFORM`, `INCLUDE`→copycode binding, and flat-namespace
-> ambiguity diagnostics — exposed as a workspace-index capability. The remaining
+> ambiguity diagnostics — exposed as a workspace-index capability. **Adabas data-access extraction is now
+> implemented** (feature 08): `READ`/`FIND`/`GET` (read relationships) and `STORE` plus record-form
+> `UPDATE`/`DELETE` (write relationships) against DDMs, `DEFINE DATA` variable/parameter definitions, and
+> `DEFINE WORK FILE` definitions — per-file extraction only (name→DDM binding, and embedded-SQL data
+> access, remain deferred to feature 08b). The remaining
 > navigation/hover/completion/call-hierarchy LSP *providers* that surface this to the editor are not yet
 > wired — this README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
@@ -374,14 +378,19 @@ A literal `CALLNAT`/`FETCH`/`RUN` target containing an `&` runtime-substitution 
 static edge to a non-existent object. `RUN 'PGM' library-id` records the named target library on the
 edge.
 
-### Data access
+### Data access *(extraction shipped — feature 08)*
 
-| Construct                     | Extracted                                   |
-|-------------------------------|---------------------------------------------|
-| `READ` / `FIND` / `GET`       | File/DDM name, read relationship            |
-| `STORE` / `UPDATE` / `DELETE` | File/DDM name, write relationship           |
-| `DEFINE DATA`                 | Variable declarations, parameter interfaces |
-| `DEFINE WORK FILE`            | Work file definitions                       |
+| Construct                     | Extracted                                                                 |
+|-------------------------------|---------------------------------------------------------------------------|
+| `READ` / `FIND` / `GET`       | File/DDM name, read relationship — **shipped** (`GET SAME` → no edge)     |
+| `STORE`                       | File/DDM name, write relationship — **shipped**                           |
+| record `UPDATE` / `DELETE`    | Write relationship at the site, **no file name** (bound from the enclosing loop — deferred to 08b) — **shipped** |
+| `DEFINE DATA`                 | Variable declarations + parameter interfaces (level/type/dimensions/section kind, REDEFINE nesting) — **shipped** |
+| `DEFINE WORK FILE`            | Work-file definitions (number + name; dynamic names recorded verbatim) — **shipped** |
+
+Scope is Adabas-style data access against DDMs. Embedded-SQL data access (native `SELECT`/`INSERT`/SQL-form
+`UPDATE`/`DELETE`/`MERGE`/`PROCESS SQL`/`CALLDBPROC`) is parsed but its DDM/host-var extraction is deferred
+to feature 08b.
 
 ### Program structure
 
@@ -424,7 +433,8 @@ internal/
                            steplibs → system; library map; ambiguity diagnostics
 
   model/
-    model.go               Analyzer output types (FileAnalysis, symbols, edges)
+    model.go               Analyzer output types (FileAnalysis, symbols, edges,
+                           data access, definitions, work files)
                            — the contract shared by analysis, workspace, server;
                            free of backend internals
 
@@ -437,7 +447,8 @@ internal/
       hover.go             Hover content builders
       calls.go             CALLNAT / FETCH / RUN / PERFORM extraction
                            (produces unresolved references; see resolution.go)
-      data.go              DEFINE DATA / READ / STORE extraction
+      data.go              DEFINE DATA / READ / FIND / GET / STORE /
+                           record UPDATE|DELETE / DEFINE WORK FILE extraction
 
 editors/
   vscode/                  VS Code companion extension (TypeScript)

@@ -47,6 +47,7 @@ func FuzzParse(f *testing.F) {
 		"17-sql-update-delete.nsp",
 		"18-sql-merge.nsp",
 		"19-sql-parse-errors.nsp",
+		"24-work-file.nsp",
 	}
 
 	for _, name := range fixtureNames {
@@ -117,6 +118,14 @@ func FuzzParse(f *testing.F) {
 	// Unterminated SELECT with GROUP BY (no END-SELECT/LOOP — exercises clause-skip + unterminated path).
 	f.Add([]byte("SELECT COL INTO #V FROM T WHERE X = 1 GROUP BY COL\n  PERFORM DOSOMETHING\n"))
 	f.Add([]byte("SELECT SINGLE COL INTO #V FROM T WHERE X = 1 ORDER BY COL\n"))
+
+	// Malformed DEFINE WORK FILE variants (FR-43 graceful-degradation seeds).
+	f.Add([]byte("DEFINE WORK FILE"))                         // bare — missing number and name
+	f.Add([]byte("DEFINE WORK 1 'X'\n"))                      // missing FILE keyword
+	f.Add([]byte("DEFINE WORK FILE 'X'\n"))                   // missing number (name in number position)
+	f.Add([]byte("DEFINE WORK FILE 1.5 'X'\n"))               // non-integer number (decimal)
+	f.Add([]byte("DEFINE WORK FILE 1\n"))                     // missing name
+	f.Add([]byte("DEFINE WORK FILE 1 'GOOD'\nCALLNAT 'X'\n")) // well-formed followed by another stmt
 
 	f.Fuzz(func(t *testing.T, input []byte) {
 		// Arrange: construct the lexer and parser from the arbitrary input.

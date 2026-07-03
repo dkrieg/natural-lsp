@@ -1,0 +1,44 @@
+* Task 16 fixture: combined data-access extraction integration test
+* Exercises reads (READ, FIND, GET + GET SAME), writes (STORE, record
+* UPDATE/DELETE), DEFINE DATA with LOCAL/PARAMETER/GLOBAL sections,
+* and DEFINE WORK FILE — all in one file to prove end-to-end extraction.
+
+DEFINE DATA
+LOCAL
+  1 #COUNTER (N5)
+  1 #REPORT-NAME (A30)
+PARAMETER
+  1 #INPUT-FILE (A50)
+  1 #OUTPUT-PATH (A50)
+GLOBAL USING EMPLOYEES-GDA
+END-DEFINE
+
+DEFINE WORK FILE 1 'REPORT.TXT'
+DEFINE WORK FILE 2 #LOGFILE
+
+* Read the primary view
+READ EMPLOYEES
+  * Update the current record
+  UPDATE
+END
+
+* Find by descriptor
+FIND VEHICLES WITH MAKE = 'TOYOTA'
+
+* Get by ISN
+GET DEPARTMENTS (#ISN)
+
+* Get same (no target; skipped in extraction)
+GET SAME
+
+* Store a new record
+STORE EMPLOYEES
+
+* Read another view and delete
+READ LOCATIONS
+  DELETE (VAR1)
+END
+
+WRITE 'Done'
+
+END

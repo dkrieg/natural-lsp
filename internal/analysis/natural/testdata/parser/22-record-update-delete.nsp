@@ -1,0 +1,31 @@
+* Task 7 (FR-20): Adabas record-form UPDATE/DELETE statements
+* Record UPDATE and DELETE have no file operand (update the record from preceding READ/FIND/GET)
+* UPDATE (label) / DELETE (label) are valid record forms with labels
+* SQL UPDATE/DELETE with table identifier + SET/WHERE/FROM remain distinct SQL forms
+
+DEFINE DATA LOCAL
+  1 #KEY (N5)
+  1 #VAL (A10)
+END-DEFINE
+
+READ EMPLOYEES
+  * Bare record UPDATE (no label, no operand)
+  UPDATE
+
+  * Record UPDATE with label
+  UPDATE (0250)
+
+  * Bare record DELETE (no label, no operand)
+  DELETE
+
+  * Record DELETE with label
+  DELETE (RD.)
+END
+
+* SQL UPDATE with table and SET clause (should still parse as SQLUpdateStatement, not record update)
+UPDATE MYTABLE SET COL = :#VAL WHERE KEY = :#KEY
+
+* SQL DELETE with FROM clause (should still parse as SQLDeleteStatement, not record delete)
+DELETE FROM MYTABLE WHERE KEY = :#KEY
+
+END

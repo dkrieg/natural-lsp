@@ -1,0 +1,19 @@
+* Task 1 fixture: READ and STORE data-access extraction
+* Contains READ EMPLOYEES, READ (5) VEHICLES BY MAKE, and STORE EMPLOYEES
+* to prove data-access edges are extracted in source order.
+
+DEFINE DATA
+LOCAL
+  1 COUNT (N2)
+END DEFINE
+
+READ EMPLOYEES
+
+READ (5) VEHICLES BY MAKE
+
+WRITE 'Processing'
+
+STORE EMPLOYEES
+
+END
+

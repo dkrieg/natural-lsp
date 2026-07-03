@@ -732,6 +732,758 @@ func TestAnalyze_ChannelSeparation_Malformed(t *testing.T) {
 	}
 }
 
+// TestAnalyze_DataAccess verifies that Analyze wires the data-access extractor
+// into the analysis pipeline and returns FileAnalysis.DataAccess populated with
+// all extracted data-access relationships (Task 9 / FR-19, FR-20).
+//
+// Acceptance criteria (Task 9):
+//   - Analyze calls extractDataAccess on the parsed AST
+//   - FileAnalysis.DataAccess is populated with entries matching the extractor output
+//   - End-to-end: raw bytes → Analyze → FileAnalysis.DataAccess with correct entries
+//   - Data-access entries are returned in source order (same as extractEdges)
+//   - Entry kind distinguishes reads (EdgeReads) from writes (EdgeWrites)
+//   - Accessed names are normalized (uppercase) by the lexer
+//
+// Fixture: testdata/dataaccess/01-read-store.NSP contains READ EMPLOYEES,
+// READ (5) VEHICLES BY MAKE, and STORE EMPLOYEES.
+//
+// Expected result: three entries in source order:
+//  1. Kind:EdgeReads, Name:"EMPLOYEES" (READ, line 10)
+//  2. Kind:EdgeReads, Name:"VEHICLES" (READ, line 12)
+//  3. Kind:EdgeWrites, Name:"EMPLOYEES" (STORE, line 16)
+func TestAnalyze_DataAccess(t *testing.T) {
+	// Read the fixture from testdata/dataaccess/
+	fixturePath := filepath.Join("testdata", "dataaccess", "01-read-store.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("Failed to read fixture %s: %v", fixturePath, err)
+	}
+
+	// Call Analyze through the public interface
+	var a analysis.Analyzer = New(nil)
+	result, err := a.Analyze(fixturePath, content)
+
+	// Assert no error (graceful degradation per FR-43)
+	if err != nil {
+		t.Errorf("Analyze(%q, …) error = %v, want nil", fixturePath, err)
+	}
+
+	// Assert FileAnalysis.DataAccess is populated (not empty)
+	if len(result.DataAccess) == 0 {
+		t.Fatalf("FileAnalysis.DataAccess is empty; want populated entries from 01-read-store.NSP (2 reads + 1 write)")
+	}
+
+	// Assert expected data-access count: 3 entries (2 READ + 1 STORE)
+	if len(result.DataAccess) != 3 {
+		t.Errorf("len(DataAccess) = %d, want 3", len(result.DataAccess))
+		for i, da := range result.DataAccess {
+			t.Logf("  DataAccess[%d]: Kind=%s, Name=%q, Source={line %d col %d}",
+				i, da.Kind, da.Name, da.Source.Start.Line, da.Source.Start.Column)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		verify func(t *testing.T, result model.FileAnalysis)
+	}{
+		{
+			name: "Analyze_DataAccess_correctSequence",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				da := result.DataAccess
+				if len(da) < 3 {
+					t.Skip("not enough data-access entries to verify sequence")
+				}
+
+				// Entry 0: READ EMPLOYEES @ line 10
+				if da[0].Kind != model.EdgeReads || da[0].Name != "EMPLOYEES" {
+					t.Errorf("DataAccess[0]: Kind=%s Name=%q, want EdgeReads 'EMPLOYEES'",
+						da[0].Kind, da[0].Name)
+				}
+
+				// Entry 1: READ (5) VEHICLES BY MAKE @ line 12
+				if da[1].Kind != model.EdgeReads || da[1].Name != "VEHICLES" {
+					t.Errorf("DataAccess[1]: Kind=%s Name=%q, want EdgeReads 'VEHICLES'",
+						da[1].Kind, da[1].Name)
+				}
+
+				// Entry 2: STORE EMPLOYEES @ line 16
+				if da[2].Kind != model.EdgeWrites || da[2].Name != "EMPLOYEES" {
+					t.Errorf("DataAccess[2]: Kind=%s Name=%q, want EdgeWrites 'EMPLOYEES'",
+						da[2].Kind, da[2].Name)
+				}
+
+				// Verify source order (global source order by line number)
+				for i := 0; i < len(da)-1; i++ {
+					currLine := da[i].Source.Start.Line
+					nextLine := da[i+1].Source.Start.Line
+					if currLine > nextLine {
+						t.Errorf("data-access entries not in source order: DataAccess[%d] at line %d > DataAccess[%d] at line %d",
+							i, currLine, i+1, nextLine)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_DataAccess_namesNormalized",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				da := result.DataAccess
+				// Assert all names are uppercase (normalized by lexer)
+				for i, entry := range da {
+					if entry.Name != strings.ToUpper(entry.Name) {
+						t.Errorf("DataAccess[%d].Name = %q, want uppercase (normalized by lexer)", i, entry.Name)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_DataAccess_readWriteDistinguishable",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				da := result.DataAccess
+				if len(da) < 3 {
+					t.Skip("not enough entries to verify read/write distinction")
+				}
+
+				// Entry 0 and 1 are reads, entry 2 is a write (same view name EMPLOYEES)
+				reads := []model.DataAccessEntry{}
+				writes := []model.DataAccessEntry{}
+				for _, entry := range da {
+					if entry.Kind == model.EdgeReads {
+						reads = append(reads, entry)
+					} else if entry.Kind == model.EdgeWrites {
+						writes = append(writes, entry)
+					}
+				}
+
+				if len(reads) != 2 {
+					t.Errorf("Expected 2 read entries, got %d", len(reads))
+				}
+				if len(writes) != 1 {
+					t.Errorf("Expected 1 write entry, got %d", len(writes))
+				}
+			},
+		},
+		{
+			name: "Analyze_DataAccess_matchesExtractorOutput",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// Verify that Analyze's output matches a direct extractDataAccess call
+				ast := result.AST
+				if ast == nil {
+					t.Skip("AST is nil, cannot compare with extractor")
+				}
+
+				prog, ok := ast.(*Program)
+				if !ok {
+					t.Skip("AST is not a *Program, cannot compare with extractor")
+				}
+
+				directOutput := extractDataAccess(prog)
+				analyzeOutput := result.DataAccess
+
+				if len(analyzeOutput) != len(directOutput) {
+					t.Errorf("Analyze output len = %d, direct extractDataAccess len = %d (mismatch)",
+						len(analyzeOutput), len(directOutput))
+				}
+
+				// Compare entries
+				for i := range analyzeOutput {
+					if i >= len(directOutput) {
+						break
+					}
+
+					if analyzeOutput[i].Kind != directOutput[i].Kind {
+						t.Errorf("DataAccess[%d].Kind: Analyze=%s, extractDataAccess=%s (mismatch)",
+							i, analyzeOutput[i].Kind, directOutput[i].Kind)
+					}
+					if analyzeOutput[i].Name != directOutput[i].Name {
+						t.Errorf("DataAccess[%d].Name: Analyze=%q, extractDataAccess=%q (mismatch)",
+							i, analyzeOutput[i].Name, directOutput[i].Name)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.verify(t, result)
+		})
+	}
+}
+
+// TestAnalyze_Definitions verifies that Analyze wires the definition extractor
+// into the analysis pipeline and returns FileAnalysis.Definitions populated with
+// extracted data definitions from DEFINE DATA sections (Task 13 / FR-21).
+//
+// Acceptance criteria (Task 13):
+//   - Analyze calls extractDefinitions on the parsed AST
+//   - FileAnalysis.Definitions is populated with entries matching the extractor output
+//   - End-to-end: raw bytes → Analyze → FileAnalysis.Definitions with correct entries
+//   - Definitions include local, parameter, and global data items
+//   - Parameter items are tagged with SectionKind="parameter" so hover/signature can distinguish them
+//   - Definitions are returned in declaration order
+//
+// Fixture: testdata/parser/23-data-sections.nsp contains:
+//   - LOCAL section: 2 fields (#LOCAL-COUNTER, #LOCAL-NAME)
+//   - PARAMETER section: 2 fields (#INPUT-VALUE, #OUTPUT-RESULT)
+//   - GLOBAL USING section: no inline fields (external GDA reference)
+//
+// Expected result: 4 entries in declaration order (2 local + 2 parameter), with
+// parameter items tagged SectionKind="parameter".
+func TestAnalyze_Definitions(t *testing.T) {
+	// Read the fixture from testdata/parser/ (reusing the parser fixture)
+	fixturePath := filepath.Join("testdata", "parser", "23-data-sections.nsp")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("Failed to read fixture %s: %v", fixturePath, err)
+	}
+
+	// Call Analyze through the public interface
+	var a analysis.Analyzer = New(nil)
+	result, err := a.Analyze(fixturePath, content)
+
+	// Assert no error (graceful degradation per FR-43)
+	if err != nil {
+		t.Errorf("Analyze(%q, …) error = %v, want nil", fixturePath, err)
+	}
+
+	// Assert FileAnalysis.Definitions is populated (not empty)
+	if len(result.Definitions) == 0 {
+		t.Fatalf("FileAnalysis.Definitions is empty; want populated entries from 23-data-sections.nsp (2 local + 2 parameter = 4)")
+	}
+
+	// Assert expected definition count: 4 entries (2 LOCAL + 2 PARAMETER)
+	if len(result.Definitions) != 4 {
+		t.Errorf("len(Definitions) = %d, want 4 (2 local + 2 parameter)", len(result.Definitions))
+		for i, def := range result.Definitions {
+			t.Logf("  Definitions[%d]: Name=%q, SectionKind=%q, Level=%d",
+				i, def.Name, def.SectionKind, def.Level)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		verify func(t *testing.T, result model.FileAnalysis)
+	}{
+		{
+			name: "Analyze_Definitions_correctSequence",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				defs := result.Definitions
+				if len(defs) < 4 {
+					t.Skip("not enough definitions to verify sequence")
+				}
+
+				// Definition 0: #LOCAL-COUNTER (LOCAL section)
+				if defs[0].Name != "#LOCAL-COUNTER" || defs[0].SectionKind != "local" {
+					t.Errorf("Definitions[0]: Name=%q SectionKind=%q, want '#LOCAL-COUNTER' 'local'",
+						defs[0].Name, defs[0].SectionKind)
+				}
+
+				// Definition 1: #LOCAL-NAME (LOCAL section)
+				if defs[1].Name != "#LOCAL-NAME" || defs[1].SectionKind != "local" {
+					t.Errorf("Definitions[1]: Name=%q SectionKind=%q, want '#LOCAL-NAME' 'local'",
+						defs[1].Name, defs[1].SectionKind)
+				}
+
+				// Definition 2: #INPUT-VALUE (PARAMETER section)
+				if defs[2].Name != "#INPUT-VALUE" || defs[2].SectionKind != "parameter" {
+					t.Errorf("Definitions[2]: Name=%q SectionKind=%q, want '#INPUT-VALUE' 'parameter'",
+						defs[2].Name, defs[2].SectionKind)
+				}
+
+				// Definition 3: #OUTPUT-RESULT (PARAMETER section)
+				if defs[3].Name != "#OUTPUT-RESULT" || defs[3].SectionKind != "parameter" {
+					t.Errorf("Definitions[3]: Name=%q SectionKind=%q, want '#OUTPUT-RESULT' 'parameter'",
+						defs[3].Name, defs[3].SectionKind)
+				}
+			},
+		},
+		{
+			name: "Analyze_Definitions_namesNormalized",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				defs := result.Definitions
+				// Assert all names (excluding the # prefix) are uppercase (normalized by lexer)
+				for i, def := range defs {
+					// Names should start with # (part of the identifier in Natural)
+					if !strings.HasPrefix(def.Name, "#") {
+						t.Errorf("Definitions[%d].Name = %q, want # prefix", i, def.Name)
+					}
+					// The part after # should be uppercase (normalized by lexer)
+					nameWithoutPrefix := strings.TrimPrefix(def.Name, "#")
+					if nameWithoutPrefix != strings.ToUpper(nameWithoutPrefix) {
+						t.Errorf("Definitions[%d].Name = %q, want uppercase after # (normalized by lexer)", i, def.Name)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_Definitions_parameterInterfaceTagged",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				defs := result.Definitions
+				// Assert parameter section items are tagged SectionKind="parameter"
+				paramCount := 0
+				for _, def := range defs {
+					if def.SectionKind == "parameter" {
+						paramCount++
+					}
+				}
+				if paramCount != 2 {
+					t.Errorf("Parameter-section definitions count = %d, want 2", paramCount)
+				}
+			},
+		},
+		{
+			name: "Analyze_Definitions_matchesExtractorOutput",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// Verify that Analyze's output matches a direct extractDefinitions call
+				ast := result.AST
+				if ast == nil {
+					t.Skip("AST is nil, cannot compare with extractor")
+				}
+
+				prog, ok := ast.(*Program)
+				if !ok {
+					t.Skip("AST is not a *Program, cannot compare with extractor")
+				}
+
+				directOutput := extractDefinitions(prog)
+				analyzeOutput := result.Definitions
+
+				if len(analyzeOutput) != len(directOutput) {
+					t.Errorf("Analyze output len = %d, direct extractDefinitions len = %d (mismatch)",
+						len(analyzeOutput), len(directOutput))
+				}
+
+				// Compare entries
+				for i := range analyzeOutput {
+					if i >= len(directOutput) {
+						break
+					}
+
+					if analyzeOutput[i].Name != directOutput[i].Name {
+						t.Errorf("Definitions[%d].Name: Analyze=%q, extractDefinitions=%q (mismatch)",
+							i, analyzeOutput[i].Name, directOutput[i].Name)
+					}
+					if analyzeOutput[i].SectionKind != directOutput[i].SectionKind {
+						t.Errorf("Definitions[%d].SectionKind: Analyze=%q, extractDefinitions=%q (mismatch)",
+							i, analyzeOutput[i].SectionKind, directOutput[i].SectionKind)
+					}
+					if analyzeOutput[i].Level != directOutput[i].Level {
+						t.Errorf("Definitions[%d].Level: Analyze=%d, extractDefinitions=%d (mismatch)",
+							i, analyzeOutput[i].Level, directOutput[i].Level)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.verify(t, result)
+		})
+	}
+}
+
+// TestAnalyze_Integration_Combined verifies end-to-end extraction of all data-access
+// features (Task 16 / FR-19..22, FR-43): a combined fixture exercising reads (READ/FIND/GET),
+// writes (STORE/record UPDATE/DELETE), DEFINE DATA sections (LOCAL/PARAMETER/GLOBAL),
+// and DEFINE WORK FILE, returning deterministic combined FileAnalysis output and proving
+// that all three channels (edges, definitions, work files) are populated and properly ordered.
+//
+// Acceptance criteria (Task 16):
+//   - Analyze returns FileAnalysis with DataAccess populated (reads and writes)
+//   - Analyze returns FileAnalysis with Definitions populated (local, parameter, global items)
+//   - Analyze returns FileAnalysis with WorkFiles populated (DEFINE WORK FILE entries)
+//   - All entries are in deterministic source order
+//   - Reads and writes are distinguishable by Kind
+//   - GET SAME (empty target) is skipped; produces no edge
+//   - Record UPDATE/DELETE (no file operand) produce writes with empty Name
+//   - Parameter section items are tagged SectionKind="parameter"
+//   - Malformed input degrades gracefully: parser diagnostics present, but valid extractions preserved
+//
+// Fixture: testdata/dataaccess/06-combined.NSP contains:
+//   - READ EMPLOYEES, FIND VEHICLES, GET DEPARTMENTS, GET SAME (skipped)
+//   - STORE EMPLOYEES
+//   - Record UPDATE inside READ EMPLOYEES loop
+//   - Record DELETE inside READ LOCATIONS loop
+//   - DEFINE DATA LOCAL (2 fields), PARAMETER (2 fields), GLOBAL USING (ref only)
+//   - DEFINE WORK FILE 1 'REPORT.TXT', DEFINE WORK FILE 2 #LOGFILE
+//
+// Expected result: 7 data-access entries (4 reads + 3 writes; GET SAME skipped),
+// 4 definitions (2 local + 2 parameter), 2 work files, all in source order,
+// with correct Kind/SectionKind/Name values.
+func TestAnalyze_Integration_Combined(t *testing.T) {
+	// Read the combined fixture from testdata/dataaccess/
+	fixturePath := filepath.Join("testdata", "dataaccess", "06-combined.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("Failed to read fixture %s: %v", fixturePath, err)
+	}
+
+	// Call Analyze through the public interface
+	var a analysis.Analyzer = New(nil)
+	result, err := a.Analyze(fixturePath, content)
+
+	// Assert no error (graceful degradation per FR-43)
+	if err != nil {
+		t.Errorf("Analyze(%q, …) error = %v, want nil", fixturePath, err)
+	}
+
+	// Assert FileAnalysis.DataAccess is populated
+	if len(result.DataAccess) == 0 {
+		t.Fatalf("FileAnalysis.DataAccess is empty; want entries for reads/writes from 06-combined.NSP")
+	}
+
+	// Assert FileAnalysis.Definitions is populated
+	if len(result.Definitions) == 0 {
+		t.Fatalf("FileAnalysis.Definitions is empty; want entries for LOCAL/PARAMETER fields from 06-combined.NSP")
+	}
+
+	// Assert FileAnalysis.WorkFiles is populated
+	if len(result.WorkFiles) == 0 {
+		t.Fatalf("FileAnalysis.WorkFiles is empty; want entries for DEFINE WORK FILE from 06-combined.NSP")
+	}
+
+	tests := []struct {
+		name   string
+		verify func(t *testing.T, result model.FileAnalysis)
+	}{
+		{
+			name: "Analyze_Integration_Combined_dataAccessCount",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// Expected: 4 reads (READ EMPLOYEES, READ LOCATIONS, FIND VEHICLES, GET DEPARTMENTS;
+				// GET SAME is skipped because it has no target) + 3 writes (STORE
+				// EMPLOYEES, record UPDATE, record DELETE) = 7 total data-access entries.
+				da := result.DataAccess
+				if len(da) != 7 {
+					t.Errorf("len(DataAccess) = %d, want 7 (4 reads + 3 writes)", len(da))
+					for i, e := range da {
+						t.Logf("  DataAccess[%d]: Kind=%s, Name=%q, Source=line %d",
+							i, e.Kind, e.Name, e.Source.Start.Line)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_dataAccessSequence",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				da := result.DataAccess
+				if len(da) < 7 {
+					t.Skip("not enough data-access entries to verify sequence")
+				}
+
+				// Verify source order: all entries sorted by line then column
+				for i := 0; i < len(da)-1; i++ {
+					currLine := da[i].Source.Start.Line
+					nextLine := da[i+1].Source.Start.Line
+					if currLine > nextLine {
+						t.Errorf("data-access entries not in source order: DataAccess[%d] at line %d > DataAccess[%d] at line %d",
+							i, currLine, i+1, nextLine)
+					}
+					if currLine == nextLine && da[i].Source.Start.Column > da[i+1].Source.Start.Column {
+						t.Errorf("data-access entries not in source order (same line): DataAccess[%d] at col %d > DataAccess[%d] at col %d",
+							i, da[i].Source.Start.Column, i+1, da[i+1].Source.Start.Column)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_readWriteDistinction",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				da := result.DataAccess
+				if len(da) < 7 {
+					t.Skip("not enough data-access entries to verify read/write distinction")
+				}
+
+				// Count reads vs writes
+				readCount := 0
+				writeCount := 0
+				for _, e := range da {
+					if e.Kind == model.EdgeReads {
+						readCount++
+					} else if e.Kind == model.EdgeWrites {
+						writeCount++
+					}
+				}
+
+				// Expected: 4 reads (GET SAME is skipped), 3 writes
+				if readCount != 4 {
+					t.Errorf("read count = %d, want 4", readCount)
+				}
+				if writeCount != 3 {
+					t.Errorf("write count = %d, want 3", writeCount)
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_getSameSkipped",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				da := result.DataAccess
+				// GET SAME should produce no edge (empty target is skipped).
+				// Assert no data-access entry with an empty Name that corresponds to
+				// the GET SAME statement (heuristic: check that we don't have an
+				// unexpected EdgeReads with empty Name near the GET SAME line).
+				for _, e := range da {
+					if e.Kind == model.EdgeReads && e.Name == "" {
+						t.Errorf("Found EdgeReads with empty Name (should be skipped for GET SAME): %+v", e)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_recordWriteEmptyName",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				da := result.DataAccess
+				if len(da) < 7 {
+					t.Skip("not enough data-access entries")
+				}
+
+				// Record UPDATE/DELETE should produce EdgeWrites with empty Name.
+				// Count them: expect 2 (UPDATE inside READ EMPLOYEES, DELETE inside READ LOCATIONS).
+				emptyNameWrites := 0
+				for _, e := range da {
+					if e.Kind == model.EdgeWrites && e.Name == "" {
+						emptyNameWrites++
+					}
+				}
+
+				if emptyNameWrites != 2 {
+					t.Errorf("record-write entries with empty Name: got %d, want 2 (UPDATE + DELETE)",
+						emptyNameWrites)
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_definitionsCount",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// Expected: 4 definitions (2 LOCAL + 2 PARAMETER; GLOBAL USING has no inline fields).
+				defs := result.Definitions
+				if len(defs) != 4 {
+					t.Errorf("len(Definitions) = %d, want 4 (2 local + 2 parameter)", len(defs))
+					for i, d := range defs {
+						t.Logf("  Definitions[%d]: Name=%q, SectionKind=%q, Level=%d",
+							i, d.Name, d.SectionKind, d.Level)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_definitionsSequence",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				defs := result.Definitions
+				if len(defs) < 4 {
+					t.Skip("not enough definitions to verify sequence")
+				}
+
+				// LOCAL section should come before PARAMETER (declaration order).
+				// Expect: #COUNTER, #REPORT-NAME (both "local"), then #INPUT-FILE,
+				// #OUTPUT-PATH (both "parameter").
+				if defs[0].SectionKind != "local" {
+					t.Errorf("Definitions[0].SectionKind = %q, want 'local'", defs[0].SectionKind)
+				}
+				if defs[1].SectionKind != "local" {
+					t.Errorf("Definitions[1].SectionKind = %q, want 'local'", defs[1].SectionKind)
+				}
+				if defs[2].SectionKind != "parameter" {
+					t.Errorf("Definitions[2].SectionKind = %q, want 'parameter'", defs[2].SectionKind)
+				}
+				if defs[3].SectionKind != "parameter" {
+					t.Errorf("Definitions[3].SectionKind = %q, want 'parameter'", defs[3].SectionKind)
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_workFilesCount",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// Expected: 2 work files (DEFINE WORK FILE 1 and 2).
+				wf := result.WorkFiles
+				if len(wf) != 2 {
+					t.Errorf("len(WorkFiles) = %d, want 2", len(wf))
+					for i, w := range wf {
+						t.Logf("  WorkFiles[%d]: Number=%d, Name=%q", i, w.Number, w.Name)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_workFilesSequence",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				wf := result.WorkFiles
+				if len(wf) < 2 {
+					t.Skip("not enough work files to verify sequence")
+				}
+
+				// Expected: DEFINE WORK FILE 1 'REPORT.TXT', then 2 #LOGFILE.
+				if wf[0].Number != 1 {
+					t.Errorf("WorkFiles[0].Number = %d, want 1", wf[0].Number)
+				}
+				if wf[0].Name != "REPORT.TXT" {
+					t.Errorf("WorkFiles[0].Name = %q, want 'REPORT.TXT'", wf[0].Name)
+				}
+				if wf[1].Number != 2 {
+					t.Errorf("WorkFiles[1].Number = %d, want 2", wf[1].Number)
+				}
+				if wf[1].Name != "#LOGFILE" {
+					t.Errorf("WorkFiles[1].Name = %q, want '#LOGFILE'", wf[1].Name)
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Combined_allChannelsPopulated",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// All three extraction channels must be populated and non-empty.
+				if len(result.DataAccess) == 0 {
+					t.Error("DataAccess channel is empty; want populated")
+				}
+				if len(result.Definitions) == 0 {
+					t.Error("Definitions channel is empty; want populated")
+				}
+				if len(result.WorkFiles) == 0 {
+					t.Error("WorkFiles channel is empty; want populated")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.verify(t, result)
+		})
+	}
+}
+
+// TestAnalyze_Integration_Malformed verifies graceful degradation (Task 16 / FR-43):
+// malformed statements surface as parser diagnostics while valid extractions are preserved.
+// Extraction never crashes and produces no false edges; diagnostics and extraction stay
+// on separate channels.
+//
+// Acceptance criteria (Task 16, FR-43):
+//   - Parser diagnostics are emitted for malformed lines
+//   - Valid data-access entries (READ, STORE, FIND) are still extracted
+//   - Valid definitions from well-formed DEFINE DATA are still extracted
+//   - Malformed lines produce no edges (extraction skips them)
+//   - Extraction never crashes or panics
+//   - No extraction-level diagnostic cross-contamination
+//
+// Fixture: testdata/dataaccess/07-malformed.NSP contains:
+//   - Valid READ EMPLOYEES, STORE EMPLOYEES, FIND VEHICLES (should extract)
+//   - Malformed READ (no target) — parser diagnostic, no edge
+//   - Malformed DEFINE WORK FILE (no number) — parser diagnostic, no work-file entry
+//   - Well-formed DEFINE DATA LOCAL section — should extract definitions
+//
+// Expected result: 3 valid data-access entries (READ, STORE, FIND), 2 valid definitions
+// (LOCAL fields), >= 2 parser diagnostics (for malformed READ and DEFINE WORK FILE),
+// all in separate channels.
+func TestAnalyze_Integration_Malformed(t *testing.T) {
+	// Read the malformed fixture from testdata/dataaccess/
+	fixturePath := filepath.Join("testdata", "dataaccess", "07-malformed.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("Failed to read fixture %s: %v", fixturePath, err)
+	}
+
+	// Call Analyze through the public interface
+	var a analysis.Analyzer = New(nil)
+	result, err := a.Analyze(fixturePath, content)
+
+	// Assert no error (graceful degradation per FR-43)
+	if err != nil {
+		t.Errorf("Analyze(%q, …) error = %v, want nil", fixturePath, err)
+	}
+
+	tests := []struct {
+		name   string
+		verify func(t *testing.T, result model.FileAnalysis)
+	}{
+		{
+			name: "Analyze_Integration_Malformed_validExtractionsPreserved",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// Valid data-access entries should still be extracted despite
+				// malformed statements in the same file.
+				da := result.DataAccess
+				if len(da) == 0 {
+					t.Fatal("DataAccess is empty; want valid entries (READ, STORE, FIND) preserved")
+				}
+
+				// Expected: at least 3 entries (READ EMPLOYEES, STORE EMPLOYEES, FIND VEHICLES).
+				if len(da) < 3 {
+					t.Errorf("len(DataAccess) = %d, want at least 3 (valid entries preserved)", len(da))
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Malformed_validDefinitionsPreserved",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// Valid definitions from the well-formed DEFINE DATA LOCAL section
+				// should still be extracted.
+				defs := result.Definitions
+				if len(defs) == 0 {
+					t.Fatal("Definitions is empty; want entries from well-formed LOCAL section")
+				}
+
+				// Expected: at least 2 entries (#VALID-FIELD, #ANOTHER).
+				if len(defs) < 2 {
+					t.Errorf("len(Definitions) = %d, want at least 2", len(defs))
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Malformed_diagnosticsPresent",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// Malformed statements should produce diagnostics.
+				diags := result.Diagnostics
+				if len(diags) == 0 {
+					t.Error("Diagnostics is empty; want diagnostics for malformed statements")
+				}
+
+				// Expected: at least 2 diagnostics (malformed READ, malformed DEFINE WORK FILE).
+				if len(diags) < 2 {
+					t.Errorf("len(Diagnostics) = %d, want at least 2", len(diags))
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Malformed_noFalseEdges",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// No false data-access entries should be created for malformed lines.
+				// Verify that entries have proper names and sources.
+				da := result.DataAccess
+				for i, e := range da {
+					// Each entry should have a valid source position (non-zero start line)
+					if e.Source.Start.Line == 0 {
+						t.Errorf("DataAccess[%d] has zero source line (likely malformed)", i)
+					}
+
+					// Verify that each entry corresponds to a valid statement:
+					// - READ, STORE, FIND should have non-empty Name
+					// - Empty Name is only valid for record-write entries (UPDATE/DELETE),
+					//   which don't appear in this fixture
+					if e.Name == "" {
+						t.Errorf("DataAccess[%d] has empty Name; expect entries to have names (READ/STORE/FIND)",
+							i)
+					}
+				}
+			},
+		},
+		{
+			name: "Analyze_Integration_Malformed_noPanic",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// This is implicit in the test's successful completion, but make it
+				// explicit: Analyze must never panic, even with malformed input.
+				// If we got here, no panic occurred (FR-43 graceful degradation).
+				if result.AST == nil {
+					t.Log("AST is nil (expected for malformed input)")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.verify(t, result)
+		})
+	}
+}
+
 // findModuleRoot walks up the directory tree from a file to find the module root
 // by locating the go.mod file.
 func findModuleRoot(t *testing.T, fromFile string) string {
