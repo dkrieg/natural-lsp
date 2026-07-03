@@ -68,7 +68,63 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 		}
 	}
 
-	// TODO: implement Task 3 (INSERT / SQL UPDATE / SQL DELETE)
+	// Task 3: INSERT, SQL UPDATE, and SQL DELETE statements emit EdgeWrites
+	// for each table operand (the DDM/table name).
+
+	// InsertStatement (SQL): emit one EdgeWrites for IntoTable operand.
+	for _, ins := range prog.Inserts {
+		if ins == nil {
+			continue // graceful degradation: skip nil AST nodes
+		}
+		for _, table := range ins.IntoTable {
+			if table.Name == "" {
+				continue // malformed INTO clause — no false edge
+			}
+			entries = append(entries, model.DataAccessEntry{
+				Kind:      model.EdgeWrites,
+				Name:      table.Name,
+				NameRange: table.Range,
+				Source:    stmtRange(ins.StartPos, ins.EndPos),
+			})
+		}
+	}
+
+	// SQLUpdateStatement (SQL form with SET/WHERE): emit one EdgeWrites for Table operand.
+	for _, upd := range prog.SQLUpdates {
+		if upd == nil {
+			continue // graceful degradation: skip nil AST nodes
+		}
+		for _, table := range upd.Table {
+			if table.Name == "" {
+				continue // malformed UPDATE clause — no false edge
+			}
+			entries = append(entries, model.DataAccessEntry{
+				Kind:      model.EdgeWrites,
+				Name:      table.Name,
+				NameRange: table.Range,
+				Source:    stmtRange(upd.StartPos, upd.EndPos),
+			})
+		}
+	}
+
+	// SQLDeleteStatement (SQL form with FROM/WHERE): emit one EdgeWrites for FromTable operand.
+	for _, del := range prog.SQLDeletes {
+		if del == nil {
+			continue // graceful degradation: skip nil AST nodes
+		}
+		for _, table := range del.FromTable {
+			if table.Name == "" {
+				continue // malformed DELETE clause — no false edge
+			}
+			entries = append(entries, model.DataAccessEntry{
+				Kind:      model.EdgeWrites,
+				Name:      table.Name,
+				NameRange: table.Range,
+				Source:    stmtRange(del.StartPos, del.EndPos),
+			})
+		}
+	}
+
 	// TODO: implement Task 5b (MERGE)
 	// TODO: implement Task 6c (READ RESULT SET)
 	// TODO: implement Task 7 (PROCESS SQL)

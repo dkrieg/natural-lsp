@@ -1,0 +1,14 @@
+* Task 3 fixture: SQL DELETE statement (WHERE + FROM table form)
+* Demonstrates FR-20 requirement: SQL DELETE writes to DDM once
+* Uses FROM clause to disambiguate from Adabas record DELETE
+* Expected: one EdgeWrites entry for ORDERS (the FROM table operand)
+* and zero edges for WHERE operands (they are host vars/columns)
+
+DEFINE DATA LOCAL
+  1 #ORDER-ID (N7)
+  1 #STATUS (A10)
+END-DEFINE
+
+DELETE FROM ORDERS WHERE ORDER_ID = :#ORDER-ID AND STATUS = :#STATUS
+
+END
