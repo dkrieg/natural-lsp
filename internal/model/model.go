@@ -269,6 +269,13 @@ type FileAnalysis struct {
 	// Populated by the workspace indexer for file-access analysis.
 	WorkFiles []WorkFile
 
+	// HostVarRefs holds host-variable references extracted from embedded-SQL statements
+	// (INTO, WHERE, VALUES, SET clauses and flexible-SQL opaque bodies).
+	// Each entry carries the normalized (colon-stripped) name and source range.
+	// Used for binding host vars back to DEFINE DATA declarations (feature 08b).
+	// Populated by the workspace indexer for embedded-SQL extraction.
+	HostVarRefs []HostVarRef
+
 	// AST holds the parsed AST for this file. Populated by the parser
 	// backend when available; nil when the parser is not integrated.
 	AST any
@@ -289,5 +296,22 @@ type WorkFile struct {
 	Name string
 
 	// Range is the source span of the entire DEFINE WORK FILE statement.
+	Range Range
+}
+
+// HostVarRef represents a host-variable *use* (reference) from an embedded-SQL statement.
+// This is distinct from DataDefinition, which represents a *declaration* of a variable.
+// HostVarRef is used for SQL clauses (INTO, WHERE, VALUES, SET) and flexible-SQL opaque
+// bodies that reference field variables by name.
+//
+// Name is the normalized (upper-case) identifier of the host variable, with the SQL colon
+// prefix stripped and the Natural sigil (#, &, @, +) preserved, matching feature-08's
+// DataDefinition.Name convention so that resolution can bind refs back to declarations later.
+// Range is the source span of the host-var operand token in the statement.
+//
+// This type is additive to feature 08's data model and requires a cache-format bump
+// (0.4.0 → 0.5.0) to persist it.
+type HostVarRef struct {
+	Name  string
 	Range Range
 }

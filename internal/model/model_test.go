@@ -264,6 +264,129 @@ func TestFileAnalysisSymbolEdgesDataAccessFields(t *testing.T) {
 	}
 }
 
+// TestFileAnalysisHostVarRefsField verifies that FileAnalysis has a HostVarRefs field
+// and that HostVarRef{Name, Range} can be constructed and stored.
+// This tests FR-21 (host-variable references) — Task 1 of feature 08b-embedded-sql-extraction.
+//
+// The test asserts:
+//   - FileAnalysis has a HostVarRefs field of type []HostVarRef
+//   - HostVarRef can be constructed with Name and Range fields
+//   - HostVarRefs can be populated and round-trip correctly
+func TestFileAnalysisHostVarRefsField(t *testing.T) {
+	tests := []struct {
+		name       string
+		initialize func() FileAnalysis
+		verify     func(t *testing.T, fa FileAnalysis)
+	}{
+		{
+			name: "HostVarRefs_field_can_be_populated_with_hostvars",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{
+					ObjectType: ObjectProgram,
+					HostVarRefs: []HostVarRef{
+						{
+							Name: "#EMPLOYEE",
+							Range: Range{
+								Start: Position{Line: 10, Column: 5},
+								End:   Position{Line: 10, Column: 14},
+							},
+						},
+						{
+							Name: "#SALARY",
+							Range: Range{
+								Start: Position{Line: 12, Column: 8},
+								End:   Position{Line: 12, Column: 15},
+							},
+						},
+					},
+				}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if fa.HostVarRefs == nil {
+					t.Fatal("FileAnalysis.HostVarRefs is nil, want non-nil slice")
+				}
+				if len(fa.HostVarRefs) != 2 {
+					t.Errorf("FileAnalysis.HostVarRefs length = %d, want 2", len(fa.HostVarRefs))
+				}
+				if fa.HostVarRefs[0].Name != "#EMPLOYEE" {
+					t.Errorf("HostVarRef[0].Name = %q, want %q", fa.HostVarRefs[0].Name, "#EMPLOYEE")
+				}
+				if fa.HostVarRefs[0].Range.Start.Line != 10 {
+					t.Errorf("HostVarRef[0].Range.Start.Line = %d, want 10", fa.HostVarRefs[0].Range.Start.Line)
+				}
+				if fa.HostVarRefs[1].Name != "#SALARY" {
+					t.Errorf("HostVarRef[1].Name = %q, want %q", fa.HostVarRefs[1].Name, "#SALARY")
+				}
+			},
+		},
+		{
+			name: "HostVarRefs_field_is_nil_when_not_set",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{
+					ObjectType: ObjectProgram,
+				}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if fa.HostVarRefs != nil {
+					t.Errorf("FileAnalysis.HostVarRefs = %v, want nil", fa.HostVarRefs)
+				}
+			},
+		},
+		{
+			name: "HostVarRef_with_sigil_normalization",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{
+					ObjectType: ObjectProgram,
+					HostVarRefs: []HostVarRef{
+						{
+							Name: "&FIELD",
+							Range: Range{
+								Start: Position{Line: 5, Column: 1},
+								End:   Position{Line: 5, Column: 7},
+							},
+						},
+						{
+							Name: "@FIELD",
+							Range: Range{
+								Start: Position{Line: 6, Column: 1},
+								End:   Position{Line: 6, Column: 7},
+							},
+						},
+						{
+							Name: "+AIV",
+							Range: Range{
+								Start: Position{Line: 7, Column: 1},
+								End:   Position{Line: 7, Column: 5},
+							},
+						},
+					},
+				}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if len(fa.HostVarRefs) != 3 {
+					t.Fatalf("HostVarRefs length = %d, want 3", len(fa.HostVarRefs))
+				}
+				if fa.HostVarRefs[0].Name != "&FIELD" {
+					t.Errorf("HostVarRef[0] (ampersand sigil) = %q, want %q", fa.HostVarRefs[0].Name, "&FIELD")
+				}
+				if fa.HostVarRefs[1].Name != "@FIELD" {
+					t.Errorf("HostVarRef[1] (at sigil) = %q, want %q", fa.HostVarRefs[1].Name, "@FIELD")
+				}
+				if fa.HostVarRefs[2].Name != "+AIV" {
+					t.Errorf("HostVarRef[2] (plus sigil) = %q, want %q", fa.HostVarRefs[2].Name, "+AIV")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fa := tc.initialize()
+			tc.verify(t, fa)
+		})
+	}
+}
+
 // TestFileAnalysis_ASTField verifies that FileAnalysis has an AST field
 // for the parser foundation (Task 1 of feature 00-parser-foundation).
 //
