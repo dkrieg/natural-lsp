@@ -7,6 +7,7 @@ package natural
 
 import (
 	"fmt"
+	"sort"
 
 	"natural-lsp/internal/analysis"
 	"natural-lsp/internal/model"
@@ -77,6 +78,32 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 		result.DataAccess = extractDataAccess(ast)
 		result.Definitions = extractDefinitions(ast)
 		result.WorkFiles = extractWorkFiles(ast)
+
+		// Feature 08b: wire SQL extraction into the analysis pipeline.
+		// Merge SQL call edges (CALLDBPROC) with feature-06 edges, maintaining global source order.
+		sqlCalls := extractSQLCalls(ast)
+		result.Edges = append(result.Edges, sqlCalls...)
+		sort.SliceStable(result.Edges, func(i, j int) bool {
+			return sourceStartLess(
+				result.Edges[i].Source.Start.Line, result.Edges[i].Source.Start.Column,
+				result.Edges[j].Source.Start.Line, result.Edges[j].Source.Start.Column,
+			)
+		})
+
+		// Merge SQL data-access entries (SELECT FROM, PROCESS SQL DDM reads) with feature-08 entries,
+		// maintaining global source order.
+		sqlAccess := extractSQLAccess(ast)
+		result.DataAccess = append(result.DataAccess, sqlAccess...)
+		sort.SliceStable(result.DataAccess, func(i, j int) bool {
+			return sourceStartLess(
+				result.DataAccess[i].Source.Start.Line, result.DataAccess[i].Source.Start.Column,
+				result.DataAccess[j].Source.Start.Line, result.DataAccess[j].Source.Start.Column,
+			)
+		})
+
+		// Extract host-variable references from SQL statements. This is a new field
+		// with no prior entries to merge; just assign directly.
+		result.HostVarRefs = extractHostVarRefs(ast)
 	}
 
 	return result, nil

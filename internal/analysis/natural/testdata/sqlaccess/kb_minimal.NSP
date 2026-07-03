@@ -1,0 +1,32 @@
+* Task 8 fixture: combined minimal end-to-end integration test
+* Demonstrates all SQL extraction features working together in one source:
+*   - Native SQL SELECT statement (Task 2 / FR-19)
+*   - Native SQL host-var references with bare (#) form (Task 4 / FR-21)
+*   - PROCESS SQL flexible block (Task 7 / FR-19, FR-21)
+*   - Opaque-body host-var references with colon-mandatory form (Task 7 / FR-21)
+*   - Feature-06 CALLNAT edge (unchanged, regression check)
+* Expected composite result from Analyze:
+*   - DataAccess: EdgeReads for SQL-PERSONNEL (SELECT FROM) + EMPLOYEE-DATA (PROCESS SQL DDM)
+*   - HostVarRefs: #NAME, #SALARY, #PERS-ID (from SELECT), then :#NAME (from opaque body)
+*   - Edges: CALLNAT 'NDBERR' (feature-06, unchanged)
+*   - All entries in global source order
+
+DEFINE DATA LOCAL
+  1 #NAME (A30)
+  1 #SALARY (N9.2)
+  1 #PERS-ID (N5)
+END-DEFINE
+
+SELECT EMP_NAME, EMP_SALARY INTO #NAME, #SALARY
+  FROM SQL-PERSONNEL
+  WHERE PERS_ID = :#PERS-ID
+  CALLNAT 'PROCESS'
+END-SELECT
+
+PROCESS SQL EMPLOYEE-DATA
+  << SELECT EMP_ID FROM SALARY_TABLE
+     WHERE PERS_ID = :#NAME >>
+
+CALLNAT 'NDBERR'
+
+END
