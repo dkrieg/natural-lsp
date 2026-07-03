@@ -414,6 +414,14 @@ func (r *RollbackStatement) Position() (model.Position, model.Position) {
 type CallDBProcStatement struct {
 	StartPos model.Position
 	EndPos   model.Position
+	// ProcName is the stored-procedure name (the first operand after CALLDBPROC),
+	// with surrounding quotes stripped for a literal. ProcNameIsLiteral records
+	// whether it was written as a quoted literal (vs. an identifier/variable),
+	// mirroring CallStatement.TargetIsLiteral so a dynamic proc name downgrades to
+	// EdgeCallsDynamic. The target is unbound — resolution is the resolver's job.
+	ProcName          string
+	ProcNameRange     model.Range
+	ProcNameIsLiteral bool
 }
 
 func (c *CallDBProcStatement) Position() (model.Position, model.Position) {

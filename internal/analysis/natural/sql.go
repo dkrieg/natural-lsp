@@ -159,7 +159,22 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 		}
 	}
 
-	// TODO: implement Task 6c (READ RESULT SET)
+	// ReadResultSetStatement (SQL): record a read-access site. The result-set
+	// operand is a handle established by a preceding CALLDBPROC, not a DDM, so the
+	// entry carries an empty Name (site recorded, binding deferred) — never a
+	// false DDM edge on the handle. This mirrors feature 08's empty-Name
+	// record-form write sites.
+	for _, rrs := range prog.ReadResultSets {
+		if rrs == nil {
+			continue // graceful degradation: skip nil AST nodes
+		}
+		entries = append(entries, model.DataAccessEntry{
+			Kind:   model.EdgeReads,
+			Name:   "",
+			Source: stmtRange(rrs.StartPos, rrs.EndPos),
+		})
+	}
+
 	// TODO: implement Task 7 (PROCESS SQL)
 
 	// Sort by source order (stable sort on Source.Start).
@@ -171,6 +186,44 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 	})
 
 	return entries
+}
+
+// extractSQLCalls walks the parsed program and returns call-like edges for
+// embedded-SQL statements that invoke external code. Currently that is
+// CALLDBPROC (a stored-procedure call): each emits one EdgeEntry with the proc
+// name as TargetName and the call site as Source, the target left unbound
+// (resolution is the resolver's job). A literal proc name is a static EdgeCalls;
+// a variable (or an '&'-placeholder literal) downgrades to EdgeCallsDynamic,
+// consistent with feature-06 CALLNAT handling. Never panics over partial/nil
+// ASTs (FR-43).
+func extractSQLCalls(prog *Program) []model.EdgeEntry {
+	if prog == nil {
+		return nil
+	}
+
+	var edges []model.EdgeEntry
+	for _, cdp := range prog.CallDBProcs {
+		if cdp == nil {
+			continue // graceful degradation: skip nil AST nodes
+		}
+		if cdp.ProcName == "" {
+			continue // malformed CALLDBPROC with no proc operand — no false edge
+		}
+		edges = append(edges, model.EdgeEntry{
+			Kind:       edgeKind(isStaticLiteral(cdp.ProcNameIsLiteral, cdp.ProcName), model.EdgeCalls, model.EdgeCallsDynamic),
+			TargetName: cdp.ProcName,
+			Source:     stmtRange(cdp.StartPos, cdp.EndPos),
+		})
+	}
+
+	sort.SliceStable(edges, func(i, j int) bool {
+		return sourceStartLess(
+			edges[i].Source.Start.Line, edges[i].Source.Start.Column,
+			edges[j].Source.Start.Line, edges[j].Source.Start.Column,
+		)
+	})
+
+	return edges
 }
 
 // extractHostVarRefs walks the parsed program and returns host-variable references

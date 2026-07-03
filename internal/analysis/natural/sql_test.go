@@ -357,3 +357,75 @@ func TestExtractSQLAccess_Merge(t *testing.T) {
 		t.Error("write Source is zero, want non-zero statement range")
 	}
 }
+
+// TestExtractSQLCalls_CallDBProc verifies Task 6b / FR-10,FR-14: a CALLDBPROC
+// statement emits one call-like edge (EdgeCalls) whose TargetName is the stored
+// procedure name, with the call site preserved. Requires the parser to capture
+// the proc-name operand (Task 6a).
+func TestExtractSQLCalls_CallDBProc(t *testing.T) {
+	fixture := filepath.Join("testdata", "sqlaccess", "calldbproc.NSP")
+	content, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("failed to read fixture %q: %v", fixture, err)
+	}
+	prog, err := NewParser(NewLexer(string(content))).Parse()
+	if prog == nil {
+		t.Fatalf("parser returned nil AST (err=%v)", err)
+	}
+
+	edges := extractSQLCalls(prog)
+	if len(edges) != 1 {
+		t.Fatalf("got %d SQL call edges, want 1: %+v", len(edges), edges)
+	}
+	if edges[0].Kind != model.EdgeCalls {
+		t.Errorf("edge Kind = %v, want %v (static literal proc name)", edges[0].Kind, model.EdgeCalls)
+	}
+	if edges[0].TargetName != "GET_EMPLOYEE" {
+		t.Errorf("edge TargetName = %q, want %q (quotes stripped)", edges[0].TargetName, "GET_EMPLOYEE")
+	}
+	if edges[0].Source.Start == edges[0].Source.End {
+		t.Error("edge Source is zero, want non-zero call-site range")
+	}
+}
+
+// TestExtractSQLAccess_ReadResultSet verifies Task 6c: a READ RESULT SET records
+// a read-access site. Its operand is a result-set handle (not a DDM), so the
+// entry carries an empty Name (site recorded, binding deferred) — never a false
+// DDM edge on the handle. The positional CALLDBPROC pairing is documented here.
+func TestExtractSQLAccess_ReadResultSet(t *testing.T) {
+	fixture := filepath.Join("testdata", "sqlaccess", "read_result_set.NSP")
+	content, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("failed to read fixture %q: %v", fixture, err)
+	}
+	prog, err := NewParser(NewLexer(string(content))).Parse()
+	if prog == nil {
+		t.Fatalf("parser returned nil AST (err=%v)", err)
+	}
+
+	entries := extractSQLAccess(prog)
+
+	// Exactly one read-access entry, with empty Name (result-set handle, not a DDM).
+	var reads []model.DataAccessEntry
+	for _, e := range entries {
+		if e.Kind == model.EdgeReads {
+			reads = append(reads, e)
+		}
+	}
+	if len(reads) != 1 {
+		t.Fatalf("got %d EdgeReads entries, want 1 (the READ RESULT SET site): %+v", len(reads), entries)
+	}
+	if reads[0].Name != "" {
+		t.Errorf("read Name = %q, want empty (result-set handle is not a DDM)", reads[0].Name)
+	}
+	if reads[0].Source.Start == reads[0].Source.End {
+		t.Error("read Source is zero, want non-zero statement range")
+	}
+
+	// The CALLDBPROC edge is also present (positional association: it precedes
+	// the READ RESULT SET in source order).
+	calls := extractSQLCalls(prog)
+	if len(calls) != 1 || calls[0].TargetName != "GET_DATA" {
+		t.Errorf("expected one CALLDBPROC edge to GET_DATA preceding the READ RESULT SET, got %+v", calls)
+	}
+}

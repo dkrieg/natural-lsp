@@ -1288,6 +1288,18 @@ func (p *Parser) parseCallDBProcStatement(ast *Program) {
 	// Consume CALLDBPROC keyword.
 	p.advance()
 
+	// Capture the proc-name operand (a quoted literal or an identifier/variable).
+	if p.matches(TokenLiteralString) {
+		calldbproc.ProcNameIsLiteral = true
+		calldbproc.ProcNameRange = tokenRange(p.current)
+		calldbproc.ProcName = p.consumeStringTarget()
+	} else if p.matches(TokenIdentifier) {
+		calldbproc.ProcNameIsLiteral = false
+		calldbproc.ProcNameRange = tokenRange(p.current)
+		calldbproc.ProcName = p.current.Literal
+		p.advance()
+	}
+
 	// Skip remaining tokens in this statement until the next statement keyword.
 	p.skipToNextStatement()
 
