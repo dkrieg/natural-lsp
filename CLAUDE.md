@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–08 shipped, plus embedded-SQL parsing** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), and Adabas data-access extraction (feature 08) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only). Embedded-SQL **extraction** (DDM edges, host-var binding, `CALLDBPROC` call edges) remains planned as a dedicated feature (`08b-embedded-sql-extraction`); it, and the higher-level LSP providers (completion, signature help, call hierarchy), remain as stubs (`hover.go`, `symbols.go` are package-doc + TODO only).
+**Features 00–08 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), and Adabas data-access extraction (feature 08) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The higher-level LSP providers (completion, signature help, call hierarchy) remain as stubs (`hover.go`, `symbols.go` are package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -37,10 +37,12 @@ from their Adabas record forms by clause shape (`SET`/`WHERE`/`FROM` table ⇒ S
 emitting ranged diagnostics for malformed/unterminated SQL. `PROCESS SQL` is captured with its `<<…>>`
 flexible-SQL body held as a single **opaque, unparsed span** (`TokenSQLOpaque` via the lexer's
 `ScanOpaqueSpan`/`ScanOpaqueSpanFrom`); native host-vars are accepted with or without the leading colon
-and stored without it. This is **parse-only**: SQL nodes expose *unbound* `OperandRef` lists (columns,
-tables, host-vars) — edge extraction, DDM binding, and host-var binding (including scanning the opaque
-`<<…>>` body) are deferred to feature `08b-embedded-sql-extraction`; no `internal/model` or cache-format
-change. `Analyze` surfaces the parsed `*Program` as `FileAnalysis.AST` and copies the parser's ranged
+and stored without it. This layer is **parse-only**: SQL nodes expose *unbound* `OperandRef` lists
+(columns, tables, host-vars) with no `internal/model` or cache-format change. Edge extraction, DDM
+edges, and host-var references (including scanning the opaque `<<…>>` body) are implemented on top of
+this AST by feature `08b-embedded-sql-extraction` (see the `sql.go` note below); cross-file *resolution*
+of those references remains future work. `Analyze` surfaces the parsed `*Program` as `FileAnalysis.AST`
+and copies the parser's ranged
 diagnostics into `FileAnalysis.Diagnostics`. A `FuzzParse` target guards the parser entry point (never
 panics, always returns a non-nil `*Program`). Fixtures live under `testdata/parser/` (SQL fixtures
 `09`–`19`).
@@ -129,12 +131,40 @@ values from `DEFINE WORK FILE` (number + name; a variable/dynamic name is record
 gap). The parser was widened for this feature: `FIND`/`GET` (incl. `GET SAME`), Adabas record-form
 `UPDATE`/`DELETE` (disambiguated from the SQL forms by clause shape — `SET`/`WHERE`/`FROM` table ⇒ SQL),
 `DEFINE WORK FILE`, and per-keyword `DataSection.Kind` (one `DataSection` per section keyword). Scope is
-Adabas-style data access only; embedded-SQL data access (native SQL tables as DDMs, host vars) is deferred
-to feature `08b-embedded-sql-extraction`. New `internal/model` members: `DataAccessEntry.Name`/`NameRange`
-(the former `File` field was renamed to `Name`), `DataDefinition`, `ArrayDimension`, `WorkFile`, and
-`FileAnalysis.Definitions`/`WorkFiles`. Persisting `Definitions` and `WorkFiles` (and the `DataAccessEntry`
-name/range) bumped the cache-format version (`0.3.0` → `0.4.0`). Fixtures live under
-`internal/analysis/natural/testdata/dataaccess/` and parser fixtures `20`–`27`.
+Adabas-style data access only; embedded-SQL data-access extraction (native SQL tables as DDMs, host
+vars) is implemented separately in `sql.go` (feature `08b-embedded-sql-extraction`, described next). New
+`internal/model` members: `DataAccessEntry.Name`/`NameRange` (the former `File` field was renamed to
+`Name`), `DataDefinition`, `ArrayDimension`, `WorkFile`, and `FileAnalysis.Definitions`/`WorkFiles`.
+Persisting `Definitions` and `WorkFiles` (and the `DataAccessEntry` name/range) bumped the cache-format
+version (`0.3.0` → `0.4.0`). Fixtures live under `internal/analysis/natural/testdata/dataaccess/` and
+parser fixtures `20`–`27`.
+
+`internal/analysis/natural/sql.go` implements **embedded-SQL extraction** (feature 08b), wired into
+`Analyze` after the feature-06/08 extractors (SQL results are appended to `FileAnalysis.Edges`/`DataAccess`
+and each combined slice is re-sorted into global source order). It consumes the SQL AST from feature
+`00-parser-embedded-sql` (parse-only, unbound operands). `extractSQLAccess(*Program)` reuses feature 08's
+read/write edge model verbatim: `SELECT`/`SELECT SINGLE` `FROM` tables and the `READ RESULT SET` site →
+`model.EdgeReads`; `INSERT`/SQL-`UPDATE`/SQL-`DELETE`/`MERGE` target tables → `model.EdgeWrites`; a
+`PROCESS SQL` `ddm-name` → one `EdgeReads` (neutral read-style access per OQ-3 — the opaque `<<…>>` body is
+never scanned for table names, so in-body table names stay pass-through text; M-6). A native-SQL table
+operand is a `.NSD` DDM name (same namespace as Adabas). `READ RESULT SET` records an **empty-`Name`** read
+site (the result-set handle is not a DDM — binding deferred), following feature 08's empty-Name precedent.
+`extractSQLCalls(*Program)` emits a `CALLDBPROC` proc name as `model.EdgeCalls` (literal) /
+`EdgeCallsDynamic` (variable or `&`-placeholder literal), matching feature 06's CALLNAT downgrade rule.
+`extractHostVarRefs(*Program)` emits the new `model.HostVarRef{Name, Range}` for host variables: in native
+clauses (`INTO`/`WHERE`/`VALUES`/`SET`) a host var binds whether written bare or colon-prefixed (identified
+by the parser's `OperandRef.HostVar` colon flag or a Natural sigil — columns, operators, and literals never
+leak in); inside a `PROCESS SQL` opaque body, `scanOpaqueHostVars` string-scans the raw body for the
+**colon-mandatory** `:host-var` form, stripping `:U:`/`:G:`/`:T:` qualifiers, `INDICATOR`/`LINDICATOR`
+prefixes, and array subscripts, computing ranges from the body offset. The parser was widened for this
+feature: `OperandRef.HostVar` (preserving the native host-var colon signal across `SELECT`/`UPDATE`/`DELETE`
+WHERE, `VALUES`, and `SET`), `MergeStatement.Table` (the `MERGE INTO` target operand), and
+`CallDBProcStatement.ProcName`/`ProcNameRange`/`ProcNameIsLiteral`. New `internal/model` member
+`FileAnalysis.HostVarRefs` (host-var *use* references, contrast `DataDefinition` declarations); persisting
+it bumped the cache-format version (`0.4.0` → `0.5.0`). Modeled gaps stay off the diagnostic channel
+(FR-17) and binding SQL-sourced DDM/host-var references to declarations (resolution) is future work. A
+`FuzzExtractSQL` target guards the extraction entry points (never panics — FR-43). Fixtures live under
+`internal/analysis/natural/testdata/sqlaccess/`.
 
 `natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
 z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on

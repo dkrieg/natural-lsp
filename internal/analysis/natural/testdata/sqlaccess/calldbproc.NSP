@@ -1,0 +1,11 @@
+* Task 6 fixture: CALLDBPROC — call-like edge to a stored DB procedure.
+* Proc name is a quoted literal ('GET_EMPLOYEE'); a static call edge.
+
+DEFINE DATA LOCAL
+  1 #EMP-ID (N8)
+  1 #EMP-NAME (A30)
+END-DEFINE
+
+CALLDBPROC 'GET_EMPLOYEE' #EMP-ID #EMP-NAME
+
+END

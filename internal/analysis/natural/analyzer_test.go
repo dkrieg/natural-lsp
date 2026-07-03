@@ -1484,6 +1484,171 @@ func TestAnalyze_Integration_Malformed(t *testing.T) {
 	}
 }
 
+// TestAnalyze_SQLExtraction_EndToEnd (Task 8 RED / Feature 08b, Story 0 — integration)
+// verifies that Analyze wires SQL extraction (extractSQLAccess, extractSQLCalls,
+// extractHostVarRefs) into the analysis pipeline and returns FileAnalysis with:
+//   - DataAccess entries for SQL DDM reads (SELECT, PROCESS SQL)
+//   - Edges entries for SQL-side call-like edges (CALLDBPROC)
+//   - HostVarRefs entries for host-variable uses in SQL clauses (native + opaque)
+//   - Merged DataAccess and Edges remain in global source order
+//   - Feature-06/07/08 extraction unchanged (CALLNAT, feature-06 edges intact)
+//
+// This test is RED: Analyze does not yet call the SQL extractors, so the returned
+// FileAnalysis.DataAccess, FileAnalysis.Edges, and FileAnalysis.HostVarRefs will not
+// contain the expected SQL entries. The test documents what needs to be wired in Task 8.
+//
+// Acceptance criteria (Task 8, derived from KB fixture `kb_minimal.NSP`):
+//   - Analyze(kb_minimal.NSP) returns FileAnalysis with:
+//   - DataAccess containing EdgeReads for SQL-PERSONNEL (SELECT FROM)
+//     and EMPLOYEE-DATA (PROCESS SQL DDM operand), merged with any
+//     Adabas-data-access entries in global source order
+//   - HostVarRefs containing #NAME, #SALARY, #PERS-ID (SELECT INTO/WHERE),
+//     and :#NAME (PROCESS SQL opaque body) in source order
+//   - Edges containing the 'NDBERR' CALLNAT (feature-06, unchanged)
+//   - DataAccess and Edges slices each maintain non-decreasing source order
+//     (stable sort on Source.Start.Line, then Source.Start.Column)
+//   - Existing feature-06/07/08 tests remain green (no regression)
+func TestAnalyze_SQLExtraction_EndToEnd(t *testing.T) {
+	// Locate the fixture file
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("runtime.Caller(0) failed")
+	}
+	moduleRoot := findModuleRoot(t, thisFile)
+	fixturePath := filepath.Join(moduleRoot, "internal/analysis/natural/testdata/sqlaccess/kb_minimal.NSP")
+
+	// Read the fixture
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) failed: %v", fixturePath, err)
+	}
+
+	// Analyze the fixture
+	a := New(nil)
+	result, err := a.Analyze(fixturePath, content)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+
+	// Verify AST was parsed successfully (not nil)
+	if result.AST == nil {
+		t.Fatal("Analyze returned nil AST; expected a non-nil Program")
+	}
+
+	// === DataAccess entries: SQL DDM reads ===
+	// Expected: EdgeReads for SQL-PERSONNEL (line 13 SELECT) and EMPLOYEE-DATA (line 18 PROCESS SQL)
+	// Task 8 RED: these entries will be absent because SQL extraction is not yet wired into Analyze
+	var sqlReads []model.DataAccessEntry
+	for _, entry := range result.DataAccess {
+		if entry.Kind == model.EdgeReads && (entry.Name == "SQL-PERSONNEL" || entry.Name == "EMPLOYEE-DATA") {
+			sqlReads = append(sqlReads, entry)
+		}
+	}
+
+	if len(sqlReads) != 2 {
+		t.Errorf("DataAccess contains %d SQL read entries, want 2 (SQL-PERSONNEL from SELECT, EMPLOYEE-DATA from PROCESS SQL)",
+			len(sqlReads))
+		t.Logf("Got %d total DataAccess entries:", len(result.DataAccess))
+		for i, e := range result.DataAccess {
+			t.Logf("  [%d]: Kind=%v, Name=%q, Source=(L%d:C%d)-(L%d:C%d)",
+				i, e.Kind, e.Name,
+				e.Source.Start.Line, e.Source.Start.Column,
+				e.Source.End.Line, e.Source.End.Column)
+		}
+	} else {
+		// Verify the names and basic properties
+		for i, entry := range sqlReads {
+			if entry.Name != "SQL-PERSONNEL" && entry.Name != "EMPLOYEE-DATA" {
+				t.Errorf("sqlReads[%d].Name = %q, want SQL-PERSONNEL or EMPLOYEE-DATA", i, entry.Name)
+			}
+			if entry.Kind != model.EdgeReads {
+				t.Errorf("sqlReads[%d].Kind = %v, want EdgeReads", i, entry.Kind)
+			}
+			// NameRange should be non-zero (on the table-name token)
+			if entry.NameRange.Start == entry.NameRange.End {
+				t.Errorf("sqlReads[%d].NameRange is zero, want non-zero on table-name token", i)
+			}
+			// Source should be non-zero (on the full statement)
+			if entry.Source.Start == entry.Source.End {
+				t.Errorf("sqlReads[%d].Source is zero, want non-zero on statement range", i)
+			}
+		}
+	}
+
+	// === HostVarRefs: host-variable uses in SQL ===
+	// Expected: #NAME, #SALARY, #PERS-ID (from SELECT INTO/WHERE), :#NAME (from PROCESS SQL opaque body)
+	// Task 8 RED: these entries will be absent
+	wantHostVarNames := []string{"#NAME", "#SALARY", "#PERS-ID", "#NAME"} // Last one from opaque body
+
+	if len(result.HostVarRefs) == 0 {
+		t.Error("HostVarRefs is empty, want 4 host-variable references")
+	} else if len(result.HostVarRefs) < 4 {
+		t.Errorf("HostVarRefs has %d entries, want at least 4", len(result.HostVarRefs))
+		t.Logf("Got HostVarRefs:")
+		for i, r := range result.HostVarRefs {
+			t.Logf("  [%d]: Name=%q, Range=(L%d:C%d)-(L%d:C%d)",
+				i, r.Name,
+				r.Range.Start.Line, r.Range.Start.Column,
+				r.Range.End.Line, r.Range.End.Column)
+		}
+	} else {
+		// Verify the first 4 entries match the expected names
+		for i := 0; i < 4 && i < len(result.HostVarRefs); i++ {
+			if result.HostVarRefs[i].Name != wantHostVarNames[i] {
+				t.Errorf("HostVarRefs[%d].Name = %q, want %q", i, result.HostVarRefs[i].Name, wantHostVarNames[i])
+			}
+			if result.HostVarRefs[i].Range.Start == result.HostVarRefs[i].Range.End {
+				t.Errorf("HostVarRefs[%d].Range is zero, want non-zero", i)
+			}
+		}
+	}
+
+	// === Edges: call-like relationships ===
+	// Expected: CALLNAT 'NDBERR' (feature-06 edge, unchanged), possibly CALLDBPROC (Task 6b, future)
+	// Task 8 RED: CALLDBPROC will be absent; CALLNAT should still be present
+	var callnatEdges []model.EdgeEntry
+	for _, entry := range result.Edges {
+		if entry.TargetName == "NDBERR" {
+			callnatEdges = append(callnatEdges, entry)
+		}
+	}
+
+	if len(callnatEdges) != 1 {
+		t.Errorf("Edges contains %d 'NDBERR' CALLNAT edges, want 1 (feature-06 regression check)",
+			len(callnatEdges))
+	} else {
+		if callnatEdges[0].Kind != model.EdgeCalls && callnatEdges[0].Kind != model.EdgeCallsDynamic {
+			t.Errorf("NDBERR edge Kind = %v, want EdgeCalls or EdgeCallsDynamic", callnatEdges[0].Kind)
+		}
+	}
+
+	// === Source ordering invariant ===
+	// Verify that both DataAccess and Edges are in non-decreasing source order (if they have entries)
+	if len(result.DataAccess) > 1 {
+		for i := 1; i < len(result.DataAccess); i++ {
+			prev := result.DataAccess[i-1].Source.Start
+			curr := result.DataAccess[i].Source.Start
+			if prev.Line > curr.Line || (prev.Line == curr.Line && prev.Column > curr.Column) {
+				t.Errorf("DataAccess not in source order: entry[%d] (L%d:C%d) after entry[%d] (L%d:C%d)",
+					i-1, prev.Line, prev.Column, i, curr.Line, curr.Column)
+				break
+			}
+		}
+	}
+
+	if len(result.Edges) > 1 {
+		for i := 1; i < len(result.Edges); i++ {
+			prev := result.Edges[i-1].Source.Start
+			curr := result.Edges[i].Source.Start
+			if prev.Line > curr.Line || (prev.Line == curr.Line && prev.Column > curr.Column) {
+				t.Errorf("Edges not in source order: entry[%d] (L%d:C%d) after entry[%d] (L%d:C%d)",
+					i-1, prev.Line, prev.Column, i, curr.Line, curr.Column)
+				break
+			}
+		}
+	}
+}
+
 // findModuleRoot walks up the directory tree from a file to find the module root
 // by locating the go.mod file.
 func findModuleRoot(t *testing.T, fromFile string) string {

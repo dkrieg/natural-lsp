@@ -703,6 +703,220 @@ func TestSave_Load_Definitions(t *testing.T) {
 	}
 }
 
+// TestSave_Load_HostVarRefs verifies that FileAnalysis.HostVarRefs (host-variable references)
+// are persisted correctly through a cache Save→Load round-trip.
+// This tests Task 1 (FR-21) of feature 08b-embedded-sql-extraction: HostVarRef persistence.
+func TestSave_Load_HostVarRefs(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"persists HostVarRefs across round-trip"},
+		{"preserves Name and Range fields in HostVarRefs"},
+		{"HostVarRefs maintains sigil-normalized names"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build an index with HostVarRefs carrying normalized names and ranges.
+			idx := &Index{}
+			idx.Add("sql_program.NSP", model.FileAnalysis{
+				ObjectType: model.ObjectProgram,
+				HostVarRefs: []model.HostVarRef{
+					{
+						Name: "#EMPLOYEE_ID",
+						Range: model.Range{
+							Start: model.Position{Line: 15, Column: 10},
+							End:   model.Position{Line: 15, Column: 23},
+						},
+					},
+					{
+						Name: "#SALARY",
+						Range: model.Range{
+							Start: model.Position{Line: 18, Column: 8},
+							End:   model.Position{Line: 18, Column: 15},
+						},
+					},
+					{
+						Name: "&PARAM_VAR",
+						Range: model.Range{
+							Start: model.Position{Line: 20, Column: 5},
+							End:   model.Position{Line: 20, Column: 15},
+						},
+					},
+					{
+						Name: "@OBJECT_VAR",
+						Range: model.Range{
+							Start: model.Position{Line: 22, Column: 1},
+							End:   model.Position{Line: 22, Column: 12},
+						},
+					},
+				},
+			})
+
+			// Save the index.
+			err := Save(idx, cachePath)
+			if err != nil {
+				t.Fatalf("Save() returned error: %v", err)
+			}
+
+			// Load the index.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			if loaded == nil {
+				t.Fatal("Load() returned nil index")
+			}
+
+			if len(stale) != 0 {
+				t.Errorf("Load() returned %d stale files, want 0: %v", len(stale), stale)
+			}
+
+			// Verify HostVarRefs entries round-trip correctly.
+			fa, ok := loaded.Get("sql_program.NSP")
+			if !ok {
+				t.Fatal("Load() missing file sql_program.NSP")
+			}
+
+			if len(fa.HostVarRefs) != 4 {
+				t.Fatalf("Load() HostVarRefs count = %d, want 4", len(fa.HostVarRefs))
+			}
+
+			// Check first entry: #EMPLOYEE_ID
+			hvr0 := fa.HostVarRefs[0]
+			if hvr0.Name != "#EMPLOYEE_ID" {
+				t.Errorf("HostVarRef[0].Name = %q, want %q", hvr0.Name, "#EMPLOYEE_ID")
+			}
+			if hvr0.Range.Start.Line != 15 {
+				t.Errorf("HostVarRef[0].Range.Start.Line = %d, want 15", hvr0.Range.Start.Line)
+			}
+			if hvr0.Range.Start.Column != 10 {
+				t.Errorf("HostVarRef[0].Range.Start.Column = %d, want 10", hvr0.Range.Start.Column)
+			}
+			if hvr0.Range.End.Column != 23 {
+				t.Errorf("HostVarRef[0].Range.End.Column = %d, want 23", hvr0.Range.End.Column)
+			}
+
+			// Check second entry: #SALARY
+			hvr1 := fa.HostVarRefs[1]
+			if hvr1.Name != "#SALARY" {
+				t.Errorf("HostVarRef[1].Name = %q, want %q", hvr1.Name, "#SALARY")
+			}
+
+			// Check third entry: &PARAM_VAR (ampersand sigil)
+			hvr2 := fa.HostVarRefs[2]
+			if hvr2.Name != "&PARAM_VAR" {
+				t.Errorf("HostVarRef[2].Name = %q, want %q", hvr2.Name, "&PARAM_VAR")
+			}
+
+			// Check fourth entry: @OBJECT_VAR (at sigil)
+			hvr3 := fa.HostVarRefs[3]
+			if hvr3.Name != "@OBJECT_VAR" {
+				t.Errorf("HostVarRef[3].Name = %q, want %q", hvr3.Name, "@OBJECT_VAR")
+			}
+		})
+	}
+}
+
+// TestLoad_CacheVersionBumpedForHostVarRefs verifies that a cache created
+// before Task 1 (format version 0.4.0) is marked as stale when the version
+// is bumped to 0.5.0 to accommodate the new HostVarRefs field.
+// This test FAILS until the cache format version is bumped to "0.5.0"
+// (GREEN phase / Task 1 of feature 08b-embedded-sql-extraction).
+//
+// Task 1 spec: "Bump cacheFormatVersion '0.4.0' → '0.5.0' in
+// internal/workspace/cache.go; cache round-trips a FileAnalysis carrying
+// HostVarRefs and rejects a 0.4.0 cache (forces rebuild)."
+//
+// This test arranges a 0.4.0 cache (the pre-HostVarRefs version) and verifies
+// that Load() at the new 0.5.0 version treats it as stale (all files marked
+// for rebuild).
+func TestLoad_CacheVersionBumpedForHostVarRefs(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"0.4.0 cache marked stale when version bumped to 0.5.0"},
+		{"forces full rebuild on HostVarRefs field addition"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build an index and save it.
+			idx := &Index{}
+			idx.Add("test.NSP", model.FileAnalysis{
+				ObjectType: model.ObjectProgram,
+			})
+
+			err := Save(idx, cachePath)
+			if err != nil {
+				t.Fatalf("Save() returned error: %v", err)
+			}
+
+			// Manually downgrade the cache to version 0.4.0 (the pre-HostVarRefs version).
+			// Read the current cache content.
+			content, err := os.ReadFile(cachePath)
+			if err != nil {
+				t.Fatalf("Failed to read cache file: %v", err)
+			}
+
+			// Replace the current version string with 0.4.0 (pre-HostVarRefs).
+			oldVersion := "0.4.0"
+			newContent := string(content)
+			newContent = strings.Replace(newContent, cacheFormatVersion, oldVersion, 1)
+
+			// Write the downgraded cache back.
+			if err := os.WriteFile(cachePath, []byte(newContent), 0644); err != nil {
+				t.Fatalf("Failed to write downgraded cache: %v", err)
+			}
+
+			// Try to load the cache - should treat it as stale due to version mismatch.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			// Verify Load() returns nil index (stale, version mismatch).
+			if loaded != nil {
+				t.Error("Load() returned non-nil index for 0.4.0 cache, want nil (stale)")
+			}
+
+			// Verify stale list contains the file (forces rebuild).
+			if len(stale) == 0 {
+				t.Error("Load() returned empty stale list for version mismatch, want all files marked stale")
+			}
+
+			// Verify the stale list contains our test file.
+			foundStale := false
+			for _, s := range stale {
+				if s == "test.NSP" {
+					foundStale = true
+					break
+				}
+			}
+			if !foundStale {
+				t.Errorf("Load() did not mark test.NSP as stale: %v", stale)
+			}
+		})
+	}
+}
+
 // TestSave_Load_WorkFiles verifies that FileAnalysis.WorkFiles (work-file definitions)
 // are persisted correctly and survive cache Save→Load round-trip.
 // This tests Task 15 (FR-22): work-file-definition persistence.

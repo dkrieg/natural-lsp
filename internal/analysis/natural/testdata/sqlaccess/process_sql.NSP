@@ -1,0 +1,27 @@
+* Task 7 fixture: PROCESS SQL with opaque body DDM edge + host-var scan
+* Demonstrates FR-19/FR-21 / OQ-3 requirements:
+*   - PROCESS SQL <DDM> emits one EdgeReads for the DDM operand (neutral read-style per OQ-3)
+*   - Opaque body contains: bare table name (NOT a DDM edge — modeled gap),
+*     plain colon host var (#PERS-ID), qualifier form (:U:#NAME and :G:#X),
+*     and SQL keyword (SELECT) — none of these except host vars become edges
+*   - Host vars from the opaque body are extracted with colon+qualifier stripped
+*   - In-body SQL keywords and table names are NOT host-var refs
+* Expected:
+*   - extractSQLAccess emits exactly ONE EdgeReads for DDM "EMPLOYEE-DATA" (the ddm-name operand)
+*   - extractHostVarRefs emits HostVarRefs for :#PERS-ID, :U:#NAME, :G:#X (qualifier-stripped)
+*   - NO EdgeReads for in-body table name SALARY_TABLE (the load-bearing modeled gap)
+*   - NO HostVarRef for SELECT keyword or SALARY_TABLE name
+
+DEFINE DATA LOCAL
+  1 #PERS-ID (N9)
+  1 #NAME (A30)
+  1 #X (N5)
+END-DEFINE
+
+PROCESS SQL EMPLOYEE-DATA
+  << SELECT EMP_ID, EMP_NAME FROM SALARY_TABLE
+     WHERE PERS_ID = :#PERS-ID
+       AND NAME = :U:#NAME
+       AND EXTRA = :G:#X >>
+
+END

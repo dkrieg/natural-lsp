@@ -14,6 +14,13 @@ import "natural-lsp/internal/model"
 type OperandRef struct {
 	Name  string      // the operand name (e.g., "COL1", "#VAR", "EMPLOYEES")
 	Range model.Range // source range of the operand in the file
+	// HostVar reports whether this operand was written with a leading colon
+	// (":VAR"), the mandatory marker for a native-SQL host variable whose name
+	// carries no Natural sigil (e.g. the reserved-word case ":DATE"). The colon
+	// itself is stripped from Name; sigil-prefixed host vars (#/&/+/@) are
+	// recognized from Name directly and do not need this flag. Meaningless for
+	// table/column operands, where it is always false.
+	HostVar bool
 }
 
 // Node is the base interface for all AST nodes.
@@ -366,11 +373,13 @@ func (d *SQLDeleteStatement) Position() (model.Position, model.Position) {
 }
 
 // MergeStatement represents a MERGE statement (SQL).
-// Table operand is unbound; MERGE grammar internals are not modeled.
-// Table and operand fields are added by the parser task (ES-9).
+// Table holds the MERGE INTO target DDM operand(s); the merge body (USING /
+// WHEN MATCHED / WHEN NOT MATCHED) is not modeled. The operand is unbound —
+// cross-library resolution is the resolver's job.
 type MergeStatement struct {
 	StartPos model.Position
 	EndPos   model.Position
+	Table    []OperandRef // MERGE INTO target table (a DDM name)
 }
 
 func (m *MergeStatement) Position() (model.Position, model.Position) {
@@ -405,6 +414,14 @@ func (r *RollbackStatement) Position() (model.Position, model.Position) {
 type CallDBProcStatement struct {
 	StartPos model.Position
 	EndPos   model.Position
+	// ProcName is the stored-procedure name (the first operand after CALLDBPROC),
+	// with surrounding quotes stripped for a literal. ProcNameIsLiteral records
+	// whether it was written as a quoted literal (vs. an identifier/variable),
+	// mirroring CallStatement.TargetIsLiteral so a dynamic proc name downgrades to
+	// EdgeCallsDynamic. The target is unbound — resolution is the resolver's job.
+	ProcName          string
+	ProcNameRange     model.Range
+	ProcNameIsLiteral bool
 }
 
 func (c *CallDBProcStatement) Position() (model.Position, model.Position) {

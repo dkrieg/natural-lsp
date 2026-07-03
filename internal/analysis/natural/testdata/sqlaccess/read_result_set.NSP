@@ -1,0 +1,15 @@
+* Task 6 fixture: CALLDBPROC establishes a result set, READ RESULT SET consumes it.
+* READ RESULT SET's operand (#RS) is a result-set handle, not a DDM.
+
+DEFINE DATA LOCAL
+  1 #RS (A20)
+  1 #ROW (A100)
+END-DEFINE
+
+CALLDBPROC 'GET_DATA'
+
+READ RESULT SET #RS INTO #ROW
+  INCLUDE COPY-RECORD
+END-RESULT
+
+END

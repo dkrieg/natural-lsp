@@ -1,0 +1,14 @@
+* Task 2 fixture: SELECT SINGLE statement
+* Demonstrates FR-19 requirement: SELECT SINGLE...FROM reads DDM once
+* See also: fixture 11-sql-select-single.nsp in parser tests
+* Expected: one EdgeReads entry for EMPLOYEES (the FROM table operand)
+* and zero edges for column names or INTO targets
+
+DEFINE DATA LOCAL
+  1 #EMP-NAME (A30)
+  1 #DEPT-ID (N3)
+END-DEFINE
+
+SELECT SINGLE COL1 INTO #EMP-NAME FROM EMPLOYEES WHERE DEPT = :#DEPT-ID
+
+END

@@ -1,0 +1,17 @@
+* Task 6b fixture: CALLDBPROC with dynamic proc names
+* Demonstrates FR-10, FR-14 requirement: variable proc names and & placeholders
+* yield EdgeCallsDynamic (consistent with feature-06 CALLNAT handling)
+
+DEFINE DATA LOCAL
+  1 #PROCVAR (A30)
+  1 #EMP-ID (N8)
+  1 #EMP-NAME (A30)
+END-DEFINE
+
+* Variable proc name — dynamic edge
+CALLDBPROC #PROCVAR #EMP-ID #EMP-NAME
+
+* &-placeholder literal — dynamic edge (runtime substitution)
+CALLDBPROC 'GET_&LANG' #EMP-ID #EMP-NAME
+
+END

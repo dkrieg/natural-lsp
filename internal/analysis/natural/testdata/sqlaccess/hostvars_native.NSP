@@ -1,0 +1,23 @@
+* Task 4 fixture: Host-variable references in native SQL clauses
+* Demonstrates FR-21 requirement: native SQL host vars bind to DEFINE DATA declarations
+* Tests both bare (#-prefixed) and colon-prefixed forms, including reserved-word case (:DATE)
+*
+* Expected host-var refs (normalized: sigil kept, colon stripped, upper-cased):
+*   - #NAME from INTO (bare form)
+*   - #SALARY from INTO (bare form)
+*   - #PERS-ID from WHERE (bare form)
+*   - DATE from WHERE (colon-prefixed reserved word, :DATE)
+* Zero false edges: column names (COL1, COL2) and table name (SQL-PERSONNEL) NOT refs
+
+DEFINE DATA LOCAL
+  1 #NAME (A30)
+  1 #SALARY (N9.2)
+  1 #PERS-ID (N5)
+  1 #DATE (D)
+END-DEFINE
+
+SELECT COL1, COL2 INTO #NAME, #SALARY FROM SQL-PERSONNEL WHERE DEPT = #PERS-ID AND START_DATE >= :DATE
+  CALLNAT 'PROCESS'
+END-SELECT
+
+END

@@ -1,0 +1,15 @@
+* Task 3 fixture: SQL UPDATE statement (SET/WHERE form)
+* Demonstrates FR-20 requirement: SQL UPDATE writes to DDM once
+* Uses SET and WHERE clauses to disambiguate from Adabas record UPDATE
+* Expected: one EdgeWrites entry for EMPLOYEES (the table operand)
+* and zero edges for SET targets or WHERE operands (they are host vars/columns)
+
+DEFINE DATA LOCAL
+  1 #EMP-ID (N5)
+  1 #NEW-SALARY (N9.2)
+  1 #DEPT-ID (N3)
+END-DEFINE
+
+UPDATE EMPLOYEES SET SALARY = :#NEW-SALARY WHERE EMP_ID = :#EMP-ID AND DEPT = :#DEPT-ID
+
+END

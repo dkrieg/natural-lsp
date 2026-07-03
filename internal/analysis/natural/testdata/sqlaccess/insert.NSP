@@ -1,0 +1,14 @@
+* Task 3 fixture: INSERT statement (SQL)
+* Demonstrates FR-20 requirement: SQL INSERT writes to DDM once
+* Expected: one EdgeWrites entry for CUSTOMERS (the INTO table operand)
+* and zero edges for column names or VALUES operands (they are host vars)
+
+DEFINE DATA LOCAL
+  1 #CUST-ID (N5)
+  1 #CUST-NAME (A30)
+  1 #EMAIL (A50)
+END-DEFINE
+
+INSERT INTO CUSTOMERS (ID, NAME, EMAIL) VALUES (:#CUST-ID, :#CUST-NAME, :#EMAIL)
+
+END

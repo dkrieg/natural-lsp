@@ -690,6 +690,17 @@ func TestParser_SQL_Merge(t *testing.T) {
 		t.Errorf("MergeStatement positions invalid: StartPos=%v, EndPos=%v", merge.StartPos, merge.EndPos)
 	}
 
+	// Task 5a: the MERGE INTO target table operand is captured.
+	if len(merge.Table) != 1 {
+		t.Fatalf("len(merge.Table) = %d, want 1 (MERGE INTO target)", len(merge.Table))
+	}
+	if merge.Table[0].Name != "EMPLOYEES" {
+		t.Errorf("merge.Table[0].Name = %q, want %q", merge.Table[0].Name, "EMPLOYEES")
+	}
+	if merge.Table[0].Range.Start == merge.Table[0].Range.End {
+		t.Error("merge.Table[0].Range is zero, want non-zero range on the table token")
+	}
+
 	// Fixture must parse with zero diagnostics
 	if len(prog.Diagnostics) != 0 {
 		t.Errorf("fixture 18-sql-merge.nsp produced %d diagnostics, want 0: %v",
