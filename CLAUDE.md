@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–07 shipped, plus embedded-SQL parsing** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), and call/dependency resolution (feature 07) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only). Embedded-SQL **extraction** (DDM edges, host-var binding, `CALLDBPROC` call edges) is planned as a dedicated feature (`08b-embedded-sql-extraction`) alongside Adabas data-access extraction (feature 08); both, and the higher-level LSP providers (completion, signature help, call hierarchy), remain as stubs (`data.go`, `hover.go`, `symbols.go` are package-doc + TODO only).
+**Features 00–08 shipped, plus embedded-SQL parsing** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), and Adabas data-access extraction (feature 08) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only). Embedded-SQL **extraction** (DDM edges, host-var binding, `CALLDBPROC` call edges) remains planned as a dedicated feature (`08b-embedded-sql-extraction`); it, and the higher-level LSP providers (completion, signature help, call hierarchy), remain as stubs (`hover.go`, `symbols.go` are package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -110,6 +110,31 @@ name→definition lookup, and `Index.Invalidate` was migrated from a name-vs-pat
 resolved object-name matching (uppercased copycode name vs `EdgeIncludes.TargetName`, transitive). A
 `FuzzResolve` target guards the resolver (never panics, always returns a non-nil `*ResolutionSet`).
 Fixtures live under `internal/workspace/testdata/resolution/`.
+
+`internal/analysis/natural/data.go` implements **Adabas data-access extraction** (feature 08), wired into
+`Analyze` alongside `extractEdges`. `extractDataAccess(*Program)` emits `model.DataAccessEntry` values:
+`READ`/`FIND`/`GET` → `EdgeReads`, `STORE` + record-form `UPDATE`/`DELETE` → `EdgeWrites`. Each entry
+carries the normalized (upper-case) view/DDM `Name`, a `NameRange` spanning just the view-name token, and
+a whole-statement `Source` range. Two modeled gaps stay off the diagnostic channel (FR-17): `GET SAME` has
+no view operand → no edge; record-form `UPDATE`/`DELETE` have no source-level file operand (they write the
+record of the enclosing `READ`/`FIND`/`GET` loop) → a write edge with **empty `Name`** recording the site,
+with file binding deferred (OQ-4). `extractDefinitions(*Program)` emits `model.DataDefinition` values from
+each `DEFINE DATA` section (`LOCAL`/`PARAMETER`/`GLOBAL`/`LINKAGE`/`INDEPENDENT`/`CONTEXT`/`OBJECT`) with
+level, verbatim type/format, array `Dimensions`, `SectionKind`, source `Range`, and nested `Children`
+(REDEFINE subfields merged into the target field); the `PARAMETER` section is distinguishable via
+`SectionKind` so it can back a subroutine/module signature. Variable identifiers keep their sigil
+(`#`/`&`/`@`, and `+`-prefixed AIV names in `INDEPENDENT` sections — captured context-sensitively in
+data-field position so arithmetic `+` is unaffected). `extractWorkFiles(*Program)` emits `model.WorkFile`
+values from `DEFINE WORK FILE` (number + name; a variable/dynamic name is recorded verbatim as a modeled
+gap). The parser was widened for this feature: `FIND`/`GET` (incl. `GET SAME`), Adabas record-form
+`UPDATE`/`DELETE` (disambiguated from the SQL forms by clause shape — `SET`/`WHERE`/`FROM` table ⇒ SQL),
+`DEFINE WORK FILE`, and per-keyword `DataSection.Kind` (one `DataSection` per section keyword). Scope is
+Adabas-style data access only; embedded-SQL data access (native SQL tables as DDMs, host vars) is deferred
+to feature `08b-embedded-sql-extraction`. New `internal/model` members: `DataAccessEntry.Name`/`NameRange`
+(the former `File` field was renamed to `Name`), `DataDefinition`, `ArrayDimension`, `WorkFile`, and
+`FileAnalysis.Definitions`/`WorkFiles`. Persisting `Definitions` and `WorkFiles` (and the `DataAccessEntry`
+name/range) bumped the cache-format version (`0.3.0` → `0.4.0`). Fixtures live under
+`internal/analysis/natural/testdata/dataaccess/` and parser fixtures `20`–`27`.
 
 `natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
 z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on

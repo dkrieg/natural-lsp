@@ -1,0 +1,14 @@
+* Task 18 regression: verify that arithmetic with + and - is not broken
+* by the parser-level handling of +NAME field names
+
+DEFINE DATA
+LOCAL
+1 #A (N5)
+1 #B (N5)
+1 #C (N5)
+END-DEFINE
+
+COMPUTE #C = #A + #B
+COMPUTE #C = #A - #B
+
+END

@@ -23,19 +23,23 @@ type Node interface {
 
 // Program is the root node of a Natural program AST.
 type Program struct {
-	StartPos     model.Position
-	EndPos       model.Position
-	Diagnostics  []model.Diagnostic
-	Subroutines  []*Subroutine
-	DataSections []*DataSection
-	Includes     []*IncludeStatement
-	Calls        []*CallStatement
-	Fetches      []*FetchStatement
-	Runs         []*RunStatement
-	Performs     []*PerformStatement
-	Maps         []*Map
-	Reads        []*ReadStatement
-	Stores       []*StoreStatement
+	StartPos      model.Position
+	EndPos        model.Position
+	Diagnostics   []model.Diagnostic
+	Subroutines   []*Subroutine
+	DataSections  []*DataSection
+	Includes      []*IncludeStatement
+	Calls         []*CallStatement
+	Fetches       []*FetchStatement
+	Runs          []*RunStatement
+	Performs      []*PerformStatement
+	Maps          []*Map
+	Reads         []*ReadStatement
+	Stores        []*StoreStatement
+	Finds         []*FindStatement
+	Gets          []*GetStatement
+	RecordUpdates []*RecordUpdateStatement
+	RecordDeletes []*RecordDeleteStatement
 	// Embedded SQL statement slices (ES-3, ES-4):
 	SelectSingles  []*SelectSingleStatement
 	Selects        []*SelectStatement
@@ -48,6 +52,7 @@ type Program struct {
 	CallDBProcs    []*CallDBProcStatement
 	ProcessSQLs    []*ProcessSQLStatement
 	ReadResultSets []*ReadResultSetStatement
+	WorkFiles      []*WorkFileDefinition
 }
 
 func (p *Program) Position() (model.Position, model.Position) {
@@ -66,10 +71,12 @@ func (s *Subroutine) Position() (model.Position, model.Position) {
 	return s.StartPos, s.EndPos
 }
 
-// DataSection represents a DEFINE DATA block.
+// DataSection represents a single section within a DEFINE DATA block (LOCAL, PARAMETER, GLOBAL, or LINKAGE).
+// When a DEFINE DATA contains multiple section keywords, one DataSection node is emitted per section.
 type DataSection struct {
 	StartPos model.Position
 	EndPos   model.Position
+	Kind     string // section keyword: "local", "parameter", "global", "linkage" (lowercase for case-insensitive comparison)
 	Fields   []*DataField
 }
 
@@ -180,9 +187,10 @@ func (p *PerformStatement) Position() (model.Position, model.Position) {
 
 // ReadStatement represents a READ statement.
 type ReadStatement struct {
-	StartPos model.Position
-	EndPos   model.Position
-	Target   string
+	StartPos    model.Position
+	EndPos      model.Position
+	Target      string
+	TargetRange model.Range // source span of just the view-name token
 }
 
 func (r *ReadStatement) Position() (model.Position, model.Position) {
@@ -191,13 +199,73 @@ func (r *ReadStatement) Position() (model.Position, model.Position) {
 
 // StoreStatement represents a STORE statement.
 type StoreStatement struct {
-	StartPos model.Position
-	EndPos   model.Position
-	Target   string
+	StartPos    model.Position
+	EndPos      model.Position
+	Target      string
+	TargetRange model.Range // source span of just the view-name token
 }
 
 func (s *StoreStatement) Position() (model.Position, model.Position) {
 	return s.StartPos, s.EndPos
+}
+
+// FindStatement represents a FIND statement (Task 3 / FR-19).
+// Captures the view/DDM name and statement position.
+// A malformed FIND with no operand emits a diagnostic and has empty Target.
+type FindStatement struct {
+	StartPos    model.Position
+	EndPos      model.Position
+	Target      string
+	TargetRange model.Range // source span of just the view-name token
+}
+
+func (f *FindStatement) Position() (model.Position, model.Position) {
+	return f.StartPos, f.EndPos
+}
+
+// GetStatement represents a GET statement (Task 5 / FR-19).
+// Captures the view/DDM name and statement position.
+// GET SAME is a special case: it has no view operand (re-reads current record),
+// so Target is empty and no diagnostic is emitted (it is valid Natural).
+// A malformed GET with no operand (and not GET SAME) would be invalid, but
+// GET SAME is explicitly valid and distinguished from malformed.
+type GetStatement struct {
+	StartPos    model.Position
+	EndPos      model.Position
+	Target      string
+	TargetRange model.Range // source span of just the view-name token; empty for GET SAME
+}
+
+func (g *GetStatement) Position() (model.Position, model.Position) {
+	return g.StartPos, g.EndPos
+}
+
+// RecordUpdateStatement represents an Adabas record UPDATE statement (Task 7 / FR-20).
+// Adabas record UPDATE has no file operand: it updates the record from the preceding
+// READ/FIND/GET loop. The optional Label (from UPDATE (label)) identifies which record.
+// No Target field: the file/view comes from the enclosing loop, binding deferred to extraction.
+type RecordUpdateStatement struct {
+	StartPos model.Position
+	EndPos   model.Position
+	Label    string // optional label from UPDATE (label); empty for bare UPDATE
+}
+
+func (u *RecordUpdateStatement) Position() (model.Position, model.Position) {
+	return u.StartPos, u.EndPos
+}
+
+// RecordDeleteStatement represents an Adabas record DELETE statement (Task 7 / FR-20).
+// Adabas record DELETE has no file operand: it deletes the record from the preceding
+// READ/FIND/GET loop. The optional Label (from DELETE (label)) identifies which record.
+// No Target field: the file/view comes from the enclosing loop, binding deferred to extraction.
+type RecordDeleteStatement struct {
+	StartPos model.Position
+	EndPos   model.Position
+	Label    string // optional label from DELETE (label); empty for bare DELETE
+}
+
+func (d *RecordDeleteStatement) Position() (model.Position, model.Position) {
+	return d.StartPos, d.EndPos
 }
 
 // SelectSingleStatement represents a SELECT SINGLE statement (SQL, non-loop form).
@@ -379,4 +447,31 @@ type ReadResultSetStatement struct {
 
 func (r *ReadResultSetStatement) Position() (model.Position, model.Position) {
 	return r.StartPos, r.EndPos
+}
+
+// WorkFileDefinition represents a DEFINE WORK FILE statement (FR-22).
+//
+// Fields:
+//   - Number is the work-file slot number from the source (e.g. 1 in
+//     "DEFINE WORK FILE 1 'REPORT.TXT'").  It is always a plain integer;
+//     the parser emits a diagnostic and discards the node for non-integer
+//     numbers (e.g. 1.5).
+//   - Name is the file name as it appears in source.  For a string literal
+//     the surrounding quotes are stripped (e.g. 'REPORT.TXT' → "REPORT.TXT").
+//     For a variable the value is kept verbatim including any leading sigil
+//     (e.g. "#DYNNAME").  A leading '#' signals a dynamic/unresolvable
+//     reference — a modeled gap, not a diagnostic; extraction (Task 15) will
+//     flag it as dynamic rather than binding it statically.
+//   - NameRange is the inclusive source span of just the name token, suitable
+//     for hover and go-to-definition targeting.
+type WorkFileDefinition struct {
+	StartPos  model.Position
+	EndPos    model.Position
+	Number    int
+	Name      string      // quoted literal (quotes stripped) or variable (verbatim with sigil)
+	NameRange model.Range // source span of the name token only
+}
+
+func (w *WorkFileDefinition) Position() (model.Position, model.Position) {
+	return w.StartPos, w.EndPos
 }

@@ -1,0 +1,13 @@
+* Task 18 regression fixture: DEFINE DATA with INDEPENDENT section containing real AIV fields
+* Verifies that +AIV-prefixed names (Application-Independent Variables) are extracted,
+* not silently dropped. AIV names ALWAYS use the + prefix in Natural.
+
+DEFINE DATA
+LOCAL
+1 #LOCAL-VAR (A10)
+INDEPENDENT
+1 +AIV-COUNTER (N5)
+1 +AIV-NAME (A20)
+END-DEFINE
+
+END

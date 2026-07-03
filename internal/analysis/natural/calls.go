@@ -59,6 +59,18 @@ func stmtRange(start, end model.Position) model.Range {
 	return model.Range{Start: start, End: end}
 }
 
+// sourceStartLess reports whether position i precedes position j in source
+// order (line first, then column). Used as the less function for stable sorts
+// over slices whose elements expose a Source.Start field. Keeping this
+// comparison in one place ensures extractEdges and extractDataAccess sort
+// identically and any future extraction function can reuse it without drift.
+func sourceStartLess(iLine, iCol, jLine, jCol int) bool {
+	if iLine != jLine {
+		return iLine < jLine
+	}
+	return iCol < jCol
+}
+
 // extractEdges walks the parsed program and returns call/dependency edges for
 // every recognized call statement.
 //
@@ -242,12 +254,10 @@ func extractEdges(prog *Program) []model.EdgeEntry {
 	// order); the stable sort on (line, column) produces a deterministic total
 	// order across all edge kinds and satisfies the source-order contract above.
 	sort.SliceStable(edges, func(i, j int) bool {
-		iLine := edges[i].Source.Start.Line
-		jLine := edges[j].Source.Start.Line
-		if iLine != jLine {
-			return iLine < jLine
-		}
-		return edges[i].Source.Start.Column < edges[j].Source.Start.Column
+		return sourceStartLess(
+			edges[i].Source.Start.Line, edges[i].Source.Start.Column,
+			edges[j].Source.Start.Line, edges[j].Source.Start.Column,
+		)
 	})
 
 	return edges

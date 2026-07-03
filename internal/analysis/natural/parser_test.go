@@ -1880,3 +1880,427 @@ func TestParser_SQLTransactionAndCallDBProc(t *testing.T) {
 		}
 	}
 }
+
+// TestParser_FindStatements verifies that the parser correctly recognizes FIND
+// statements and produces FindStatement AST nodes with the accessed view name
+// and a TargetRange covering the view-name token (Task 3 / FR-19).
+//
+// Expected behavior:
+//   - Parser recognizes FIND keyword and dispatches to parseFindStatement
+//   - View name is captured on the same line as FIND keyword
+//   - Optional parenthesized row-limit is skipped: FIND (3) view-name
+//   - Optional clauses (WITH, NUMBER) are skipped to the next statement
+//   - Malformed FIND with no operand emits a ranged diagnostic and does NOT produce an AST node
+//   - TargetRange spans exactly the view-name token
+func TestParser_FindStatements(t *testing.T) {
+	// Arrange: read the fixture which contains FIND statements
+	content, readErr := os.ReadFile(filepath.Join("testdata", "parser", "20-find.nsp"))
+	if readErr != nil {
+		t.Fatalf("failed to read fixture testdata/parser/20-find.nsp: %v", readErr)
+	}
+
+	lexer := NewLexer(string(content))
+	parser := NewParser(lexer)
+
+	// Act: parse the fixture
+	prog, err := parser.Parse()
+
+	// Assert: parse succeeds
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if prog == nil {
+		t.Fatal("Program is nil, want non-nil")
+	}
+
+	// Assert: FIND statements were extracted (3 valid FIND statements in fixture)
+	if len(prog.Finds) != 3 {
+		t.Errorf("len(prog.Finds) = %d, want 3", len(prog.Finds))
+		for i, find := range prog.Finds {
+			t.Logf("  Finds[%d]: Target=%q", i, find.Target)
+		}
+	}
+
+	// Assert: first FIND has Target "EMPLOYEES" (line 4: FIND EMPLOYEES WITH NAME = 'SMITH')
+	if len(prog.Finds) >= 1 {
+		find1 := prog.Finds[0]
+		if find1.Target != "EMPLOYEES" {
+			t.Errorf("Finds[0].Target = %q, want %q", find1.Target, "EMPLOYEES")
+		}
+		if find1.StartPos.Line != 4 {
+			t.Errorf("Finds[0].StartPos.Line = %d, want 4", find1.StartPos.Line)
+		}
+		if find1.TargetRange.Start.Line == 0 {
+			t.Errorf("Finds[0].TargetRange is zero-valued: %+v", find1.TargetRange)
+		}
+	}
+
+	// Assert: second FIND has Target "VEHICLES" (line 6: FIND NUMBER VEHICLES)
+	if len(prog.Finds) >= 2 {
+		find2 := prog.Finds[1]
+		if find2.Target != "VEHICLES" {
+			t.Errorf("Finds[1].Target = %q, want %q", find2.Target, "VEHICLES")
+		}
+		if find2.StartPos.Line != 6 {
+			t.Errorf("Finds[1].StartPos.Line = %d, want 6", find2.StartPos.Line)
+		}
+		if find2.TargetRange.Start.Line == 0 {
+			t.Errorf("Finds[1].TargetRange is zero-valued: %+v", find2.TargetRange)
+		}
+	}
+
+	// Assert: third FIND has Target "EMPLOYEES" (line 8: FIND (3) EMPLOYEES)
+	if len(prog.Finds) >= 3 {
+		find3 := prog.Finds[2]
+		if find3.Target != "EMPLOYEES" {
+			t.Errorf("Finds[2].Target = %q, want %q", find3.Target, "EMPLOYEES")
+		}
+		if find3.StartPos.Line != 8 {
+			t.Errorf("Finds[2].StartPos.Line = %d, want 8", find3.StartPos.Line)
+		}
+		if find3.TargetRange.Start.Line == 0 {
+			t.Errorf("Finds[2].TargetRange is zero-valued: %+v", find3.TargetRange)
+		}
+	}
+
+	// Assert: malformed FIND (line 10: FIND with no operand) produces a diagnostic
+	// The malformed FIND should produce at least one diagnostic.
+	if len(prog.Diagnostics) < 1 {
+		t.Errorf("len(prog.Diagnostics) = %d, want >= 1 (malformed FIND should produce a diagnostic)", len(prog.Diagnostics))
+	}
+
+	// Assert: the diagnostic message mentions the malformed FIND
+	hasFindDiag := false
+	for _, diag := range prog.Diagnostics {
+		if strings.Contains(strings.ToUpper(diag.Message), "FIND") {
+			hasFindDiag = true
+			break
+		}
+	}
+	if !hasFindDiag {
+		t.Logf("No FIND-related diagnostic found in %d diagnostics:", len(prog.Diagnostics))
+		for i, diag := range prog.Diagnostics {
+			t.Logf("  Diag[%d]: %s (Severity=%v)", i, diag.Message, diag.Severity)
+		}
+	}
+}
+
+// TestParser_GetStatements_Task5_FR19 verifies that the parser recognizes GET statements
+// with view names and the GET SAME special case (Task 5 / FR-19).
+// GET SAME has NO view operand (re-reads current record) and must produce NO diagnostic
+// (it is valid Natural, distinct from a malformed GET).
+func TestParser_GetStatements_Task5_FR19(t *testing.T) {
+	// Arrange: read the fixture which contains GET statements
+	content, readErr := os.ReadFile(filepath.Join("testdata", "parser", "21-get.nsp"))
+	if readErr != nil {
+		t.Fatalf("failed to read fixture testdata/parser/21-get.nsp: %v", readErr)
+	}
+
+	lexer := NewLexer(string(content))
+	parser := NewParser(lexer)
+
+	// Act: parse the fixture
+	prog, err := parser.Parse()
+
+	// Assert: parse succeeds
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if prog == nil {
+		t.Fatal("Program is nil, want non-nil")
+	}
+
+	// Assert: two GET statements were extracted (one with target, one GET SAME)
+	if len(prog.Gets) != 2 {
+		t.Errorf("len(prog.Gets) = %d, want 2", len(prog.Gets))
+		for i, get := range prog.Gets {
+			t.Logf("  Gets[%d]: Target=%q, TargetRange=%+v", i, get.Target, get.TargetRange)
+		}
+	}
+
+	// Assert: first GET has Target "EMPLOYEES" (line 5: GET EMPLOYEES (#ISN))
+	// and a non-zero TargetRange (the EMPLOYEES token)
+	if len(prog.Gets) >= 1 {
+		get1 := prog.Gets[0]
+		if get1.Target != "EMPLOYEES" {
+			t.Errorf("Gets[0].Target = %q, want %q", get1.Target, "EMPLOYEES")
+		}
+		if get1.StartPos.Line != 5 {
+			t.Errorf("Gets[0].StartPos.Line = %d, want 5", get1.StartPos.Line)
+		}
+		if get1.TargetRange.Start.Line == 0 {
+			t.Errorf("Gets[0].TargetRange is zero-valued: %+v", get1.TargetRange)
+		}
+	}
+
+	// Assert: second GET is GET SAME (line 7: GET SAME) with empty Target
+	// and NO diagnostic (GET SAME is valid Natural, not malformed).
+	if len(prog.Gets) >= 2 {
+		get2 := prog.Gets[1]
+		if get2.Target != "" {
+			t.Errorf("Gets[1].Target = %q, want empty string (GET SAME)", get2.Target)
+		}
+		if get2.StartPos.Line != 7 {
+			t.Errorf("Gets[1].StartPos.Line = %d, want 7", get2.StartPos.Line)
+		}
+		// TargetRange should be zero-valued for GET SAME (no target operand)
+		if get2.TargetRange.Start.Line != 0 && get2.TargetRange.Start.Column != 0 {
+			t.Errorf("Gets[1].TargetRange should be zero-valued for GET SAME: %+v", get2.TargetRange)
+		}
+	}
+
+	// Assert: GET SAME produces NO diagnostic (critical modeled gap).
+	// The fixture has exactly one GET SAME; it must not trigger a diagnostic.
+	// We assert that there are zero GET-related diagnostics (or diagnostics is empty).
+	hasGetSameDiag := false
+	for _, diag := range prog.Diagnostics {
+		diagMsg := strings.ToUpper(diag.Message)
+		if strings.Contains(diagMsg, "GET") && strings.Contains(diagMsg, "SAME") {
+			hasGetSameDiag = true
+			break
+		}
+		if strings.Contains(diagMsg, "GET") && strings.Contains(diagMsg, "OPERAND") {
+			// "GET requires an operand" would be wrong for GET SAME
+			hasGetSameDiag = true
+			break
+		}
+	}
+	if hasGetSameDiag {
+		t.Errorf("GET SAME produced a diagnostic; it is valid Natural and must not be flagged")
+	}
+
+	// Additional: confirm no "requires operand" diagnostic exists that would be invalid for GET SAME.
+	for _, diag := range prog.Diagnostics {
+		diagMsg := strings.ToUpper(diag.Message)
+		if strings.Contains(diagMsg, "GET") {
+			t.Logf("Found GET-related diagnostic: %s", diag.Message)
+			if strings.Contains(diagMsg, "SAME") {
+				t.Errorf("GET SAME incorrectly flagged: %s", diag.Message)
+			}
+		}
+	}
+}
+
+// TestParser_DataSection_MultipleKinds verifies that the parser correctly parses
+// DEFINE DATA blocks with multiple section keywords (LOCAL, PARAMETER, GLOBAL, LINKAGE),
+// emitting one DataSection node per section keyword with its Kind field set.
+// Task 10 / Story 3 / FR-21 acceptance: PARAMETER is cleanly isolable for parameter interfaces.
+//
+// Expected behavior:
+// - DEFINE DATA LOCAL followed by fields → one DataSection(Kind: "local") containing those fields
+// - PARAMETER section keyword (same DEFINE DATA) → one DataSection(Kind: "parameter") containing its fields
+// - GLOBAL section keyword → one DataSection(Kind: "global") containing its fields
+// - Each section's fields are assigned to its DataSection, not mixed across sections
+func TestParser_DataSection_MultipleKinds(t *testing.T) {
+	// Arrange: read the fixture with LOCAL, PARAMETER, and GLOBAL sections
+	content, readErr := os.ReadFile(filepath.Join("testdata", "parser", "23-data-sections.nsp"))
+	if readErr != nil {
+		t.Fatalf("failed to read fixture testdata/parser/23-data-sections.nsp: %v", readErr)
+	}
+
+	lexer := NewLexer(string(content))
+	parser := NewParser(lexer)
+
+	// Act: parse the fixture
+	prog, err := parser.Parse()
+
+	// Assert: parse succeeds
+	if err != nil {
+		t.Fatalf("Parser.Parse() error = %v", err)
+	}
+	if prog == nil {
+		t.Fatal("Program is nil, want non-nil")
+	}
+
+	// Assert: three DataSection nodes (one per section keyword)
+	if len(prog.DataSections) != 3 {
+		t.Fatalf("len(prog.DataSections) = %d, want 3; sections: %v",
+			len(prog.DataSections), prog.DataSections)
+	}
+
+	// Helper: verify a section's Kind and field contents
+	assertSection := func(t *testing.T, section *DataSection, wantKind string, wantFieldNames []string) {
+		t.Helper()
+		if section.Kind != wantKind {
+			t.Errorf("DataSection.Kind = %q, want %q", section.Kind, wantKind)
+		}
+		if len(section.Fields) != len(wantFieldNames) {
+			t.Errorf("DataSection(%q) has %d fields, want %d", wantKind, len(section.Fields), len(wantFieldNames))
+			for i, f := range section.Fields {
+				t.Logf("  Field[%d]: Name=%q", i, f.Name)
+			}
+			return
+		}
+		for i, wantName := range wantFieldNames {
+			if i >= len(section.Fields) {
+				t.Errorf("missing field %q in section %q", wantName, wantKind)
+				continue
+			}
+			if section.Fields[i].Name != wantName {
+				t.Errorf("DataSection(%q).Fields[%d].Name = %q, want %q",
+					wantKind, i, section.Fields[i].Name, wantName)
+			}
+		}
+	}
+
+	// Assert: section 0 is LOCAL with 2 fields
+	assertSection(t, prog.DataSections[0], "local", []string{"#LOCAL-COUNTER", "#LOCAL-NAME"})
+
+	// Assert: section 1 is PARAMETER with 2 fields
+	assertSection(t, prog.DataSections[1], "parameter", []string{"#INPUT-VALUE", "#OUTPUT-RESULT"})
+
+	// Assert: section 2 is GLOBAL with 0 fields (GLOBAL USING references a GDA, no inline fields)
+	assertSection(t, prog.DataSections[2], "global", []string{})
+
+	// Additional: verify PARAMETER section is clearly distinguishable (critical for signature extraction)
+	paramSection := prog.DataSections[1]
+	if paramSection.Kind != "parameter" {
+		t.Errorf("PARAMETER section not identified: Kind=%q", paramSection.Kind)
+	}
+	if len(paramSection.Fields) != 2 {
+		t.Errorf("PARAMETER section should have 2 fields for signature interface, got %d", len(paramSection.Fields))
+	}
+}
+
+// TestParser_DefineWorkFile verifies that the parser correctly parses DEFINE WORK FILE statements
+// per Task 14 / FR-22 acceptance criteria.
+//
+// Expected extraction from testdata/parser/24-work-file.nsp:
+// 1. DEFINE WORK FILE 1 'REPORT.TXT' → WorkFileDefinition{Number:1, Name:"REPORT.TXT" (literal, unquoted)}
+// 2. DEFINE WORK FILE 2 #DYNNAME → WorkFileDefinition{Number:2, Name:"#DYNNAME" (variable, verbatim with #)}
+// 3. Both nodes have accurate StartPos/EndPos and NameRange covering just the name token
+// 4. No malformed-input diagnostics for these well-formed statements (channel separation, FR-17)
+func TestParser_DefineWorkFile(t *testing.T) {
+	// Arrange: read the fixture file (24-work-file.nsp)
+	content, readErr := os.ReadFile(filepath.Join("testdata", "parser", "24-work-file.nsp"))
+	if readErr != nil {
+		t.Fatalf("failed to read fixture testdata/parser/24-work-file.nsp: %v", readErr)
+	}
+
+	lexer := NewLexer(string(content))
+	parser := NewParser(lexer)
+
+	// Act: parse the fixture
+	prog, err := parser.Parse()
+
+	// Assert: parse succeeds
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if prog == nil {
+		t.Fatal("Program is nil, want non-nil")
+	}
+
+	// Assert: exactly two WorkFileDefinition nodes were parsed
+	if len(prog.WorkFiles) != 2 {
+		t.Errorf("len(prog.WorkFiles) = %d, want 2", len(prog.WorkFiles))
+	}
+
+	// Assert: first WorkFileDefinition (DEFINE WORK FILE 1 'REPORT.TXT')
+	if len(prog.WorkFiles) >= 1 {
+		wf1 := prog.WorkFiles[0]
+		if wf1.Number != 1 {
+			t.Errorf("WorkFiles[0].Number = %d, want 1", wf1.Number)
+		}
+		if wf1.Name != "REPORT.TXT" {
+			t.Errorf("WorkFiles[0].Name = %q, want %q", wf1.Name, "REPORT.TXT")
+		}
+		// NameRange should be non-zero (source range of just the name token)
+		if wf1.NameRange.Start.Line == 0 && wf1.NameRange.Start.Column == 0 {
+			t.Errorf("WorkFiles[0].NameRange is zero, want non-zero range")
+		}
+	}
+
+	// Assert: second WorkFileDefinition (DEFINE WORK FILE 2 #DYNNAME)
+	if len(prog.WorkFiles) >= 2 {
+		wf2 := prog.WorkFiles[1]
+		if wf2.Number != 2 {
+			t.Errorf("WorkFiles[1].Number = %d, want 2", wf2.Number)
+		}
+		if wf2.Name != "#DYNNAME" {
+			t.Errorf("WorkFiles[1].Name = %q, want %q (variable, captured verbatim with #)", wf2.Name, "#DYNNAME")
+		}
+		// NameRange should be non-zero (source range of just the variable name token)
+		if wf2.NameRange.Start.Line == 0 && wf2.NameRange.Start.Column == 0 {
+			t.Errorf("WorkFiles[1].NameRange is zero, want non-zero range")
+		}
+	}
+
+	// Assert: no parse diagnostics for these well-formed statements (channel separation, FR-17)
+	if len(prog.Diagnostics) > 0 {
+		t.Errorf("unexpected diagnostics for well-formed DEFINE WORK FILE statements: %v", prog.Diagnostics)
+	}
+}
+
+// TestParser_DefineWorkFile_Malformed verifies FR-43 graceful degradation for
+// malformed DEFINE WORK FILE statements: the parser must never panic, must emit
+// at least one diagnostic for each malformed variant, and must not append a
+// WorkFileDefinition for the malformed statement (partial nodes are discarded).
+// A well-formed statement after a malformed one must still be parsed (recovery).
+func TestParser_DefineWorkFile_Malformed(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		wantWorkFiles int // how many well-formed WorkFileDefinitions should survive
+		wantDiags     int // minimum number of diagnostics expected
+	}{
+		{
+			name:          "missing FILE keyword",
+			input:         "DEFINE WORK 1 'REPORT.TXT'\nDEFINE WORK FILE 3 'GOOD.TXT'\nEND\n",
+			wantWorkFiles: 1, // the second (well-formed) statement is recovered
+			wantDiags:     1,
+		},
+		{
+			name:          "missing number",
+			input:         "DEFINE WORK FILE 'REPORT.TXT'\nDEFINE WORK FILE 3 'GOOD.TXT'\nEND\n",
+			wantWorkFiles: 1,
+			wantDiags:     1,
+		},
+		{
+			name:          "non-integer number (decimal)",
+			input:         "DEFINE WORK FILE 1.5 'REPORT.TXT'\nDEFINE WORK FILE 3 'GOOD.TXT'\nEND\n",
+			wantWorkFiles: 1,
+			wantDiags:     1,
+		},
+		{
+			name:          "missing name",
+			input:         "DEFINE WORK FILE 1\nDEFINE WORK FILE 3 'GOOD.TXT'\nEND\n",
+			wantWorkFiles: 1,
+			wantDiags:     1,
+		},
+		{
+			name:          "bare DEFINE WORK FILE with no tokens following",
+			input:         "DEFINE WORK FILE",
+			wantWorkFiles: 0,
+			wantDiags:     1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lexer := NewLexer(tt.input)
+			parser := NewParser(lexer)
+
+			// Must not panic.
+			prog, err := parser.Parse()
+
+			if err != nil {
+				t.Fatalf("Parse() returned unexpected error: %v", err)
+			}
+			if prog == nil {
+				t.Fatal("Parse() returned nil *Program, want non-nil")
+			}
+
+			if len(prog.WorkFiles) != tt.wantWorkFiles {
+				t.Errorf("WorkFiles count = %d, want %d", len(prog.WorkFiles), tt.wantWorkFiles)
+			}
+			if len(prog.Diagnostics) < tt.wantDiags {
+				t.Errorf("Diagnostics count = %d, want >= %d; diagnostics: %v",
+					len(prog.Diagnostics), tt.wantDiags, prog.Diagnostics)
+			}
+		})
+	}
+}

@@ -148,10 +148,57 @@ type EdgeEntry struct {
 }
 
 // DataAccessEntry represents a data access relationship (read/write) to a file.
+//
+// Name is the normalized (upper-case) name of the accessed view/DDM/file.
+// NameRange is the source span of just the view-name token (used by hover/references
+// to point at the accessed name, not the whole statement). Source remains the
+// whole-statement range.
 type DataAccessEntry struct {
-	File   string
-	Kind   EdgeKind
-	Source Range
+	Name      string
+	Kind      EdgeKind
+	Source    Range
+	NameRange Range
+}
+
+// ArrayDimension represents a single dimension of an array field.
+// For a 1-D array like (1:12), Lower=1, Upper=12, UpperUnbounded=false.
+// For an unbounded dimension like (1:*), Lower=1, UpperUnbounded=true.
+type ArrayDimension struct {
+	Lower          int
+	Upper          int
+	UpperUnbounded bool
+}
+
+// DataDefinition represents a declared variable (data item) from a DEFINE DATA section.
+// It captures the name, level, type, array dimensions, and the section kind (local/parameter/global).
+// Redefine nesting is captured via Children: subfields of a REDEFINE block.
+// For use in hover (to back signatures), the SectionKind field distinguishes PARAMETER
+// from LOCAL/GLOBAL.
+type DataDefinition struct {
+	// Name is the normalized (upper-case) identifier of the data item.
+	Name string
+
+	// Level is the nesting level (1, 2, 3, ...) as declared in DEFINE DATA.
+	Level int
+
+	// Type is the verbatim type/format string (e.g., "A10", "N7.2", "P9.2").
+	// Empty for group headers (which have no type).
+	Type string
+
+	// Dimensions holds array bounds for each dimension (empty for scalars).
+	Dimensions []ArrayDimension
+
+	// SectionKind is the section keyword (local/parameter/global/linkage).
+	// The presence and value of this field let hover/signature helpers
+	// distinguish parameter interfaces from local/global data.
+	SectionKind string
+
+	// Range is the source span of this data item (from first token to last).
+	Range Range
+
+	// Children holds subfields if this is a group or a REDEFINE block.
+	// Nesting order matches declaration order. Nil/empty for scalars and groups with no children.
+	Children []DataDefinition
 }
 
 // DiagnosticSeverity classifies the severity of an extraction diagnostic.
@@ -212,7 +259,35 @@ type FileAnalysis struct {
 	// workspace indexer for data flow analysis and dependency tracking.
 	DataAccess []DataAccessEntry
 
+	// Definitions holds data item definitions extracted from DEFINE DATA sections
+	// (LOCAL, PARAMETER, GLOBAL, LINKAGE). Used for hover, parameter interfaces,
+	// and workspace symbol mapping. Declaration order is preserved.
+	Definitions []DataDefinition
+
+	// WorkFiles holds work-file definitions extracted from DEFINE WORK FILE statements
+	// (file descriptor numbers and their associated file names or variables).
+	// Populated by the workspace indexer for file-access analysis.
+	WorkFiles []WorkFile
+
 	// AST holds the parsed AST for this file. Populated by the parser
 	// backend when available; nil when the parser is not integrated.
-	AST interface{}
+	AST any
+}
+
+// WorkFile represents a work-file definition from a DEFINE WORK FILE statement.
+type WorkFile struct {
+	// Number is the work-file slot number from the source
+	// (e.g., 1 in "DEFINE WORK FILE 1 'REPORT.TXT'").
+	Number int
+
+	// Name is the file name as it appears in source.
+	// For a string literal, the surrounding quotes are stripped
+	// (e.g., 'REPORT.TXT' → "REPORT.TXT").
+	// For a variable, the value is kept verbatim including any leading sigil
+	// (e.g., "#DYNNAME"). A leading '#' signals a dynamic/unresolvable
+	// reference — a modeled gap, not a diagnostic.
+	Name string
+
+	// Range is the source span of the entire DEFINE WORK FILE statement.
+	Range Range
 }

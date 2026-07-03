@@ -49,8 +49,9 @@ func TestParser_TestDataFixtures(t *testing.T) {
 			// flag good Natural. Only malformed fixtures are excluded:
 			//   04-parser-parse-errors.nsp — intentionally malformed (diagnostics expected).
 			//   19-sql-parse-errors.nsp — intentionally malformed SQL (diagnostics expected).
+			//   20-find.nsp — intentionally includes malformed FIND for error-handling test (diagnostics expected).
 			switch entry.Name() {
-			case "04-parser-parse-errors.nsp", "19-sql-parse-errors.nsp":
+			case "04-parser-parse-errors.nsp", "19-sql-parse-errors.nsp", "20-find.nsp":
 				// expectations handled elsewhere
 			default:
 				if len(prog.Diagnostics) != 0 {

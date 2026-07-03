@@ -1,0 +1,14 @@
+* Task 10 fixture: DEFINE DATA with multiple section keywords
+* Exercises LOCAL, PARAMETER, and GLOBAL USING sections with fields per section.
+
+DEFINE DATA
+LOCAL
+1 #LOCAL-COUNTER (N5)
+1 #LOCAL-NAME (A30)
+PARAMETER
+1 #INPUT-VALUE (N9.2)
+1 #OUTPUT-RESULT (A50)
+GLOBAL USING EMPLOYEES-GDA
+END-DEFINE
+
+END
