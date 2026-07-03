@@ -1,0 +1,14 @@
+* Task 5 fixture: MERGE statement (SQL DML) — write edge to a DDM.
+* MERGE targets a DDM table; internals are not modeled.
+
+DEFINE DATA LOCAL
+  1 #PERS-ID (N8)
+  1 #NAME (A20)
+END-DEFINE
+
+MERGE INTO EMPLOYEES
+  USING #PERS-ID
+  WHEN MATCHED THEN UPDATE SET NAME = #NAME
+  WHEN NOT MATCHED THEN INSERT (NAME) VALUES (#NAME)
+
+END

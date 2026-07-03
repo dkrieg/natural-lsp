@@ -373,11 +373,13 @@ func (d *SQLDeleteStatement) Position() (model.Position, model.Position) {
 }
 
 // MergeStatement represents a MERGE statement (SQL).
-// Table operand is unbound; MERGE grammar internals are not modeled.
-// Table and operand fields are added by the parser task (ES-9).
+// Table holds the MERGE INTO target DDM operand(s); the merge body (USING /
+// WHEN MATCHED / WHEN NOT MATCHED) is not modeled. The operand is unbound —
+// cross-library resolution is the resolver's job.
 type MergeStatement struct {
 	StartPos model.Position
 	EndPos   model.Position
+	Table    []OperandRef // MERGE INTO target table (a DDM name)
 }
 
 func (m *MergeStatement) Position() (model.Position, model.Position) {

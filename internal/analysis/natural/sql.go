@@ -141,7 +141,24 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 		}
 	}
 
-	// TODO: implement Task 5b (MERGE)
+	// MergeStatement (SQL): emit one EdgeWrites for the MERGE INTO target table.
+	for _, merge := range prog.Merges {
+		if merge == nil {
+			continue // graceful degradation: skip nil AST nodes
+		}
+		for _, table := range merge.Table {
+			if table.Name == "" {
+				continue // malformed MERGE INTO — no false edge
+			}
+			entries = append(entries, model.DataAccessEntry{
+				Kind:      model.EdgeWrites,
+				Name:      table.Name,
+				NameRange: table.Range,
+				Source:    stmtRange(merge.StartPos, merge.EndPos),
+			})
+		}
+	}
+
 	// TODO: implement Task 6c (READ RESULT SET)
 	// TODO: implement Task 7 (PROCESS SQL)
 

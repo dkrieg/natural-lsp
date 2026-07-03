@@ -2124,8 +2124,12 @@ func (p *Parser) parseMergeStatement(ast *Program) {
 	// Consume INTO
 	p.advance()
 
-	// Skip table operand (captured but not stored in model)
+	// Capture the target table operand (a DDM name).
 	if p.matches(TokenIdentifier) {
+		merge.Table = append(merge.Table, OperandRef{
+			Name:  p.current.Literal,
+			Range: tokenRange(p.current),
+		})
 		p.advance()
 	}
 

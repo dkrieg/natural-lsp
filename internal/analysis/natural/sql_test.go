@@ -318,3 +318,42 @@ func TestExtractHostVarRefs_Native(t *testing.T) {
 		}
 	})
 }
+
+// TestExtractSQLAccess_Merge verifies Task 5 / FR-20: a MERGE statement emits
+// exactly one EdgeWrites entry for its target DDM table. Requires the parser to
+// capture the MERGE INTO <table> operand (Task 5a); the merge body (USING/WHEN
+// clauses) is not modeled and must not produce false edges.
+func TestExtractSQLAccess_Merge(t *testing.T) {
+	fixture := filepath.Join("testdata", "sqlaccess", "merge.NSP")
+	content, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("failed to read fixture %q: %v", fixture, err)
+	}
+
+	prog, err := NewParser(NewLexer(string(content))).Parse()
+	if prog == nil {
+		t.Fatalf("parser returned nil AST (err=%v)", err)
+	}
+
+	entries := extractSQLAccess(prog)
+
+	var writes []model.DataAccessEntry
+	for _, e := range entries {
+		if e.Kind == model.EdgeWrites {
+			writes = append(writes, e)
+		}
+	}
+
+	if len(writes) != 1 {
+		t.Fatalf("got %d EdgeWrites entries, want 1: %+v", len(writes), entries)
+	}
+	if writes[0].Name != "EMPLOYEES" {
+		t.Errorf("write Name = %q, want %q", writes[0].Name, "EMPLOYEES")
+	}
+	if writes[0].NameRange.Start == writes[0].NameRange.End {
+		t.Error("write NameRange is zero, want non-zero range on the table token")
+	}
+	if writes[0].Source.Start == writes[0].Source.End {
+		t.Error("write Source is zero, want non-zero statement range")
+	}
+}
