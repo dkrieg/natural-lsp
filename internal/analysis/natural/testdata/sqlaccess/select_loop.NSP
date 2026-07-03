@@ -1,0 +1,17 @@
+* Task 2 fixture: SELECT loop with FROM table and INTO targets
+* Demonstrates FR-19 requirement: native SQL SELECT...FROM reads DDM once
+* See also: fixture 10-sql-select-loop.nsp in parser tests
+* Expected: one EdgeReads entry for SQL-PERSONNEL (the FROM table operand)
+* and zero edges for the column names or INTO target variables
+
+DEFINE DATA LOCAL
+  1 #NAME (A30)
+  1 #SALARY (N9.2)
+  1 #PERS-ID (N5)
+END-DEFINE
+
+SELECT COL1, COL2 INTO #NAME, #SALARY FROM SQL-PERSONNEL WHERE DEPT = :#PERS-ID
+  CALLNAT 'PROCESS'
+END-SELECT
+
+END
