@@ -6,6 +6,7 @@ package natural
 
 import (
 	"sort"
+	"strings"
 
 	"natural-lsp/internal/model"
 )
@@ -24,6 +25,25 @@ func hasNaturalSigil(name string) bool {
 	default:
 		return false
 	}
+}
+
+// appendWriteEntries appends one EdgeWrites entry per non-empty table operand
+// to dst and returns the updated slice. Used by extractSQLAccess to collapse
+// the identical INSERT/UPDATE/DELETE/MERGE write-entry loops.
+func appendWriteEntries(dst []model.DataAccessEntry, tables []OperandRef, start, end model.Position) []model.DataAccessEntry {
+	src := stmtRange(start, end)
+	for _, table := range tables {
+		if table.Name == "" {
+			continue // malformed table clause — no false edge
+		}
+		dst = append(dst, model.DataAccessEntry{
+			Kind:      model.EdgeWrites,
+			Name:      table.Name,
+			NameRange: table.Range,
+			Source:    src,
+		})
+	}
+	return dst
 }
 
 // extractSQLAccess walks the parsed program and returns data-access entries for
@@ -84,25 +104,15 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 		}
 	}
 
-	// Task 3: INSERT, SQL UPDATE, and SQL DELETE statements emit EdgeWrites
-	// for each table operand (the DDM/table name).
+	// Task 3: INSERT, SQL UPDATE, SQL DELETE, and MERGE emit EdgeWrites for each
+	// table operand (the DDM/table name). appendWriteEntries handles the shared logic.
 
 	// InsertStatement (SQL): emit one EdgeWrites for IntoTable operand.
 	for _, ins := range prog.Inserts {
 		if ins == nil {
 			continue // graceful degradation: skip nil AST nodes
 		}
-		for _, table := range ins.IntoTable {
-			if table.Name == "" {
-				continue // malformed INTO clause — no false edge
-			}
-			entries = append(entries, model.DataAccessEntry{
-				Kind:      model.EdgeWrites,
-				Name:      table.Name,
-				NameRange: table.Range,
-				Source:    stmtRange(ins.StartPos, ins.EndPos),
-			})
-		}
+		entries = appendWriteEntries(entries, ins.IntoTable, ins.StartPos, ins.EndPos)
 	}
 
 	// SQLUpdateStatement (SQL form with SET/WHERE): emit one EdgeWrites for Table operand.
@@ -110,17 +120,7 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 		if upd == nil {
 			continue // graceful degradation: skip nil AST nodes
 		}
-		for _, table := range upd.Table {
-			if table.Name == "" {
-				continue // malformed UPDATE clause — no false edge
-			}
-			entries = append(entries, model.DataAccessEntry{
-				Kind:      model.EdgeWrites,
-				Name:      table.Name,
-				NameRange: table.Range,
-				Source:    stmtRange(upd.StartPos, upd.EndPos),
-			})
-		}
+		entries = appendWriteEntries(entries, upd.Table, upd.StartPos, upd.EndPos)
 	}
 
 	// SQLDeleteStatement (SQL form with FROM/WHERE): emit one EdgeWrites for FromTable operand.
@@ -128,17 +128,7 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 		if del == nil {
 			continue // graceful degradation: skip nil AST nodes
 		}
-		for _, table := range del.FromTable {
-			if table.Name == "" {
-				continue // malformed DELETE clause — no false edge
-			}
-			entries = append(entries, model.DataAccessEntry{
-				Kind:      model.EdgeWrites,
-				Name:      table.Name,
-				NameRange: table.Range,
-				Source:    stmtRange(del.StartPos, del.EndPos),
-			})
-		}
+		entries = appendWriteEntries(entries, del.FromTable, del.StartPos, del.EndPos)
 	}
 
 	// MergeStatement (SQL): emit one EdgeWrites for the MERGE INTO target table.
@@ -146,17 +136,7 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 		if merge == nil {
 			continue // graceful degradation: skip nil AST nodes
 		}
-		for _, table := range merge.Table {
-			if table.Name == "" {
-				continue // malformed MERGE INTO — no false edge
-			}
-			entries = append(entries, model.DataAccessEntry{
-				Kind:      model.EdgeWrites,
-				Name:      table.Name,
-				NameRange: table.Range,
-				Source:    stmtRange(merge.StartPos, merge.EndPos),
-			})
-		}
+		entries = appendWriteEntries(entries, merge.Table, merge.StartPos, merge.EndPos)
 	}
 
 	// ReadResultSetStatement (SQL): record a read-access site. The result-set
@@ -175,7 +155,24 @@ func extractSQLAccess(prog *Program) []model.DataAccessEntry {
 		})
 	}
 
-	// TODO: implement Task 7 (PROCESS SQL)
+	// Task 7: PROCESS SQL statements emit one EdgeReads for the DDM operand
+	// (neutral read-style access per OQ-3). The opaque body is never scanned
+	// for table names — only the DDMName operand becomes an edge. In-body table
+	// names are pass-through text (modeled gap, OQ-3).
+	for _, ps := range prog.ProcessSQLs {
+		if ps == nil {
+			continue // graceful degradation: skip nil AST nodes
+		}
+		if ps.DDMName == "" {
+			continue // malformed PROCESS SQL with no DDM operand — no false edge
+		}
+		entries = append(entries, model.DataAccessEntry{
+			Kind:      model.EdgeReads,
+			Name:      ps.DDMName,
+			NameRange: ps.DDMNameRange,
+			Source:    stmtRange(ps.StartPos, ps.EndPos),
+		})
+	}
 
 	// Sort by source order (stable sort on Source.Start).
 	sort.SliceStable(entries, func(i, j int) bool {
@@ -224,6 +221,200 @@ func extractSQLCalls(prog *Program) []model.EdgeEntry {
 	})
 
 	return edges
+}
+
+// isOpaqueQualifierByte reports whether b is one of the single-letter PROCESS SQL
+// host-var qualifiers (U=USING, G=GIVING, T=TEXT), case-insensitive.
+func isOpaqueQualifierByte(b byte) bool {
+	b |= 0x20 // fold to lower-case
+	return b == 'u' || b == 'g' || b == 't'
+}
+
+// isNaturalNameByte reports whether b is a valid Natural identifier body character
+// (letter, digit, or hyphen). Sigils (#, &, +, @) are not included because they
+// are only valid as the FIRST character of a name.
+func isNaturalNameByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') || b == '-'
+}
+
+// isNaturalSigilByte reports whether b is a Natural variable sigil.
+func isNaturalSigilByte(b byte) bool {
+	return b == '#' || b == '&' || b == '+' || b == '@'
+}
+
+// scanOpaqueHostVars (Task 7 helper) scans the raw opaque body of a PROCESS SQL
+// statement for host-variable references and returns them as HostVarRef values.
+//
+// The opaque body is raw text: never re-tokenized or parsed. Rules (KB-grounded):
+//   - Inside <<...>> the colon is MANDATORY: only :name sequences are host vars.
+//   - Strip a leading USING/GIVING/TEXT qualifier: :U:, :G:, :T: (case-insensitive)
+//     e.g. :U:#NAME binds #NAME. A qualifier letter not followed by ':' is NOT
+//     consumed as a qualifier — the colon is treated as a bare name-start.
+//   - Recognize and strip indicator prefixes INDICATOR/LINDICATOR if present.
+//   - Recognize array notation :NAME(*)/:NAME(01:10): the base name is captured and
+//     the (...) subscript (including any ':' inside it) is consumed and discarded.
+//     This prevents array range colons from being mistaken for host-var starts.
+//   - A digit-starting sequence after ':' (e.g. ':10' inside an array range) is
+//     NOT a host-var reference: Natural names must start with a sigil or a letter.
+//   - Keep the Natural sigil (#/&/+/@) on the captured name; upper-case the result.
+//   - Compute each ref's Range from bodyStart (the position of <<) + interior offset,
+//     tracking newlines within the body for multi-line accuracy.
+//
+// Returns host-var refs in scan order (approximately source order within the body).
+// Never panics; skips malformed constructs gracefully (FR-43).
+func scanOpaqueHostVars(body string, bodyStart model.Position) []model.HostVarRef {
+	var refs []model.HostVarRef
+
+	// Position tracking. bodyStart is the position of the << delimiter itself;
+	// the interior of the body starts 2 columns past it (past the '<<').
+	line := bodyStart.Line
+	col := bodyStart.Column + 2
+
+	// i is declared here so that the closures below can capture it by reference.
+	i := 0
+
+	// scanName advances i/col past a Natural identifier (optional sigil + name chars)
+	// and returns the raw slice. Returns "" when no valid name starts at i.
+	// A digit-starting sequence is rejected: Natural names require a sigil or letter first.
+	scanName := func() string {
+		start := i
+		if i < len(body) && isNaturalSigilByte(body[i]) {
+			i++
+			col++
+		}
+		for i < len(body) && isNaturalNameByte(body[i]) {
+			i++
+			col++
+		}
+		return body[start:i]
+	}
+
+	// skipParenSubscript consumes a '(...)' subscript (array range or wildcard),
+	// tracking newlines. Called after a name is captured to swallow ':NAME(01:10)'.
+	// The colons inside (...) are part of the subscript and must not trigger a
+	// new host-var scan.
+	skipParenSubscript := func() {
+		// caller has already confirmed body[i] == '('
+		i++
+		col++
+		for i < len(body) && body[i] != ')' {
+			switch body[i] {
+			case '\n':
+				line++
+				col = 1
+				i++
+			case '\r':
+				line++
+				col = 1
+				i++
+				if i < len(body) && body[i] == '\n' {
+					i++
+				}
+			default:
+				i++
+				col++
+			}
+		}
+		if i < len(body) { // consume the closing ')'
+			i++
+			col++
+		}
+	}
+
+	for i < len(body) {
+		ch := body[i]
+
+		// Advance position tracking for line terminators first.
+		switch ch {
+		case '\r':
+			line++
+			col = 1
+			i++
+			if i < len(body) && body[i] == '\n' {
+				i++
+			}
+			continue
+		case '\n':
+			line++
+			col = 1
+			i++
+			continue
+		}
+
+		if ch != ':' {
+			// Non-colon: advance one column regardless of tab width (consistent
+			// with the rest of the Natural position-tracking code).
+			col++
+			i++
+			continue
+		}
+
+		// ':' found — potential host-var start.
+		refStartLine := line
+		refStartCol := col
+		i++ // consume ':'
+		col++
+
+		// Strip optional single-letter qualifier (:U:, :G:, :T:, case-insensitive).
+		// Only consume the qualifier letter when it is immediately followed by ':';
+		// otherwise leave the cursor at the letter so the name-scan can read it.
+		if i < len(body) && isOpaqueQualifierByte(body[i]) &&
+			i+1 < len(body) && body[i+1] == ':' {
+			i += 2 // qualifier letter + ':'
+			col += 2
+		}
+
+		// A digit immediately after ':' (or after qualifier) is not a valid Natural
+		// name start — this guards colons inside array ranges like (01:10) when
+		// the subscript scanner hasn't consumed them (e.g. a bare '(01:10)' in SQL text).
+		if i < len(body) && body[i] >= '0' && body[i] <= '9' {
+			continue // not a host-var ref; keep scanning
+		}
+
+		name := scanName()
+		if name == "" {
+			// ':' not followed by a sigil or letter — not a host-var; keep scanning.
+			continue
+		}
+		name = strings.ToUpper(name)
+
+		// INDICATOR/LINDICATOR: this token is a prefix, not a host-var name.
+		// Skip whitespace, expect another ':', then scan the real name.
+		if name == "INDICATOR" || name == "LINDICATOR" {
+			for i < len(body) && (body[i] == ' ' || body[i] == '\t') {
+				i++
+				col++
+			}
+			if i >= len(body) || body[i] != ':' {
+				// Malformed INDICATOR prefix (no following ':name') — skip.
+				continue
+			}
+			i++ // consume ':'
+			col++
+			name = scanName()
+			if name == "" {
+				continue
+			}
+			name = strings.ToUpper(name)
+		}
+
+		// Array subscript: ':NAME(*)' or ':NAME(01:10)' — consume and discard.
+		// The colons inside the subscript are array-range syntax, not host-var refs.
+		if i < len(body) && body[i] == '(' {
+			skipParenSubscript()
+		}
+
+		refs = append(refs, model.HostVarRef{
+			Name: name,
+			Range: model.Range{
+				Start: model.Position{Line: refStartLine, Column: refStartCol},
+				End:   model.Position{Line: line, Column: col},
+			},
+		})
+	}
+
+	return refs
 }
 
 // extractHostVarRefs walks the parsed program and returns host-variable references
@@ -307,6 +498,23 @@ func extractHostVarRefs(prog *Program) []model.HostVarRef {
 			continue
 		}
 		addHostVars(del.WhereOperands)
+	}
+
+	// Task 7: Scan opaque body of PROCESS SQL statements for colon-mandatory
+	// host-var references. The body is raw text (never re-tokenized): only
+	// :name sequences are host vars; table names, SQL keywords, and other
+	// pass-through text are ignored (modeled gap, OQ-3).
+	for _, ps := range prog.ProcessSQLs {
+		if ps == nil {
+			continue
+		}
+		if ps.Body == "" {
+			continue // empty opaque body; no host vars to scan
+		}
+		// scanOpaqueHostVars returns refs in scan order; the final sort below
+		// will order them with native refs by source position.
+		opaqueRefs := scanOpaqueHostVars(ps.Body, ps.BodyRange.Start)
+		refs = append(refs, opaqueRefs...)
 	}
 
 	sort.SliceStable(refs, func(i, j int) bool {
