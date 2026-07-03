@@ -28,8 +28,10 @@ exported to files before it can be indexed.
 > ambiguity diagnostics — exposed as a workspace-index capability. **Adabas data-access extraction is now
 > implemented** (feature 08): `READ`/`FIND`/`GET` (read relationships) and `STORE` plus record-form
 > `UPDATE`/`DELETE` (write relationships) against DDMs, `DEFINE DATA` variable/parameter definitions, and
-> `DEFINE WORK FILE` definitions — per-file extraction only (name→DDM binding, and embedded-SQL data
-> access, remain deferred to feature 08b). The remaining
+> `DEFINE WORK FILE` definitions. **Embedded-SQL extraction is now implemented** (feature 08b): native SQL
+> and `PROCESS SQL` DDM read/write edges, `CALLDBPROC` call edges, and host-variable references. This is
+> per-file extraction only — cross-file binding (name→DDM/host-var *resolution* across the steplib chain,
+> and the record-form `UPDATE`/`DELETE` enclosing-loop file binding) remains future work. The remaining
 > navigation/hover/completion/call-hierarchy LSP *providers* that surface this to the editor are not yet
 > wired — this README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
@@ -90,9 +92,13 @@ that regex extraction cannot deliver reliably.
 The parser also handles **embedded SQL**: native Natural SQL statements (`SELECT`/`SELECT SINGLE`, `INSERT`,
 SQL-form `UPDATE`/`DELETE`, `MERGE`, `COMMIT`, `ROLLBACK`, `CALLDBPROC`, `READ RESULT SET`) are parsed into the
 AST with syntax diagnostics, accepting both the structured (`END-SELECT`/`END-RESULT`) and reporting-mode
-(`LOOP`) loop terminators, and `PROCESS SQL` bodies are held as a single opaque, unparsed `<<…>>` span. This is
-**parse-only** — binding SQL table names to DDMs and host-variables to their declarations is deferred to the
-data-access/embedded-SQL extraction feature.
+(`LOOP`) loop terminators, and `PROCESS SQL` bodies are held as a single opaque, unparsed `<<…>>` span.
+**Embedded-SQL extraction** (feature 08b) then walks that AST and emits the relationships those statements
+carry: DDM read edges (`SELECT`/`SELECT SINGLE`/`READ RESULT SET`), DDM write edges (`INSERT`/SQL-`UPDATE`/
+SQL-`DELETE`/`MERGE`), a `CALLDBPROC` call edge, and host-variable references — including a colon-mandatory
+scan of the `PROCESS SQL` opaque body (in-body table names are pass-through text and are *not* bound). What
+remains is cross-file **resolution** — binding those extracted SQL table names to DDMs and host-variables to
+their declarations across the steplib chain.
 
 Two kinds of analysis gap are handled separately, and neither is dropped silently:
 
@@ -384,13 +390,26 @@ edge.
 |-------------------------------|---------------------------------------------------------------------------|
 | `READ` / `FIND` / `GET`       | File/DDM name, read relationship — **shipped** (`GET SAME` → no edge)     |
 | `STORE`                       | File/DDM name, write relationship — **shipped**                           |
-| record `UPDATE` / `DELETE`    | Write relationship at the site, **no file name** (bound from the enclosing loop — deferred to 08b) — **shipped** |
+| record `UPDATE` / `DELETE`    | Write relationship at the site, **no file name** (bound from the enclosing loop — resolution deferred, OQ-4) — **shipped** |
 | `DEFINE DATA`                 | Variable declarations + parameter interfaces (level/type/dimensions/section kind, REDEFINE nesting) — **shipped** |
 | `DEFINE WORK FILE`            | Work-file definitions (number + name; dynamic names recorded verbatim) — **shipped** |
 
-Scope is Adabas-style data access against DDMs. Embedded-SQL data access (native `SELECT`/`INSERT`/SQL-form
-`UPDATE`/`DELETE`/`MERGE`/`PROCESS SQL`/`CALLDBPROC`) is parsed but its DDM/host-var extraction is deferred
-to feature 08b.
+Scope is Adabas-style data access against DDMs.
+
+### Embedded-SQL access *(extraction shipped — feature 08b)*
+
+| Construct                                   | Extracted                                                                  |
+|---------------------------------------------|----------------------------------------------------------------------------|
+| `SELECT` / `SELECT SINGLE`                  | `FROM` table → DDM **read** relationship — **shipped**                     |
+| `READ RESULT SET`                           | Read-access site (result-set handle is not a DDM → empty name) — **shipped** |
+| `INSERT` / SQL-`UPDATE` / SQL-`DELETE` / `MERGE` | Target table → DDM **write** relationship — **shipped**                |
+| `CALLDBPROC`                                | Stored-procedure **call** edge (literal → `CALLS`; variable/`&`-placeholder → `CALLS_DYNAMIC`) — **shipped** |
+| `PROCESS SQL`                               | `ddm-name` → DDM read edge; opaque `<<…>>` body scanned for colon host-vars (in-body table names *not* bound) — **shipped** |
+| host variables (native + opaque body)       | `HostVarRef` references (bare-or-colon in native clauses; colon-mandatory in the opaque body) — **shipped** |
+
+SQL table operands are `.NSD` DDM names (the same namespace as Adabas). Per-file extraction only —
+binding these SQL-sourced DDM/host-var references to their definitions (cross-file **resolution**) is
+future work.
 
 ### Program structure
 
