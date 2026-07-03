@@ -247,3 +247,74 @@ END
 		}
 	})
 }
+
+// TestExtractHostVarRefs_Native verifies Task 4 / FR-21:
+// host-variable operands in native SQL clauses (INTO, WHERE, VALUES, SET) are
+// extracted as HostVarRef entries with normalized names and correct ranges.
+// Both bare (#-prefixed) and colon-prefixed forms bind; reserved-word cases
+// (e.g., :DATE) are handled by colon-stripping.
+//
+// Acceptance criteria (Task 4):
+//   - Host-var operands from IntoTargets, WhereOperands, Values, SetTargets are extracted
+//   - Name is normalized: sigil (#, &, @, +) preserved, colon stripped, upper-cased
+//   - Bare (#VAR) and colon-prefixed (:DATE) both extract to the same normalized form
+//   - Range spans the operand token exactly (after colon, if present)
+//   - Zero false edges: column names (COL1, COL2) and DDM table names (SQL-PERSONNEL)
+//     are NOT extracted as host-var refs
+//   - Entries are in source order
+func TestExtractHostVarRefs_Native(t *testing.T) {
+	t.Run("select_with_bare_and_colon_hostvars", func(t *testing.T) {
+		// Arrange: read fixture with bare (#) and colon-prefixed (:) host vars
+		content, err := os.ReadFile(filepath.Join("testdata", "sqlaccess", "hostvars_native.NSP"))
+		if err != nil {
+			t.Fatalf("failed to read fixture: %v", err)
+		}
+
+		// Parse to AST
+		lexer := NewLexer(string(content))
+		parser := NewParser(lexer)
+		prog, err := parser.Parse()
+		if prog == nil {
+			t.Fatal("parser returned nil AST")
+		}
+
+		// Act: extract host-var references (not yet implemented)
+		refs := extractHostVarRefs(prog)
+
+		// Assert: exactly 4 host-var refs expected
+		// #NAME (FROM INTO), #SALARY (INTO), #PERS-ID (WHERE), DATE (FROM :DATE)
+		if len(refs) != 4 {
+			t.Errorf("extractHostVarRefs returned %d refs, want 4", len(refs))
+			for i, r := range refs {
+				t.Logf("  ref[%d]: Name=%q Range=%v", i, r.Name, r.Range)
+			}
+			return
+		}
+
+		// Expected refs in source order:
+		expectedNames := []string{"#NAME", "#SALARY", "#PERS-ID", "DATE"}
+
+		// Assert: all names are present and normalized (colon stripped, upper-cased)
+		for i, wantName := range expectedNames {
+			if refs[i].Name != wantName {
+				t.Errorf("refs[%d].Name = %q, want %q", i, refs[i].Name, wantName)
+			}
+
+			// Assert: Range is non-zero (spans the operand token)
+			if refs[i].Range.Start == refs[i].Range.End {
+				t.Errorf("refs[%d].Range is zero (empty), want non-zero range", i)
+			}
+		}
+
+		// Sanity check: no column names (COL1, COL2) or DDM table name (SQL-PERSONNEL)
+		// should appear in the refs
+		for _, ref := range refs {
+			if ref.Name == "COL1" || ref.Name == "COL2" {
+				t.Errorf("column name %q leaked into host-var refs (should not be extracted)", ref.Name)
+			}
+			if ref.Name == "SQL-PERSONNEL" {
+				t.Errorf("DDM table name SQL-PERSONNEL leaked into host-var refs (should not be extracted)")
+			}
+		}
+	})
+}

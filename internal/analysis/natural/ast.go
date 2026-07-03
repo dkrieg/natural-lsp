@@ -14,6 +14,13 @@ import "natural-lsp/internal/model"
 type OperandRef struct {
 	Name  string      // the operand name (e.g., "COL1", "#VAR", "EMPLOYEES")
 	Range model.Range // source range of the operand in the file
+	// HostVar reports whether this operand was written with a leading colon
+	// (":VAR"), the mandatory marker for a native-SQL host variable whose name
+	// carries no Natural sigil (e.g. the reserved-word case ":DATE"). The colon
+	// itself is stripped from Name; sigil-prefixed host vars (#/&/+/@) are
+	// recognized from Name directly and do not need this flag. Meaningless for
+	// table/column operands, where it is always false.
+	HostVar bool
 }
 
 // Node is the base interface for all AST nodes.

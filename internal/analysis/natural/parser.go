@@ -1451,15 +1451,18 @@ func (p *Parser) parseSelectWhere() []OperandRef {
 		}
 
 		// Consume optional leading colon before host-var operand.
+		hostVar := false
 		if p.matches(TokenPunctuation, ":") {
 			p.advance()
+			hostVar = true
 		}
 
 		// Capture operand (identifier or keyword).
 		if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
 			operands = append(operands, OperandRef{
-				Name:  p.current.Literal,
-				Range: tokenRange(p.current),
+				Name:    p.current.Literal,
+				Range:   tokenRange(p.current),
+				HostVar: hostVar,
 			})
 			p.advance()
 		} else {
@@ -1812,15 +1815,18 @@ func (p *Parser) parseInsertStatement(ast *Program) {
 			// Collect operands until closing paren
 			for p.current.Type != TokenEOF && !p.matches(TokenPunctuation, ")") {
 				// Consume optional leading colon
+				hostVar := false
 				if p.matches(TokenPunctuation, ":") {
 					p.advance()
+					hostVar = true
 				}
 
 				// Capture operand (identifier, keyword, or literal)
 				if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword || p.current.Type == TokenLiteralNumeric {
 					ins.Values = append(ins.Values, OperandRef{
-						Name:  p.current.Literal,
-						Range: tokenRange(p.current),
+						Name:    p.current.Literal,
+						Range:   tokenRange(p.current),
+						HostVar: hostVar,
 					})
 					p.advance()
 				} else {
@@ -1908,6 +1914,7 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 		p.advance() // Now at COL
 
 		// Collect operands in SET until WHERE or next statement
+		colonPending := false
 		for p.current.Type != TokenEOF && !p.matchesLiteral("WHERE") && !isStatementKeyword(p.current.Literal) {
 			if p.current.Type == TokenEOF || p.matchesLiteral("WHERE") {
 				break
@@ -1917,9 +1924,10 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 				break
 			}
 
-			// Consume optional leading colon
+			// Consume optional leading colon; remember it for the next operand.
 			if p.matches(TokenPunctuation, ":") {
 				p.advance()
+				colonPending = true
 				continue
 			}
 
@@ -1932,10 +1940,12 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 			// Capture operand (identifier or keyword)
 			if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
 				upd.SetTargets = append(upd.SetTargets, OperandRef{
-					Name:  p.current.Literal,
-					Range: tokenRange(p.current),
+					Name:    p.current.Literal,
+					Range:   tokenRange(p.current),
+					HostVar: colonPending,
 				})
 				p.advance()
+				colonPending = false
 			} else {
 				// Skip any other token type (punctuation, literals, etc.)
 				p.advance()
@@ -1948,6 +1958,7 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 		p.advance()
 
 		// Collect operands until next statement keyword or program terminator
+		colonPending := false
 		for p.current.Type != TokenEOF && !isStatementKeyword(p.current.Literal) {
 			// Check for end of WHERE clause
 			if p.current.Type == TokenEOF || isStatementKeyword(p.current.Literal) {
@@ -1958,9 +1969,10 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 				break
 			}
 
-			// Consume optional leading colon
+			// Consume optional leading colon; remember it for the next operand.
 			if p.matches(TokenPunctuation, ":") {
 				p.advance()
+				colonPending = true
 				continue
 			}
 
@@ -1973,10 +1985,12 @@ func (p *Parser) parseUpdateStatement(ast *Program) {
 			// Capture operand (identifier or keyword)
 			if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
 				upd.WhereOperands = append(upd.WhereOperands, OperandRef{
-					Name:  p.current.Literal,
-					Range: tokenRange(p.current),
+					Name:    p.current.Literal,
+					Range:   tokenRange(p.current),
+					HostVar: colonPending,
 				})
 				p.advance()
+				colonPending = false
 			} else {
 				// Skip any other token type
 				p.advance()
@@ -2039,15 +2053,18 @@ func (p *Parser) parseDeleteStatement(ast *Program) {
 				}
 
 				// Consume optional leading colon
+				hostVar := false
 				if p.matches(TokenPunctuation, ":") {
 					p.advance()
+					hostVar = true
 				}
 
 				// Capture operand
 				if p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword {
 					del.WhereOperands = append(del.WhereOperands, OperandRef{
-						Name:  p.current.Literal,
-						Range: tokenRange(p.current),
+						Name:    p.current.Literal,
+						Range:   tokenRange(p.current),
+						HostVar: hostVar,
 					})
 					p.advance()
 				} else {
