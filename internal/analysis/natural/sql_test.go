@@ -319,6 +319,82 @@ func TestExtractHostVarRefs_Native(t *testing.T) {
 	})
 }
 
+// TestExtractHostVarRefs_WriteClauses verifies host-var extraction from INSERT VALUES,
+// SQL-UPDATE SET+WHERE, and SQL-DELETE WHERE clauses. These are regression tests
+// for gap 1 (reviewer-confirmed behavior already working in the code, now locked in).
+//
+// Acceptance criteria:
+//   - INSERT VALUES clause extracts host-var operands
+//   - SQL UPDATE SET and WHERE clauses extract host-var operands
+//   - SQL DELETE WHERE clause extracts host-var operands
+//   - No false edges from column names or SQL keywords
+//   - Names are normalized (colon stripped, upper-cased, sigils preserved)
+func TestExtractHostVarRefs_WriteClauses(t *testing.T) {
+	tests := []struct {
+		name         string
+		fixture      string
+		wantHostVars []string
+	}{
+		{
+			name:         "insert_values",
+			fixture:      filepath.Join("testdata", "sqlaccess", "insert.NSP"),
+			wantHostVars: []string{"#CUST-ID", "#CUST-NAME", "#EMAIL"},
+		},
+		{
+			name:         "sql_update_set_where",
+			fixture:      filepath.Join("testdata", "sqlaccess", "sql_update.NSP"),
+			wantHostVars: []string{"#NEW-SALARY", "#EMP-ID", "#DEPT-ID"},
+		},
+		{
+			name:         "sql_delete_where",
+			fixture:      filepath.Join("testdata", "sqlaccess", "sql_delete.NSP"),
+			wantHostVars: []string{"#ORDER-ID", "#STATUS"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: read fixture
+			content, err := os.ReadFile(tc.fixture)
+			if err != nil {
+				t.Fatalf("failed to read fixture %q: %v", tc.fixture, err)
+			}
+
+			// Parse to AST
+			lexer := NewLexer(string(content))
+			parser := NewParser(lexer)
+			prog, err := parser.Parse()
+			if prog == nil {
+				t.Fatal("parser returned nil AST")
+			}
+
+			// Act: extract host-var references
+			refs := extractHostVarRefs(prog)
+
+			// Assert: correct count of host-var refs
+			if len(refs) != len(tc.wantHostVars) {
+				t.Errorf("extractHostVarRefs returned %d refs, want %d", len(refs), len(tc.wantHostVars))
+				for i, r := range refs {
+					t.Logf("  ref[%d]: Name=%q Range=%v", i, r.Name, r.Range)
+				}
+				return
+			}
+
+			// Assert: each ref name matches expected (in source order)
+			for i, wantName := range tc.wantHostVars {
+				if refs[i].Name != wantName {
+					t.Errorf("refs[%d].Name = %q, want %q", i, refs[i].Name, wantName)
+				}
+
+				// Assert: Range is non-zero
+				if refs[i].Range.Start == refs[i].Range.End {
+					t.Errorf("refs[%d].Range is zero (empty), want non-zero range", i)
+				}
+			}
+		})
+	}
+}
+
 // TestExtractSQLAccess_Merge verifies Task 5 / FR-20: a MERGE statement emits
 // exactly one EdgeWrites entry for its target DDM table. Requires the parser to
 // capture the MERGE INTO <table> operand (Task 5a); the merge body (USING/WHEN
@@ -385,6 +461,53 @@ func TestExtractSQLCalls_CallDBProc(t *testing.T) {
 	}
 	if edges[0].Source.Start == edges[0].Source.End {
 		t.Error("edge Source is zero, want non-zero call-site range")
+	}
+}
+
+// TestExtractSQLCalls_CallDBProc_Dynamic verifies dynamic edge kinds for CALLDBPROC.
+// This is a regression test for gap 2 (reviewer-confirmed behavior already working
+// in the code, now locked in). Consistent with feature-06 CALLNAT handling:
+//   - Variable proc name (#PROCVAR) → EdgeCallsDynamic
+//   - &-placeholder literal ('PRC&X') → EdgeCallsDynamic (runtime substitution)
+func TestExtractSQLCalls_CallDBProc_Dynamic(t *testing.T) {
+	fixture := filepath.Join("testdata", "sqlaccess", "calldbproc_dynamic.NSP")
+	content, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("failed to read fixture %q: %v", fixture, err)
+	}
+
+	prog, err := NewParser(NewLexer(string(content))).Parse()
+	if prog == nil {
+		t.Fatalf("parser returned nil AST (err=%v)", err)
+	}
+
+	edges := extractSQLCalls(prog)
+
+	// Expect 2 CALLDBPROC edges: one variable, one &-placeholder
+	if len(edges) != 2 {
+		t.Fatalf("got %d SQL call edges, want 2: %+v", len(edges), edges)
+	}
+
+	// First edge: variable proc name #PROCVAR → EdgeCallsDynamic
+	if edges[0].Kind != model.EdgeCallsDynamic {
+		t.Errorf("edges[0].Kind = %v, want %v (variable proc name)", edges[0].Kind, model.EdgeCallsDynamic)
+	}
+	if edges[0].TargetName != "#PROCVAR" {
+		t.Errorf("edges[0].TargetName = %q, want %q", edges[0].TargetName, "#PROCVAR")
+	}
+	if edges[0].Source.Start == edges[0].Source.End {
+		t.Error("edges[0].Source is zero, want non-zero call-site range")
+	}
+
+	// Second edge: &-placeholder literal 'GET_&LANG' → EdgeCallsDynamic
+	if edges[1].Kind != model.EdgeCallsDynamic {
+		t.Errorf("edges[1].Kind = %v, want %v (&-placeholder literal)", edges[1].Kind, model.EdgeCallsDynamic)
+	}
+	if edges[1].TargetName != "GET_&LANG" {
+		t.Errorf("edges[1].TargetName = %q, want %q (quotes stripped, & preserved)", edges[1].TargetName, "GET_&LANG")
+	}
+	if edges[1].Source.Start == edges[1].Source.End {
+		t.Error("edges[1].Source is zero, want non-zero call-site range")
 	}
 }
 
@@ -669,12 +792,11 @@ func TestExtractSQLAccess_ProcessSQL_DDMEdgeAndOpaqueBodyHostVars(t *testing.T) 
 			t.Fatalf("extractSQLAccess returned %d EdgeReads entries, want at least 1 for the DDM operand", len(reads))
 		}
 
-		// Find the one that matches the PROCESS SQL DDM (not any from opaque body).
-		// The fixture has only one PROCESS SQL, so we expect exactly one read.
-		// (Task 8 will merge this with native SQL reads, but here we're testing Task 7 in isolation.)
+		// Assert: exactly one read for the PROCESS SQL DDM (the isolated fixture contains
+		// only one PROCESS SQL statement, so we expect exactly one EdgeReads entry).
 		if len(reads) != 1 {
-			t.Logf("WARNING: got %d EdgeReads entries; Task 7 should emit exactly 1 for the PROCESS SQL DDM", len(reads))
-			t.Logf("Entries: %+v", reads)
+			t.Errorf("got %d EdgeReads entries, want exactly 1 for the PROCESS SQL DDM operand: %+v", len(reads), reads)
+			return
 		}
 
 		// Assert: the read has the correct DDM name and non-zero range.
