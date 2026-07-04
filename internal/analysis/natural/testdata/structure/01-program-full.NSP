@@ -1,0 +1,22 @@
+* T2 fixture: Program with data section, group, REDEFINE, subroutine, and map
+* Exercises root + section + fields + REDEFINE nesting + subroutine + map
+
+DEFINE DATA
+LOCAL
+  1 EMPLOYEE-REC
+    2 EMP-ID (N5)
+    2 EMP-NAME (A40)
+    2 EMP-SALARY (N9.2)
+  1 EMP-ID-ALT REDEFINE EMP-ID (A5)
+END DEFINE
+
+DEFINE MAP 'EMPSCREEN'
+  1 MAP-FIELD (A10)
+  1 MAP-NUMBER (N5)
+END-MAP
+
+DEFINE SUBROUTINE PROCESS-EMP
+  WRITE 'Processing employee'
+END-SUBROUTINE
+
+END

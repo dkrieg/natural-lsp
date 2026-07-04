@@ -1,0 +1,12 @@
+* T2 fixture: Standalone map definition
+* Exercises SymbolMap at object or under object root
+
+DEFINE MAP 'MAINSCREEN'
+  1 SCREEN-TITLE (A60)
+  1 SCREEN-CONTENT
+    2 FIELD-A (A20)
+    2 FIELD-B (N5)
+  1 SCREEN-FOOTER (A40)
+END-MAP
+
+END

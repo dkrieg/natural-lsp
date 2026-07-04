@@ -424,6 +424,7 @@ func (p *Parser) parseDimensions(spec string) []ArrayBound {
 }
 
 // parseSubroutine parses a DEFINE SUBROUTINE block.
+// A subroutine can contain a DEFINE DATA PARAMETER section and statements.
 func (p *Parser) parseSubroutine(ast *Program, startPos model.Position) {
 	sub := &Subroutine{
 		StartPos: startPos,
@@ -432,17 +433,27 @@ func (p *Parser) parseSubroutine(ast *Program, startPos model.Position) {
 	// Consume SUBROUTINE keyword
 	p.advance()
 
+	// Parse the subroutine name (should be an identifier).
 	if p.matches(TokenIdentifier) {
 		sub.Name = p.current.Literal
 		p.advance()
 	}
 
+	// Parse the body until END-SUBROUTINE.
 	for p.current.Type != TokenEOF {
+		// Natural allows both "END-SUBROUTINE" (hyphenated identifier) and "END SUBROUTINE" (two tokens).
 		if p.matches(TokenKeyword, "END") {
 			p.advance()
-			if p.matches(TokenIdentifier, "SUBROUTINE") {
+			// Consume the optional SUBROUTINE word after END. matchesLiteral is
+			// token-type-agnostic, so SUBROUTINE need not be a reserved keyword.
+			if p.matchesLiteral("SUBROUTINE") {
 				p.advance()
 			}
+			break
+		}
+		// Handle "END-SUBROUTINE" as a single identifier token (due to lexer's hyphen handling).
+		if p.matches(TokenIdentifier, "END-SUBROUTINE") {
+			p.advance()
 			break
 		}
 		p.advance()
@@ -453,6 +464,8 @@ func (p *Parser) parseSubroutine(ast *Program, startPos model.Position) {
 }
 
 // parseMap parses a DEFINE MAP block.
+// Map names can be either quoted string literals ('MAPNAME') or unquoted identifiers (MAPNAME).
+// Map fields are parsed using the same level-based nesting structure as DEFINE DATA sections.
 func (p *Parser) parseMap(ast *Program, startPos model.Position) {
 	m := &Map{
 		StartPos: startPos,
@@ -461,20 +474,55 @@ func (p *Parser) parseMap(ast *Program, startPos model.Position) {
 	// Consume MAP keyword
 	p.advance()
 
-	if p.matches(TokenIdentifier) {
+	// Accept the map name as either a string literal or an identifier.
+	if p.matches(TokenLiteralString) {
+		m.Name = p.consumeStringTarget()
+	} else if p.matches(TokenIdentifier) {
 		m.Name = p.current.Literal
 		p.advance()
 	}
 
+	// Parse map fields using the same level-based nesting as DEFINE DATA sections.
+	parentStack := make([]*DataField, 0, 8)
 	for p.current.Type != TokenEOF {
+		// Stop when we reach END, END-MAP (hyphenated), or END MAP (two tokens).
+		// matchesLiteral is token-type-agnostic, so MAP need not be a reserved keyword.
 		if p.matches(TokenKeyword, "END") {
 			p.advance()
-			if p.matches(TokenKeyword, "MAP") {
+			if p.matchesLiteral("MAP") {
 				p.advance()
 			}
 			break
 		}
-		p.advance()
+		// Handle "END-MAP" as a single identifier token (due to lexer's hyphen handling).
+		if p.matches(TokenIdentifier, "END-MAP") {
+			p.advance()
+			break
+		}
+
+		// Each field line begins with a numeric level number.
+		if !p.matches(TokenLiteralNumeric) {
+			p.advance() // skip non-level tokens (malformed — FR-43)
+			continue
+		}
+
+		field := p.parseDataField()
+		if field == nil {
+			continue // field was incomplete
+		}
+
+		// Maintain parent stack for nesting.
+		for len(parentStack) > 0 && parentStack[len(parentStack)-1].Level >= field.Level {
+			parentStack = parentStack[:len(parentStack)-1]
+		}
+
+		if len(parentStack) == 0 {
+			m.Fields = append(m.Fields, field)
+		} else {
+			parentStack[len(parentStack)-1].Children = append(parentStack[len(parentStack)-1].Children, field)
+		}
+
+		parentStack = append(parentStack, field)
 	}
 
 	m.EndPos = p.prevPos()
