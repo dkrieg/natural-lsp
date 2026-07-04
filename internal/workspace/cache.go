@@ -13,7 +13,7 @@ import (
 	"os"
 )
 
-const cacheFormatVersion = "0.5.0"
+const cacheFormatVersion = "0.6.0"
 
 // CacheFile represents the on-disk cache format.
 type CacheFile struct {
@@ -30,6 +30,7 @@ type cacheEntry struct {
 	Definitions []model.DataDefinition  `json:"definitions"`
 	WorkFiles   []model.WorkFile        `json:"workFiles"`
 	HostVarRefs []model.HostVarRef      `json:"hostVarRefs"`
+	Structure   *model.Symbol           `json:"structure,omitempty"`
 	ContentHash string                  `json:"contentHash"`
 }
 
@@ -54,6 +55,7 @@ func Save(idx *Index, path string) error {
 			Definitions: fa.Definitions,
 			WorkFiles:   fa.WorkFiles,
 			HostVarRefs: fa.HostVarRefs,
+			Structure:   fa.Structure,
 			ContentHash: hash,
 		}
 	})
@@ -113,6 +115,7 @@ func Load(path string, currentHashes map[string]string, logger *slog.Logger) (*I
 			Definitions: entry.Definitions,
 			WorkFiles:   entry.WorkFiles,
 			HostVarRefs: entry.HostVarRefs,
+			Structure:   entry.Structure,
 		}
 		idx.Add(path, fa)
 

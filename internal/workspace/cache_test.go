@@ -1037,3 +1037,291 @@ func TestSave_Load_WorkFiles(t *testing.T) {
 		})
 	}
 }
+
+// TestSave_Load_Structure verifies that FileAnalysis.Structure (the program-structure tree)
+// is persisted correctly and survives a cache Save→Load round-trip.
+// This tests Task 6 (FR-23): persistence of the hierarchical structure model for outline/navigation.
+// The Structure field carries a nested model.Symbol tree (root object with data-section children
+// containing data-field children, plus subroutine and map children).
+func TestSave_Load_Structure(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"persists Structure across round-trip"},
+		{"preserves nested Symbol children and ranges"},
+		{"preserves SelectionRange for name tokens"},
+		{"roundtrips object root with multiple child kinds (sections, subroutines, maps)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build a nested Symbol structure: object root with a data-section child
+			// (containing a data-field child) and a subroutine child.
+			structure := &model.Symbol{
+				Kind: model.SymbolObject,
+				Name: "TESTPROG",
+				Range: model.Range{
+					Start: model.Position{Line: 1, Column: 1},
+					End:   model.Position{Line: 50, Column: 80},
+				},
+				SelectionRange: model.Range{
+					Start: model.Position{Line: 1, Column: 1},
+					End:   model.Position{Line: 1, Column: 8},
+				},
+				Children: []model.Symbol{
+					// Data section child
+					{
+						Kind: model.SymbolDataSection,
+						Name: "LOCAL",
+						Range: model.Range{
+							Start: model.Position{Line: 3, Column: 1},
+							End:   model.Position{Line: 15, Column: 50},
+						},
+						SelectionRange: model.Range{
+							Start: model.Position{Line: 3, Column: 1},
+							End:   model.Position{Line: 3, Column: 21},
+						},
+						Children: []model.Symbol{
+							// Data field child nested within section
+							{
+								Kind: model.SymbolDataField,
+								Name: "EMPLOYEE_NAME",
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 3},
+									End:   model.Position{Line: 5, Column: 30},
+								},
+								SelectionRange: model.Range{
+									Start: model.Position{Line: 5, Column: 5},
+									End:   model.Position{Line: 5, Column: 18},
+								},
+								Children: nil,
+							},
+						},
+					},
+					// Subroutine child
+					{
+						Kind: model.SymbolSubroutine,
+						Name: "PROCESS_DATA",
+						Range: model.Range{
+							Start: model.Position{Line: 20, Column: 1},
+							End:   model.Position{Line: 45, Column: 30},
+						},
+						SelectionRange: model.Range{
+							Start: model.Position{Line: 20, Column: 18},
+							End:   model.Position{Line: 20, Column: 30},
+						},
+						Children: nil,
+					},
+				},
+			}
+
+			// Build an index with the Structure populated.
+			idx := &Index{}
+			idx.Add("testprog.NSP", model.FileAnalysis{
+				ObjectType: model.ObjectProgram,
+				Structure:  structure,
+			})
+
+			// Save the index.
+			err := Save(idx, cachePath)
+			if err != nil {
+				t.Fatalf("Save() returned error: %v", err)
+			}
+
+			// Load the index.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			if loaded == nil {
+				t.Fatal("Load() returned nil index")
+			}
+
+			if len(stale) != 0 {
+				t.Errorf("Load() returned %d stale files, want 0: %v", len(stale), stale)
+			}
+
+			// Retrieve the loaded FileAnalysis and verify Structure round-tripped.
+			fa, ok := loaded.Get("testprog.NSP")
+			if !ok {
+				t.Fatal("Load() missing file testprog.NSP")
+			}
+
+			if fa.Structure == nil {
+				t.Fatal("Load() returned nil Structure, want populated structure tree")
+			}
+
+			// Verify root node properties.
+			if fa.Structure.Kind != model.SymbolObject {
+				t.Errorf("Structure.Kind = %s, want %s", fa.Structure.Kind, model.SymbolObject)
+			}
+			if fa.Structure.Name != "TESTPROG" {
+				t.Errorf("Structure.Name = %q, want %q", fa.Structure.Name, "TESTPROG")
+			}
+			if fa.Structure.Range.Start.Line != 1 {
+				t.Errorf("Structure.Range.Start.Line = %d, want 1", fa.Structure.Range.Start.Line)
+			}
+			if fa.Structure.Range.End.Line != 50 {
+				t.Errorf("Structure.Range.End.Line = %d, want 50", fa.Structure.Range.End.Line)
+			}
+			if fa.Structure.SelectionRange.Start.Line != 1 {
+				t.Errorf("Structure.SelectionRange.Start.Line = %d, want 1", fa.Structure.SelectionRange.Start.Line)
+			}
+
+			// Verify root has children (data section + subroutine).
+			if len(fa.Structure.Children) != 2 {
+				t.Errorf("Structure.Children count = %d, want 2", len(fa.Structure.Children))
+			}
+
+			// Verify first child: data section.
+			if len(fa.Structure.Children) >= 1 {
+				dataSection := fa.Structure.Children[0]
+				if dataSection.Kind != model.SymbolDataSection {
+					t.Errorf("Structure.Children[0].Kind = %s, want %s", dataSection.Kind, model.SymbolDataSection)
+				}
+				if dataSection.Name != "LOCAL" {
+					t.Errorf("Structure.Children[0].Name = %q, want %q", dataSection.Name, "LOCAL")
+				}
+				if dataSection.Range.Start.Line != 3 {
+					t.Errorf("Structure.Children[0].Range.Start.Line = %d, want 3", dataSection.Range.Start.Line)
+				}
+
+				// Verify data-field child nested within section.
+				if len(dataSection.Children) != 1 {
+					t.Errorf("Structure.Children[0].Children count = %d, want 1", len(dataSection.Children))
+				}
+				if len(dataSection.Children) >= 1 {
+					field := dataSection.Children[0]
+					if field.Kind != model.SymbolDataField {
+						t.Errorf("dataSection.Children[0].Kind = %s, want %s", field.Kind, model.SymbolDataField)
+					}
+					if field.Name != "EMPLOYEE_NAME" {
+						t.Errorf("dataSection.Children[0].Name = %q, want %q", field.Name, "EMPLOYEE_NAME")
+					}
+					if field.Range.Start.Column != 3 {
+						t.Errorf("dataSection.Children[0].Range.Start.Column = %d, want 3", field.Range.Start.Column)
+					}
+					if field.SelectionRange.Start.Column != 5 {
+						t.Errorf("dataSection.Children[0].SelectionRange.Start.Column = %d, want 5", field.SelectionRange.Start.Column)
+					}
+				}
+			}
+
+			// Verify second child: subroutine.
+			if len(fa.Structure.Children) >= 2 {
+				subroutine := fa.Structure.Children[1]
+				if subroutine.Kind != model.SymbolSubroutine {
+					t.Errorf("Structure.Children[1].Kind = %s, want %s", subroutine.Kind, model.SymbolSubroutine)
+				}
+				if subroutine.Name != "PROCESS_DATA" {
+					t.Errorf("Structure.Children[1].Name = %q, want %q", subroutine.Name, "PROCESS_DATA")
+				}
+				if subroutine.Range.Start.Line != 20 {
+					t.Errorf("Structure.Children[1].Range.Start.Line = %d, want 20", subroutine.Range.Start.Line)
+				}
+				if subroutine.SelectionRange.Start.Column != 18 {
+					t.Errorf("Structure.Children[1].SelectionRange.Start.Column = %d, want 18", subroutine.SelectionRange.Start.Column)
+				}
+			}
+		})
+	}
+}
+
+// TestLoad_CacheVersionBumpedForStructure verifies that a cache created before
+// Task 6 (format version 0.5.0) is marked as fully stale when the version is
+// bumped to 0.6.0 to accommodate the new Structure field.
+// This test FAILS until the cache format version is bumped to "0.6.0"
+// (GREEN phase / Task 6 of feature 09-program-structure-extraction).
+//
+// Task 6 spec: "Bump cacheFormatVersion '0.5.0' → '0.6.0' in
+// internal/workspace/cache.go; cache round-trips a FileAnalysis carrying
+// Structure and rejects a 0.5.0 cache (forces rebuild)."
+//
+// This test arranges a 0.5.0 cache (the pre-Structure version) and verifies
+// that Load() at the new 0.6.0 version treats it as stale (all files marked
+// for rebuild).
+func TestLoad_CacheVersionBumpedForStructure(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"0.5.0 cache marked stale when version bumped to 0.6.0"},
+		{"forces full rebuild on Structure field addition"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build an index and save it (at the current version).
+			idx := &Index{}
+			idx.Add("test.NSP", model.FileAnalysis{
+				ObjectType: model.ObjectProgram,
+			})
+
+			err := Save(idx, cachePath)
+			if err != nil {
+				t.Fatalf("Save() returned error: %v", err)
+			}
+
+			// Manually downgrade the cache to version 0.5.0 (the pre-Structure version).
+			// Read the current cache content.
+			content, err := os.ReadFile(cachePath)
+			if err != nil {
+				t.Fatalf("Failed to read cache file: %v", err)
+			}
+
+			// Replace the current version string with 0.5.0 (pre-Structure).
+			oldVersion := "0.5.0"
+			newContent := string(content)
+			newContent = strings.Replace(newContent, cacheFormatVersion, oldVersion, 1)
+
+			// Write the downgraded cache back.
+			if err := os.WriteFile(cachePath, []byte(newContent), 0644); err != nil {
+				t.Fatalf("Failed to write downgraded cache: %v", err)
+			}
+
+			// Try to load the cache - should treat it as stale due to version mismatch.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			// Verify Load() returns nil index (stale, version mismatch).
+			if loaded != nil {
+				t.Error("Load() returned non-nil index for 0.5.0 cache, want nil (stale)")
+			}
+
+			// Verify stale list contains the file (forces rebuild).
+			if len(stale) == 0 {
+				t.Error("Load() returned empty stale list for version mismatch, want all files marked stale")
+			}
+
+			// Verify the stale list contains our test file.
+			foundStale := false
+			for _, s := range stale {
+				if s == "test.NSP" {
+					foundStale = true
+					break
+				}
+			}
+			if !foundStale {
+				t.Errorf("Load() did not mark test.NSP as stale: %v", stale)
+			}
+		})
+	}
+}
