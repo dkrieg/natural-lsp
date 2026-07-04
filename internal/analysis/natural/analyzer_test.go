@@ -1649,6 +1649,173 @@ func TestAnalyze_SQLExtraction_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestAnalyze_StructurePopulated_EndToEnd (Task 5 RED / Feature 09)
+// verifies that Analyze wires extractStructure into the analysis pipeline and
+// returns FileAnalysis with Structure populated for parsed objects.
+//
+// Acceptance criteria (Task 5 / FR-23):
+//   - Analyze(01-program-full.NSP) returns FileAnalysis with Structure != nil
+//   - Structure.Kind = SymbolObject, Structure.Name = "01-program-full"
+//   - Structure.Range spans the entire program (from prog.StartPos to prog.EndPos)
+//   - Structure.Children contains expected child kinds in source order:
+//     at least one SymbolDataSection (LOCAL), at least one SymbolSubroutine,
+//     at least one SymbolMap
+//   - Files with ast==nil (unknown extension, empty content) yield Structure==nil
+//
+// Fixture: testdata/structure/01-program-full.NSP (T2 fixture) contains:
+//   - DEFINE DATA LOCAL with a group + REDEFINE nested field
+//   - DEFINE MAP 'EMPSCREEN' with fields
+//   - DEFINE SUBROUTINE PROCESS-EMP
+//
+// This test is RED: Analyze does not yet call extractStructure, so Structure
+// will remain nil even though the AST is successfully parsed.
+func TestAnalyze_StructurePopulated_EndToEnd(t *testing.T) {
+	// Read the T2 fixture from testdata/structure/
+	fixturePath := filepath.Join("testdata", "structure", "01-program-full.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("Failed to read fixture %s: %v", fixturePath, err)
+	}
+
+	// Call Analyze through the public interface
+	var a analysis.Analyzer = New(nil)
+	result, err := a.Analyze(fixturePath, content)
+
+	// Assert no error (graceful degradation per FR-43)
+	if err != nil {
+		t.Errorf("Analyze(%q, …) error = %v, want nil", fixturePath, err)
+	}
+
+	tests := []struct {
+		name   string
+		verify func(t *testing.T, result model.FileAnalysis)
+	}{
+		{
+			name: "Analyze_StructurePopulated_structureNotNil",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				// FR-23: Structure must be populated (not nil) for a parsed object
+				if result.Structure == nil {
+					t.Fatal("FileAnalysis.Structure is nil; want populated Structure from 01-program-full.NSP")
+				}
+			},
+		},
+		{
+			name: "Analyze_StructurePopulated_rootKind",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				if result.Structure == nil {
+					t.Skip("Structure is nil")
+				}
+
+				// Root must have Kind = SymbolObject
+				if result.Structure.Kind != model.SymbolObject {
+					t.Errorf("Structure.Kind = %q, want %q (SymbolObject)", result.Structure.Kind, model.SymbolObject)
+				}
+			},
+		},
+		{
+			name: "Analyze_StructurePopulated_rootName",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				if result.Structure == nil {
+					t.Skip("Structure is nil")
+				}
+
+				// Root name must be derived from the filename (01-program-full.NSP → 01-program-full)
+				if result.Structure.Name != "01-program-full" {
+					t.Errorf("Structure.Name = %q, want '01-program-full' (from filename without extension)",
+						result.Structure.Name)
+				}
+			},
+		},
+		{
+			name: "Analyze_StructurePopulated_rootRange",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				if result.Structure == nil {
+					t.Skip("Structure is nil")
+				}
+
+				// Root range must be non-zero (spanning the entire program)
+				if result.Structure.Range.Start.Line == 0 && result.Structure.Range.Start.Column == 0 &&
+					result.Structure.Range.End.Line == 0 && result.Structure.Range.End.Column == 0 {
+					t.Error("Structure.Range is zero; want non-zero span of entire program")
+				}
+			},
+		},
+		{
+			name: "Analyze_StructurePopulated_hasChildren",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				if result.Structure == nil {
+					t.Skip("Structure is nil")
+				}
+
+				// Root must have children (data sections, subroutines, maps)
+				if len(result.Structure.Children) == 0 {
+					t.Error("Structure.Children is empty; want children (sections, subroutines, maps)")
+				}
+			},
+		},
+		{
+			name: "Analyze_StructurePopulated_childKinds",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				if result.Structure == nil || len(result.Structure.Children) == 0 {
+					t.Skip("Structure or Children is empty")
+				}
+
+				// Verify that children contain at least one of each expected kind
+				hasDataSection := false
+				hasSubroutine := false
+				hasMap := false
+
+				for _, child := range result.Structure.Children {
+					if child.Kind == model.SymbolDataSection {
+						hasDataSection = true
+					}
+					if child.Kind == model.SymbolSubroutine {
+						hasSubroutine = true
+					}
+					if child.Kind == model.SymbolMap {
+						hasMap = true
+					}
+				}
+
+				if !hasDataSection {
+					t.Error("Children do not contain SymbolDataSection; want at least one from LOCAL section")
+				}
+				if !hasSubroutine {
+					t.Error("Children do not contain SymbolSubroutine; want at least one from DEFINE SUBROUTINE")
+				}
+				if !hasMap {
+					t.Error("Children do not contain SymbolMap; want at least one from DEFINE MAP")
+				}
+			},
+		},
+		{
+			name: "Analyze_StructurePopulated_childrenSourceOrdered",
+			verify: func(t *testing.T, result model.FileAnalysis) {
+				if result.Structure == nil || len(result.Structure.Children) < 2 {
+					t.Skip("not enough children to verify order")
+				}
+
+				// Verify children are in source order (non-decreasing line/column)
+				for i := 1; i < len(result.Structure.Children); i++ {
+					prevStart := result.Structure.Children[i-1].Range.Start
+					currStart := result.Structure.Children[i].Range.Start
+					if prevStart.Line > currStart.Line ||
+						(prevStart.Line == currStart.Line && prevStart.Column > currStart.Column) {
+						t.Errorf("Children[%d] (L%d:C%d) not in source order after Children[%d] (L%d:C%d)",
+							i-1, prevStart.Line, prevStart.Column, i, currStart.Line, currStart.Column)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.verify(t, result)
+		})
+	}
+}
+
 // findModuleRoot walks up the directory tree from a file to find the module root
 // by locating the go.mod file.
 func findModuleRoot(t *testing.T, fromFile string) string {
