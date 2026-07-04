@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–08 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), and Adabas data-access extraction (feature 08) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The higher-level LSP providers (completion, signature help, call hierarchy) remain as stubs (`hover.go`, `symbols.go` are package-doc + TODO only).
+**Features 00–09 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). Feature 09 produces the hierarchical `model.Symbol` tree (`FileAnalysis.Structure`) that will back document outline, workspace symbols, and hover (see the `structure.go` note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The higher-level LSP providers that surface this to the editor (outline, symbols, completion, signature help, call hierarchy, hover) remain unwired (`hover.go`, `symbols.go` are package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -166,6 +166,33 @@ it bumped the cache-format version (`0.4.0` → `0.5.0`). Modeled gaps stay off 
 `FuzzExtractSQL` target guards the extraction entry points (never panics — FR-43). Fixtures live under
 `internal/analysis/natural/testdata/sqlaccess/`.
 
+`internal/analysis/natural/structure.go` implements **program-structure extraction** (feature 09), wired
+into `Analyze` (`result.Structure = extractStructure(path, ast, result.Definitions, result.DataAccess)`)
+after all other extractors run. `extractStructure` builds a per-object, kind-tagged, walkable
+`model.Symbol` tree — the backbone for document outline, workspace symbols, and hover (features 10/11).
+The root is a `SymbolObject` (name = the file's base name without extension; the `Program` AST node has no
+name); its children, deterministically source-ordered (`sort.SliceStable` on `Range.Start`), are:
+`SymbolDataSection` per `DEFINE DATA` section (kind as name) with `SymbolDataField` children reusing
+feature 08's `model.DataDefinition` tree (level, arrays, REDEFINE nesting) — **fields are matched to
+their section by source-range containment**, not by section-kind string, so two same-kind sections (e.g.
+two `LOCAL` blocks) keep their own fields; `SymbolSubroutine` per `DEFINE SUBROUTINE`; `SymbolMap` per
+`DEFINE MAP` (with its fields); and `SymbolDDMReference` per **named** `FileAnalysis.DataAccess` entry
+(READ/FIND/GET/STORE + SQL tables), skipping the empty-`Name` record-form gap (feature 08 OQ-4). Each
+`model.Symbol` carries `Range` (whole construct) and `SelectionRange` (name token, always contained in
+`Range`), mirroring LSP `DocumentSymbol`. New `internal/model` members: the recursive
+`model.Symbol{Kind, Name, Range, SelectionRange, Children}`, six `SymbolKind` constants
+(`object`/`subroutine`/`data-section`/`data-field`/`map`/`ddm-reference` — stable cache keys; the
+pre-existing flat `SymbolEntry`/`SymbolProgram` stub is untouched), and `FileAnalysis.Structure *Symbol`;
+persisting `Structure` bumped the cache-format version (`0.5.0` → `0.6.0`). The parser was widened for this
+feature — `parseMap` now parses map fields via level-based nesting and accepts quoted/unquoted names, and
+both `parseMap`/`parseSubroutine` accept the hyphenated `END-MAP`/`END-SUBROUTINE` and the two-token
+`END MAP`/`END SUBROUTINE` terminators (via token-type-agnostic `matchesLiteral`, so **no lexer/keyword
+change**). Extraction emits no diagnostics (FR-17): a partial/malformed object still yields structure for
+the recognized parts while the parser's ranged diagnostics stay on `FileAnalysis.Diagnostics`. Deferred:
+inline-vs-external subroutine distinction, type-specific members for helproutines/classes/functions,
+`INCLUDE` copycode as a structure node. A `FuzzExtractStructure` target guards the entry point (never
+panics over partial ASTs — FR-43). Fixtures live under `internal/analysis/natural/testdata/structure/`.
+
 `natural-lsp` is a Go-based Language Server Protocol server for **Software AG Natural**, a 4GL widely deployed on IBM
 z/OS mainframes. It uses a hand-written lexer + recursive-descent parser (modeled on
 [natls](https://github.com/MarkusAmshove/natls), Java/MIT) to index a Natural codebase and serve navigation, completion,
@@ -229,7 +256,8 @@ A single binary (`cmd/natural-lsp`) runs as a stdio LSP server. The intended pac
 - `internal/document/` — in-memory document store (didOpen/didChange/didClose) and the workspace file watcher.
 - `internal/workspace/` — the cross-file symbol table (`index.go`) and its on-disk cache (`cache.go`).
 - `internal/analysis/` — `analyzer.go` defines the **Analyzer interface**; `analysis/natural/` is the parser-based
-  implementation (lexer, recursive-descent parser, AST, symbol extraction, hover builders, call/data extraction).
+  implementation (lexer, recursive-descent parser, AST, call/data/SQL extraction, program-structure extraction
+  (hierarchical symbol tree), hover builders).
 
 **The Analyzer interface is the key seam.** The parser backend sits behind it so it can evolve (e.g. to a tree-sitter
 grammar) without touching the LSP layer. Keep LSP-facing code depending only on the interface, never on parser internals.
