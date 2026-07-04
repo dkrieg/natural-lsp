@@ -45,14 +45,38 @@ func extractStructure(path string, prog *Program, defs []model.DataDefinition, a
 	}
 
 	// Build a map of which definitions belong to which data section.
-	// We'll group defs by their SectionKind and range containment.
+	// Match by RANGE CONTAINMENT (the def's start position falls within the
+	// section's span), not by section-kind string: two sections can share a
+	// kind (e.g. two DEFINE DATA LOCAL blocks), and a kind-string match would
+	// bucket every same-kind field into the first section. A kind-string match
+	// is kept only as a fallback so a field is never dropped if a parser range
+	// is imprecise.
 	sectionToDefsMap := make(map[int][]model.DataDefinition)
 	for i := range prog.DataSections {
 		sectionToDefsMap[i] = []model.DataDefinition{}
 	}
 
-	// Distribute defs to sections by matching their section kind.
 	for _, def := range defs {
+		start := def.Range.Start
+		assigned := false
+		// Primary: the section whose [StartPos, EndPos] span contains the def.
+		for i, section := range prog.DataSections {
+			if section == nil {
+				continue
+			}
+			withinStart := !sourceStartLess(start.Line, start.Column, section.StartPos.Line, section.StartPos.Column)
+			withinEnd := !sourceStartLess(section.EndPos.Line, section.EndPos.Column, start.Line, start.Column)
+			if withinStart && withinEnd {
+				sectionToDefsMap[i] = append(sectionToDefsMap[i], def)
+				assigned = true
+				break
+			}
+		}
+		if assigned {
+			continue
+		}
+		// Fallback: first section of the matching kind (defensive — should not
+		// happen when the parser's section ranges are accurate).
 		for i, section := range prog.DataSections {
 			if section != nil && def.SectionKind == section.Kind {
 				sectionToDefsMap[i] = append(sectionToDefsMap[i], def)
@@ -153,12 +177,20 @@ func extractStructure(path string, prog *Program, defs []model.DataDefinition, a
 			continue
 		}
 
+		// The whole-construct Range must contain the SelectionRange (LSP
+		// DocumentSymbol invariant). entry.Source spans only the access verb
+		// (e.g. READ) and ends before the name token, so widen its end to cover
+		// the name range.
+		rangeEnd := entry.Source.End
+		if sourceStartLess(rangeEnd.Line, rangeEnd.Column, entry.NameRange.End.Line, entry.NameRange.End.Column) {
+			rangeEnd = entry.NameRange.End
+		}
 		ddmSym := model.Symbol{
 			Kind: model.SymbolDDMReference,
 			Name: entry.Name,
 			Range: model.Range{
 				Start: entry.Source.Start,
-				End:   entry.Source.End,
+				End:   rangeEnd,
 			},
 			SelectionRange: model.Range{
 				Start: entry.NameRange.Start,
@@ -169,8 +201,10 @@ func extractStructure(path string, prog *Program, defs []model.DataDefinition, a
 		childrenToSort = append(childrenToSort, ddmSym)
 	}
 
-	// Sort children by source order (Range.Start).
-	sort.Slice(childrenToSort, func(i, j int) bool {
+	// Sort children by source order (Range.Start). Stable, to match the sibling
+	// extractors (extractDataAccess/extractWorkFiles) and honor the documented
+	// deterministic-ordering guarantee when two children share a start position.
+	sort.SliceStable(childrenToSort, func(i, j int) bool {
 		iLine := childrenToSort[i].Range.Start.Line
 		iCol := childrenToSort[i].Range.Start.Column
 		jLine := childrenToSort[j].Range.Start.Line

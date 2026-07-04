@@ -564,6 +564,56 @@ func TestExtractStructure_DDMReferences(t *testing.T) {
 	}
 }
 
+// TestExtractStructure_SelectionRangeContainedInRange guards the LSP
+// DocumentSymbol invariant (selectionRange ⊆ range) that model.Symbol
+// documents, recursively across every node. Regression guard for the DDM
+// node whose Range (the access verb) previously ended before its
+// SelectionRange (the name token). Covers 04-ddm-access.NSP (DDM refs) and
+// 01-program-full.NSP (sections/fields/subroutines/maps).
+func TestExtractStructure_SelectionRangeContainedInRange(t *testing.T) {
+	fixtures := []string{"04-ddm-access.NSP", "01-program-full.NSP"}
+
+	// posLE reports whether position (aLine,aCol) <= (bLine,bCol).
+	posLE := func(aLine, aCol, bLine, bCol int) bool {
+		if aLine != bLine {
+			return aLine < bLine
+		}
+		return aCol <= bCol
+	}
+
+	var checkContained func(t *testing.T, s model.Symbol)
+	checkContained = func(t *testing.T, s model.Symbol) {
+		sr, r := s.SelectionRange, s.Range
+		startOK := posLE(r.Start.Line, r.Start.Column, sr.Start.Line, sr.Start.Column)
+		endOK := posLE(sr.End.Line, sr.End.Column, r.End.Line, r.End.Column)
+		if !startOK || !endOK {
+			t.Errorf("%s %q: SelectionRange %v not contained in Range %v", s.Kind, s.Name, sr, r)
+		}
+		for _, c := range s.Children {
+			checkContained(t, c)
+		}
+	}
+
+	for _, fx := range fixtures {
+		t.Run(fx, func(t *testing.T) {
+			fixturePath := filepath.Join("testdata", "structure", fx)
+			content, err := os.ReadFile(fixturePath)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			prog, err := NewParser(NewLexer(string(content))).Parse()
+			if prog == nil {
+				t.Fatalf("parser returned nil AST (err=%v)", err)
+			}
+			sym := extractStructure(fixturePath, prog, extractDefinitions(prog), extractDataAccess(prog))
+			if sym == nil {
+				t.Fatal("extractStructure returned nil")
+			}
+			checkContained(t, *sym)
+		})
+	}
+}
+
 // TestExtractStructure_DDMReference_SkipsEmptyName pins the empty-Name skip
 // (feature-08 record-form UPDATE/DELETE, OQ-4) directly: an access entry with
 // no view name must never become a SymbolDDMReference node.
@@ -780,5 +830,101 @@ func TestExtractStructure_PartialObjectStillYieldsStructure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.verify(t, sym, prog.Diagnostics)
 		})
+	}
+}
+
+// TestExtractStructure_TwoLocalSections tests FINDING 1 regression: multiple same-kind
+// data sections (two DEFINE DATA LOCAL blocks) must each get their own children, and
+// each field's Range must be contained within its parent section's Range.
+func TestExtractStructure_TwoLocalSections(t *testing.T) {
+	fixturePath := filepath.Join("testdata", "structure", "06-two-local-sections.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	prog, err := NewParser(NewLexer(string(content))).Parse()
+	if prog == nil {
+		t.Fatalf("parser returned nil AST (err=%v)", err)
+	}
+
+	defs := extractDefinitions(prog)
+	access := extractDataAccess(prog)
+	sym := extractStructure(fixturePath, prog, defs, access)
+
+	if sym == nil {
+		t.Fatal("extractStructure returned nil, want *Symbol")
+	}
+
+	// Collect both data sections
+	var sections []model.Symbol
+	for _, child := range sym.Children {
+		if child.Kind == model.SymbolDataSection {
+			sections = append(sections, child)
+		}
+	}
+
+	if len(sections) != 2 {
+		t.Fatalf("got %d SymbolDataSection children, want 2", len(sections))
+	}
+
+	// Verify each section has its own fields
+	if len(sections[0].Children) == 0 {
+		t.Error("first LOCAL section has no children, want FIRST-FIELD and FIRST-GROUP")
+	}
+	if len(sections[1].Children) == 0 {
+		t.Error("second LOCAL section has no children, want SECOND-FIELD and SECOND-GROUP")
+	}
+
+	// Check first section has the right fields
+	firstFieldNames := make(map[string]bool)
+	for _, field := range sections[0].Children {
+		firstFieldNames[field.Name] = true
+	}
+	if !firstFieldNames["FIRST-FIELD"] {
+		t.Error("FIRST-FIELD not found in first section children")
+	}
+	if !firstFieldNames["FIRST-GROUP"] {
+		t.Error("FIRST-GROUP not found in first section children")
+	}
+
+	// Check second section has the right fields (distinct from first)
+	secondFieldNames := make(map[string]bool)
+	for _, field := range sections[1].Children {
+		secondFieldNames[field.Name] = true
+	}
+	if !secondFieldNames["SECOND-FIELD"] {
+		t.Error("SECOND-FIELD not found in second section children")
+	}
+	if !secondFieldNames["SECOND-GROUP"] {
+		t.Error("SECOND-GROUP not found in second section children")
+	}
+
+	// Verify no cross-contamination
+	if secondFieldNames["FIRST-FIELD"] {
+		t.Error("FIRST-FIELD found in second section (cross-contamination)")
+	}
+	if firstFieldNames["SECOND-FIELD"] {
+		t.Error("SECOND-FIELD found in first section (cross-contamination)")
+	}
+
+	// Range containment check: each field's Range.Start must be contained within its section's Range
+	for sIdx, section := range sections {
+		sectionStart := section.Range.Start
+		sectionEnd := section.Range.End
+		for _, field := range section.Children {
+			fieldStart := field.Range.Start
+			fieldEnd := field.Range.End
+			// Check containment: fieldStart >= sectionStart and fieldEnd <= sectionEnd
+			if fieldStart.Line < sectionStart.Line ||
+				(fieldStart.Line == sectionStart.Line && fieldStart.Column < sectionStart.Column) {
+				t.Errorf("section[%d] field %q Range.Start (%d,%d) < section Range.Start (%d,%d)",
+					sIdx, field.Name, fieldStart.Line, fieldStart.Column, sectionStart.Line, sectionStart.Column)
+			}
+			if fieldEnd.Line > sectionEnd.Line ||
+				(fieldEnd.Line == sectionEnd.Line && fieldEnd.Column > sectionEnd.Column) {
+				t.Errorf("section[%d] field %q Range.End (%d,%d) > section Range.End (%d,%d)",
+					sIdx, field.Name, fieldEnd.Line, fieldEnd.Column, sectionEnd.Line, sectionEnd.Column)
+			}
+		}
 	}
 }

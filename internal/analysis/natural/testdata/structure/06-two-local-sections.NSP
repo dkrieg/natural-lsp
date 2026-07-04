@@ -1,0 +1,16 @@
+* T2 fixture: Two separate DEFINE DATA LOCAL sections (FINDING 1 regression test)
+* Tests that each section gets its own children when kinds match
+
+DEFINE DATA LOCAL
+  1 FIRST-FIELD (A10)
+  1 FIRST-GROUP
+    2 FIRST-NESTED (N5)
+END-DEFINE
+
+DEFINE DATA LOCAL
+  1 SECOND-FIELD (A20)
+  1 SECOND-GROUP
+    2 SECOND-NESTED (N3)
+END-DEFINE
+
+END

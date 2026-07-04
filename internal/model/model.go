@@ -340,8 +340,9 @@ type FileAnalysis struct {
 
 	// Structure is the hierarchical symbol tree for this file, rooted at the object level.
 	// It unifies subroutines, data sections, maps, and data-access references into a single,
-	// kind-tagged, walkable tree (mirrors LSP DocumentSymbol). Nil when the file is not a
-	// parseable object (e.g., unknown extension, parse fails completely).
+	// kind-tagged, walkable tree (mirrors LSP DocumentSymbol). Nil only when the analyzer
+	// produced no AST for the file; an object with an unrecognized extension is still parsed
+	// and yields a (possibly sparse) root, so Structure is non-nil there.
 	// Populated by the analyzer's structure-extraction backend (feature 09);
 	// persisted in the workspace cache (0.6.0+).
 	Structure *Symbol
