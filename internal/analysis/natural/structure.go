@@ -17,9 +17,10 @@ import (
 // path is the file path (used to derive the object name).
 // prog is the parsed AST (nullable — returns nil gracefully).
 // defs are the already-extracted DataDefinitions (for field children; used in T3).
+// access are the data-access entries for DDM references (feature 08/08b).
 //
 // Never panics over partial ASTs (FR-43).
-func extractStructure(path string, prog *Program, defs []model.DataDefinition) *model.Symbol {
+func extractStructure(path string, prog *Program, defs []model.DataDefinition, access []model.DataAccessEntry) *model.Symbol {
 	if prog == nil {
 		return nil
 	}
@@ -143,6 +144,29 @@ func extractStructure(path string, prog *Program, defs []model.DataDefinition) *
 		}
 
 		childrenToSort = append(childrenToSort, mapSym)
+	}
+
+	// Add DDM references as symbols (T3: feature 09).
+	// Skip entries with empty Name (feature-08 modeled gap: record-form UPDATE/DELETE, OQ-4).
+	for _, entry := range access {
+		if entry.Name == "" {
+			continue
+		}
+
+		ddmSym := model.Symbol{
+			Kind: model.SymbolDDMReference,
+			Name: entry.Name,
+			Range: model.Range{
+				Start: entry.Source.Start,
+				End:   entry.Source.End,
+			},
+			SelectionRange: model.Range{
+				Start: entry.NameRange.Start,
+				End:   entry.NameRange.End,
+			},
+		}
+
+		childrenToSort = append(childrenToSort, ddmSym)
 	}
 
 	// Sort children by source order (Range.Start).

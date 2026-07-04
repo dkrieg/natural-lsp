@@ -1,0 +1,21 @@
+* T3 fixture: Program with multiple DDM references (READ, FIND, STORE, record UPDATE/DELETE)
+* Exercises SymbolDDMReference children with named references and empty-Name skip
+
+DEFINE DATA
+LOCAL
+  1 EMPLOYEE-VIEW
+    2 EMP-ID (N5)
+    2 EMP-NAME (A40)
+END DEFINE
+
+READ EMPLOYEE-VIEW
+
+  STORE DEPARTMENT
+
+  FIND LOCATION
+    UPDATE
+  END-FIND
+
+END
+
+END

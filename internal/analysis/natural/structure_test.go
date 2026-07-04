@@ -45,8 +45,11 @@ func TestExtractStructure_ProgramFull(t *testing.T) {
 	// Extract definitions (reused by extractStructure in T3)
 	defs := extractDefinitions(prog)
 
+	// Extract data access (for T3 DDM references)
+	access := extractDataAccess(prog)
+
 	// Call the extractor
-	sym := extractStructure(fixturePath, prog, defs)
+	sym := extractStructure(fixturePath, prog, defs, access)
 
 	// Test table-driven assertions (AAA)
 	tests := []struct {
@@ -304,8 +307,11 @@ func TestExtractStructure_SubprogramParams(t *testing.T) {
 	// Extract definitions
 	defs := extractDefinitions(prog)
 
+	// Extract data access (for T3 DDM references)
+	access := extractDataAccess(prog)
+
 	// Call the extractor
-	sym := extractStructure(fixturePath, prog, defs)
+	sym := extractStructure(fixturePath, prog, defs, access)
 
 	// Test table-driven assertions
 	tests := []struct {
@@ -410,8 +416,11 @@ func TestExtractStructure_MapObject(t *testing.T) {
 	// Extract definitions
 	defs := extractDefinitions(prog)
 
+	// Extract data access (for T3 DDM references)
+	access := extractDataAccess(prog)
+
 	// Call the extractor
-	sym := extractStructure(fixturePath, prog, defs)
+	sym := extractStructure(fixturePath, prog, defs, access)
 
 	// Test table-driven assertions
 	tests := []struct {
@@ -484,5 +493,104 @@ func TestExtractStructure_MapObject(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.verify(t, sym)
 		})
+	}
+}
+
+// TestExtractStructure_DDMReferences verifies T3 / FR-23: named DDM/view
+// references (READ/FIND/GET/STORE + SQL tables) become SymbolDDMReference
+// children of the object root, and the record-form empty-Name access (the
+// feature-08 modeled gap, OQ-4) is skipped so no empty DDM node appears.
+func TestExtractStructure_DDMReferences(t *testing.T) {
+	fixturePath := filepath.Join("testdata", "structure", "04-ddm-access.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	prog, err := NewParser(NewLexer(string(content))).Parse()
+	if prog == nil {
+		t.Fatalf("parser returned nil AST (err=%v)", err)
+	}
+	defs := extractDefinitions(prog)
+	access := extractDataAccess(prog)
+
+	sym := extractStructure(fixturePath, prog, defs, access)
+	if sym == nil {
+		t.Fatal("extractStructure returned nil, want *Symbol")
+	}
+
+	// Collect DDM-reference children of the object root.
+	var ddms []model.Symbol
+	for _, child := range sym.Children {
+		if child.Kind == model.SymbolDDMReference {
+			ddms = append(ddms, child)
+		}
+	}
+
+	// The fixture has READ EMPLOYEE-VIEW, STORE DEPARTMENT, FIND LOCATION.
+	wantNames := []string{"EMPLOYEE-VIEW", "DEPARTMENT", "LOCATION"}
+	if len(ddms) != len(wantNames) {
+		t.Fatalf("got %d SymbolDDMReference children, want %d: %+v", len(ddms), len(wantNames), ddms)
+	}
+	got := make(map[string]bool)
+	for _, d := range ddms {
+		got[d.Name] = true
+		if d.Range.Start == d.Range.End {
+			t.Errorf("DDM ref %q has zero Range, want the access-site span", d.Name)
+		}
+		if d.SelectionRange.Start == d.SelectionRange.End {
+			t.Errorf("DDM ref %q has zero SelectionRange, want the name-token span", d.Name)
+		}
+		if d.Name == "" {
+			t.Error("a SymbolDDMReference has an empty Name (record-form gap must be skipped)")
+		}
+	}
+	for _, n := range wantNames {
+		if !got[n] {
+			t.Errorf("expected DDM reference %q not found among %v", n, ddms)
+		}
+	}
+
+	// DDM refs must be in source order among the root children (T2 stable sort).
+	lastStart := -1
+	for _, child := range sym.Children {
+		if child.Kind != model.SymbolDDMReference {
+			continue
+		}
+		pos := child.Range.Start.Line*100000 + child.Range.Start.Column
+		if pos < lastStart {
+			t.Errorf("DDM references not in source order: %q at %v out of order", child.Name, child.Range.Start)
+		}
+		lastStart = pos
+	}
+}
+
+// TestExtractStructure_DDMReference_SkipsEmptyName pins the empty-Name skip
+// (feature-08 record-form UPDATE/DELETE, OQ-4) directly: an access entry with
+// no view name must never become a SymbolDDMReference node.
+func TestExtractStructure_DDMReference_SkipsEmptyName(t *testing.T) {
+	content := "DEFINE DATA LOCAL\n1 #X (A5)\nEND-DEFINE\nEND\n"
+	prog, _ := NewParser(NewLexer(content)).Parse()
+	defs := extractDefinitions(prog)
+
+	access := []model.DataAccessEntry{
+		{Kind: model.EdgeReads, Name: "REAL-VIEW", NameRange: model.Range{Start: model.Position{Line: 1, Column: 1}, End: model.Position{Line: 1, Column: 9}}, Source: model.Range{Start: model.Position{Line: 1, Column: 1}, End: model.Position{Line: 1, Column: 20}}},
+		{Kind: model.EdgeWrites, Name: "", Source: model.Range{Start: model.Position{Line: 2, Column: 1}, End: model.Position{Line: 2, Column: 8}}},
+	}
+
+	sym := extractStructure("x.NSP", prog, defs, access)
+	if sym == nil {
+		t.Fatal("extractStructure returned nil")
+	}
+	var ddms []model.Symbol
+	for _, child := range sym.Children {
+		if child.Kind == model.SymbolDDMReference {
+			ddms = append(ddms, child)
+		}
+	}
+	if len(ddms) != 1 {
+		t.Fatalf("got %d DDM refs, want 1 (the empty-Name entry must be skipped): %+v", len(ddms), ddms)
+	}
+	if ddms[0].Name != "REAL-VIEW" {
+		t.Errorf("DDM ref Name = %q, want REAL-VIEW", ddms[0].Name)
 	}
 }
