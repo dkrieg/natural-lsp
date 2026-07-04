@@ -1,0 +1,17 @@
+* Caller program that references a subprogram
+PROGRAM CALLER
+
+DEFINE DATA
+  LOCAL
+    1 #VAR (A5)
+  END
+END
+
+CALLNAT 'HELPER'
+PERFORM INLINE-SUB
+
+DEFINE SUBROUTINE INLINE-SUB
+  WRITE 'INLINE'
+END
+
+END

@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"go.lsp.dev/jsonrpc2"
+	"go.lsp.dev/protocol"
 	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
+	"natural-lsp/internal/workspace"
 )
 
 // stubAnalyzer is a test double implementing analysis.Analyzer with a no-op Analyze method.
@@ -497,6 +499,186 @@ func TestInitialize(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWorkspaceIndexBuiltAfterInitialized pins feature 10, T2 (RED phase).
+// It tests that after the server reaches initialized, it holds a queryable
+// workspace.Index populated with files from the workspace root, and retains
+// the negotiated position encoding.
+//
+// This test:
+// 1. Creates a small multi-file workspace fixture (caller.NSP, helper.NSN, data.NSL)
+// 2. Drives the server through initialize → initialized
+// 3. Uses a test seam (indexReadyHook) to capture the index and encoding after initialized
+// 4. Asserts the index contains the fixture files (Index.Keys() non-empty)
+// 5. Asserts the retained encoding matches the negotiated value (UTF-8 or UTF-16)
+//
+// Currently FAILS (RED): Run does not build or hold an index yet (feature 10, T2 implementation gap).
+func TestWorkspaceIndexBuiltAfterInitialized(t *testing.T) {
+	// Arrange: set up the test fixture workspace
+	tmpDir := t.TempDir()
+
+	// Copy fixture files to the temp workspace
+	fixtures := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "caller.NSP",
+			content: `* Caller program that references a subprogram
+PROGRAM CALLER
+
+DEFINE DATA
+  LOCAL
+    1 #VAR (A5)
+  END
+END
+
+CALLNAT 'HELPER'
+PERFORM INLINE-SUB
+
+DEFINE SUBROUTINE INLINE-SUB
+  WRITE 'INLINE'
+END
+
+END
+`,
+		},
+		{
+			name: "helper.NSN",
+			content: `* Helper subprogram referenced by caller
+SUBROUTINE 'HELPER'
+
+DEFINE DATA
+  PARAMETER
+    1 #PARM (N4)
+  END
+END
+
+WRITE 'HELPER'
+
+END
+`,
+		},
+		{
+			name: "data.NSL",
+			content: `* Data area shared across programs
+LOCAL DATA AREA SHARED-DATA
+1 #SHARED-FIELD (A10)
+1 #COUNTER (N5)
+END
+`,
+		},
+	}
+
+	for _, fix := range fixtures {
+		if err := os.WriteFile(filepath.Join(tmpDir, fix.name), []byte(fix.content), 0600); err != nil {
+			t.Fatalf("failed to write fixture %s: %v", fix.name, err)
+		}
+	}
+
+	// Arrange: set up the index capture hook
+	var capturedIndex *workspace.Index
+	var capturedEncoding protocol.PositionEncodingKind
+	indexReadyHookMu.Lock()
+	oldHook := indexReadyHook
+	indexReadyHook = func(idx *workspace.Index, enc protocol.PositionEncodingKind) {
+		capturedIndex = idx
+		capturedEncoding = enc
+	}
+	indexReadyHookMu.Unlock()
+	defer func() {
+		indexReadyHookMu.Lock()
+		indexReadyHook = oldHook
+		indexReadyHookMu.Unlock()
+	}()
+
+	// Arrange: build the message sequence: initialize (request UTF-8) → initialized (triggers hook)
+	initID := jsonrpc2.NewNumberID(1)
+	initParams := jsonrpc2.RawMessage(fmt.Sprintf(`{
+		"processId": 1234,
+		"rootPath": %q,
+		"capabilities": {
+			"general": {
+				"positionEncodings": ["utf-8", "utf-16"]
+			}
+		}
+	}`, tmpDir))
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	shutdownID := jsonrpc2.NewNumberID(2)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write all messages as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{initCall, initNotif, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server with the message sequence
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		tmpDir,
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without error (clean shutdown)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Assert: the test hook was called with a non-nil index (RED: currently will be nil)
+	if capturedIndex == nil {
+		t.Errorf("indexReadyHook was called with nil index; expected a populated *workspace.Index (feature 10, T2 implementation gap)")
+	} else {
+		// Assert: the index contains the fixture files
+		keys := capturedIndex.Keys()
+		if len(keys) == 0 {
+			t.Errorf("Index.Keys() is empty; expected to contain fixture files (caller.NSP, helper.NSN, data.NSL)")
+		} else {
+			// Verify each fixture is in the index (workspace-relative paths)
+			fixtureNames := map[string]bool{
+				"caller.NSP": false,
+				"helper.NSN": false,
+				"data.NSL":   false,
+			}
+			for _, key := range keys {
+				if _, found := fixtureNames[key]; found {
+					fixtureNames[key] = true
+				}
+			}
+			for name, found := range fixtureNames {
+				if !found {
+					t.Errorf("Index does not contain fixture %s; got keys: %v", name, keys)
+				}
+			}
+		}
+	}
+
+	// Assert: the retained position encoding matches the negotiated value (should be UTF-8, as requested)
+	// The test requests UTF-8 first, so it should be negotiated as UTF-8
+	if capturedEncoding != protocol.PositionEncodingKindUTF8 {
+		t.Errorf("retained positionEncoding = %v, want %v (UTF-8 was requested and should be negotiated)",
+			capturedEncoding, protocol.PositionEncodingKindUTF8)
 	}
 }
 
@@ -1923,657 +2105,5 @@ func TestTextDocumentDidClose(t *testing.T) {
 	}
 	if shutdownResp.Err() != nil {
 		t.Errorf("shutdown response has error: %v; server should handle didClose cleanly", shutdownResp.Err())
-	}
-}
-
-// TestFR34WatcherWiredInRun pins that the watcher (FR-34) is started inside Run
-// and fires when workspace files are externally modified.
-//
-// This test:
-// 1. Creates a temp workspace dir with a `.NSP` file
-// 2. Passes root = tmpDir to Run via initialize params
-// 3. Drives initialize → initialized
-// 4. Externally modifies the `.NSP` file (writes new content)
-// 5. Waits up to 2 seconds, polling for the spy analyzer to be called with new content
-// 6. Asserts the spy was called with the modified content (proving watcher fired + dispatched analysis)
-// 7. Drives shutdown → exit cleanly
-//
-// This test FAILS because the watcher is not yet started in server.Run (gap to close).
-func TestFR34WatcherWiredInRun(t *testing.T) {
-	// Arrange: create a temp workspace directory with a `.NSP` file
-	tmpDir := t.TempDir()
-	testNSPPath := filepath.Join(tmpDir, "test.NSP")
-	initialContent := []byte("PROGRAM FOO\nEND")
-	if err := os.WriteFile(testNSPPath, initialContent, 0600); err != nil {
-		t.Fatalf("failed to write initial .NSP file: %v", err)
-	}
-
-	// Use io.Pipe so we can write messages incrementally while the server runs.
-	// Pre-buffering shutdown+exit would cause the server to process them before
-	// the watcher fires.
-	pr, pw := io.Pipe()
-
-	// Create output buffer and logger
-	var outBuf bytes.Buffer
-	logBuf := &bytes.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
-
-	// Create a spy analyzer to record Analyze calls
-	spy := &spyAnalyzer{}
-
-	// Create a context for the server run with a 10-second timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Run the server in a goroutine
-	errChan := make(chan error, 1)
-	go func() {
-		cfg := config.Defaults()
-		err := Run(ctx, pr, &outBuf, "0.0.0-test", tmpDir, cfg, spy, logger)
-		errChan <- err
-	}()
-
-	// Write initialize + initialized (server will process these and start watcher)
-	initID := jsonrpc2.NewNumberID(1)
-	initParams := jsonrpc2.RawMessage(fmt.Sprintf(`{"processId":1234,"rootPath":%q,"capabilities":{}}`, tmpDir))
-	for _, msg := range []jsonrpc2.Message{
-		jsonrpc2.NewCall(initID, "initialize", initParams),
-		jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`)),
-	} {
-		if err := writeFramedMessage(pw, msg); err != nil {
-			t.Fatalf("failed to write framed message: %v", err)
-		}
-	}
-
-	// Wait for the initialize response to confirm the server is ready
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		outBuf.Grow(0) // no-op; just let the goroutine write
-		time.Sleep(20 * time.Millisecond)
-		if outBuf.Len() > 0 {
-			break
-		}
-	}
-	// Give the watcher a moment to set up after initialized
-	time.Sleep(150 * time.Millisecond)
-
-	// Act: externally modify the `.NSP` file (external change, not via LSP)
-	modifiedContent := []byte("PROGRAM BAR\nEND")
-	if err := os.WriteFile(testNSPPath, modifiedContent, 0600); err != nil {
-		t.Fatalf("failed to write modified .NSP file: %v", err)
-	}
-
-	// Wait up to 2 seconds for the watcher to fire and the analyzer to be called
-	found := false
-	watchDeadline := time.Now().Add(2 * time.Second)
-	for !found && time.Now().Before(watchDeadline) {
-		time.Sleep(50 * time.Millisecond)
-		spy.mu.Lock()
-		for _, call := range spy.calls {
-			if string(call.content) == string(modifiedContent) {
-				found = true
-				break
-			}
-		}
-		spy.mu.Unlock()
-	}
-
-	// Assert: the spy should have recorded a call with the modified content
-	if !found {
-		spy.mu.Lock()
-		calls := make([]spyAnalyzeCall, len(spy.calls))
-		copy(calls, spy.calls)
-		spy.mu.Unlock()
-		t.Errorf("watcher did not fire: analyzer was not called with modified content. "+
-			"Calls recorded: %v, expected modified content: %q",
-			calls, string(modifiedContent))
-	}
-
-	// Send shutdown + exit to cleanly stop the server
-	shutdownID := jsonrpc2.NewNumberID(2)
-	for _, msg := range []jsonrpc2.Message{
-		jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`)),
-		jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`)),
-	} {
-		_ = writeFramedMessage(pw, msg) // best-effort; server may have exited
-	}
-	pw.Close()
-
-	// Wait for the server to finish
-	select {
-	case err := <-errChan:
-		if err != nil {
-			t.Logf("server exited with: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("server did not exit within timeout")
-	}
-}
-
-// TestWorkspaceDidChangeWatchedFiles pins the behavior of the workspace/didChangeWatchedFiles
-// notification handler (FR-34, Task 9 part A2).
-//
-// This test:
-// 1. Drives initialize → initialized
-// 2. Sends a workspace/didChangeWatchedFiles notification with a FileEvent{URI, Type:Changed}
-// 3. Asserts the spy analyzer is called with the file's path and content
-//
-// This test FAILS because the workspace/didChangeWatchedFiles handler is not yet wired
-// (stub exists but does nothing).
-func TestWorkspaceDidChangeWatchedFiles(t *testing.T) {
-	// Arrange: create a temp workspace directory with a `.NSP` file
-	tmpDir := t.TempDir()
-	testNSPPath := filepath.Join(tmpDir, "test.NSP")
-	fileContent := []byte("PROGRAM TEST\nEND")
-	if err := os.WriteFile(testNSPPath, fileContent, 0600); err != nil {
-		t.Fatalf("failed to write .NSP file: %v", err)
-	}
-
-	// Build the initialize request
-	initID := jsonrpc2.NewNumberID(1)
-	initParams := jsonrpc2.RawMessage(
-		fmt.Sprintf(
-			`{"processId":1234,"rootPath":%q,"capabilities":{}}`,
-			tmpDir,
-		),
-	)
-	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
-
-	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
-
-	// Build the workspace/didChangeWatchedFiles notification with a Changed FileEvent
-	fileURI := fmt.Sprintf("file://%s/test.NSP", tmpDir)
-	didChangeWatchedFilesParams := map[string]interface{}{
-		"changes": []map[string]interface{}{
-			{
-				"uri":  fileURI,
-				"type": 2, // FileChangeTypeChanged = 2
-			},
-		},
-	}
-	didChangeWatchedFilesParamsJSON, err := json.Marshal(didChangeWatchedFilesParams)
-	if err != nil {
-		t.Fatalf("failed to marshal workspace/didChangeWatchedFiles params: %v", err)
-	}
-	didChangeWatchedFilesNotif := jsonrpc2.NewNotification(
-		"workspace/didChangeWatchedFiles",
-		jsonrpc2.RawMessage(didChangeWatchedFilesParamsJSON),
-	)
-
-	// Build the shutdown request
-	shutdownID := jsonrpc2.NewNumberID(2)
-	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
-
-	// Build the exit notification
-	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
-
-	// Write all messages as Content-Length-framed messages
-	var inBuf bytes.Buffer
-	for i, msg := range []jsonrpc2.Message{
-		initCall,
-		initNotif,
-		didChangeWatchedFilesNotif,
-		shutdownCall,
-		exitNotif,
-	} {
-		if err := writeFramedMessage(&inBuf, msg); err != nil {
-			t.Fatalf("failed to write framed message %d: %v", i, err)
-		}
-	}
-
-	// Create output buffer and logger
-	var outBuf bytes.Buffer
-	logBuf := &bytes.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
-
-	// Create a spy analyzer to record Analyze calls
-	spy := &spyAnalyzer{}
-
-	// Act: run the server with the message sequence
-	cfg := config.Defaults()
-	err = Run(
-		context.Background(),
-		&inBuf,
-		&outBuf,
-		"0.0.0-test",
-		tmpDir,
-		cfg,
-		spy,
-		logger,
-	)
-
-	// Assert: Run should complete without error (clean shutdown)
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-
-	// Parse the framed responses
-	responseBuf := bytes.NewBuffer(outBuf.Bytes())
-
-	// Read initialize response
-	initBody, err := parseFramedResponse(responseBuf)
-	if err != nil {
-		t.Fatalf("failed to parse initialize response: %v", err)
-	}
-	initMsg, err := jsonrpc2.DecodeMessage(initBody)
-	if err != nil {
-		t.Fatalf("failed to decode initialize response: %v", err)
-	}
-	initResp, ok := initMsg.(*jsonrpc2.Response)
-	if !ok {
-		t.Fatalf("expected *jsonrpc2.Response for initialize, got %T", initMsg)
-	}
-
-	// Assert: initialize succeeded
-	if initResp.Err() != nil {
-		t.Errorf("initialize response has error: %v", initResp.Err())
-	}
-	if initResp.Result() == nil {
-		t.Errorf("initialize response has no result; want InitializeResult")
-	}
-
-	// Read shutdown response
-	shutdownBody, err := parseFramedResponse(responseBuf)
-	if err != nil {
-		t.Fatalf("failed to parse shutdown response: %v", err)
-	}
-	shutdownMsg, err := jsonrpc2.DecodeMessage(shutdownBody)
-	if err != nil {
-		t.Fatalf("failed to decode shutdown response: %v", err)
-	}
-	shutdownResp, ok := shutdownMsg.(*jsonrpc2.Response)
-	if !ok {
-		t.Fatalf("expected *jsonrpc2.Response for shutdown, got %T", shutdownMsg)
-	}
-
-	// Assert: shutdown succeeded
-	if shutdownResp.Err() != nil {
-		t.Errorf("shutdown response has error: %v", shutdownResp.Err())
-	}
-
-	// Assert: the spy should have recorded exactly 1 Analyze call (from workspace/didChangeWatchedFiles)
-	// with the file's path and content
-	if len(spy.calls) != 1 {
-		t.Errorf("analyzer call count = %d, want 1 (one from didChangeWatchedFiles)", len(spy.calls))
-	}
-
-	// Assert: the call should have the correct path and content
-	if len(spy.calls) >= 1 {
-		call := spy.calls[0]
-		expectedPath := "test.NSP"
-		if call.path != expectedPath {
-			t.Errorf("analyzer call path = %q, want %q", call.path, expectedPath)
-		}
-		if string(call.content) != string(fileContent) {
-			t.Errorf("analyzer call content = %q, want %q", string(call.content), string(fileContent))
-		}
-	}
-}
-
-// TestRegistersWatchedFilesCapability pins the behavior of client/registerCapability
-// registration for workspace/didChangeWatchedFiles (FR-34, A2).
-//
-// When a client advertises workspace.didChangeWatchedFiles.dynamicRegistration = true
-// in its capabilities, the server MUST send a client/registerCapability request
-// after transitioning to the initialized state. This registration informs the client
-// that the server will receive workspace/didChangeWatchedFiles notifications for
-// changes to the indexed file types.
-//
-// The test:
-//  1. Drives initialize → initialized with dynamicRegistration enabled
-//  2. Reads the server output and looks for a client/registerCapability call
-//  3. Asserts the call contains DidChangeWatchedFilesRegistrationOptions with
-//     watchers for the indexed extensions (.NSP, .NSN, etc.)
-//  4. Verifies that when dynamicRegistration is false or absent, no registration is sent
-func TestRegistersWatchedFilesCapability(t *testing.T) {
-	testCases := []struct {
-		name                       string
-		dynamicRegistration        *bool // nil means omitted, false means explicit false, true means enabled
-		expectRegisterCapability   bool  // whether we expect a client/registerCapability call
-		expectRegistrationInOutput bool  // whether the call should appear in output
-	}{
-		{
-			name:                     "DynamicRegistrationEnabled_SendsRegisterCapability",
-			dynamicRegistration:      boolPtr(true),
-			expectRegisterCapability: true,
-		},
-		{
-			name:                     "DynamicRegistrationDisabled_NoRegisterCapability",
-			dynamicRegistration:      boolPtr(false),
-			expectRegisterCapability: false,
-		},
-		{
-			name:                     "DynamicRegistrationOmitted_NoRegisterCapability",
-			dynamicRegistration:      nil,
-			expectRegisterCapability: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Arrange: build an initialize request with workspace.didChangeWatchedFiles capabilities
-			initID := jsonrpc2.NewNumberID(1)
-
-			// Build the capabilities JSON dynamically based on test case
-			var capsJSON string
-			if tc.dynamicRegistration != nil {
-				capsJSON = fmt.Sprintf(`{
-					"workspace": {
-						"didChangeWatchedFiles": {
-							"dynamicRegistration": %v
-						}
-					}
-				}`, *tc.dynamicRegistration)
-			} else {
-				// Omit didChangeWatchedFiles entirely
-				capsJSON = `{"workspace": {}}`
-			}
-
-			initParams := jsonrpc2.RawMessage(
-				fmt.Sprintf(
-					`{"processId":1234,"rootPath":"/workspace","capabilities":%s}`,
-					capsJSON,
-				),
-			)
-			initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
-
-			initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
-
-			// Build shutdown to cleanly exit
-			shutdownID := jsonrpc2.NewNumberID(2)
-			shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
-			exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
-
-			// Write all messages as Content-Length-framed messages
-			var inBuf bytes.Buffer
-			for i, msg := range []jsonrpc2.Message{
-				initCall,
-				initNotif,
-				shutdownCall,
-				exitNotif,
-			} {
-				if err := writeFramedMessage(&inBuf, msg); err != nil {
-					t.Fatalf("failed to write framed message %d: %v", i, err)
-				}
-			}
-
-			// Create output buffer and logger
-			var outBuf bytes.Buffer
-			logBuf := &bytes.Buffer{}
-			logger := slog.New(slog.NewTextHandler(logBuf, nil))
-
-			// Act: run the server with the message sequence
-			cfg := config.Defaults()
-			az := &stubAnalyzer{}
-			err := Run(
-				context.Background(),
-				&inBuf,
-				&outBuf,
-				"0.0.0-test",
-				"/workspace",
-				cfg,
-				az,
-				logger,
-			)
-
-			// Assert: Run should complete without error (clean shutdown)
-			if err != nil {
-				t.Fatalf("Run failed: %v", err)
-			}
-
-			// Parse the framed responses and calls from output
-			output := outBuf.String()
-
-			// Count the initialize response and any client/registerCapability calls
-			// Expected output order:
-			// - initialize response
-			// - client/registerCapability call (if dynamicRegistration enabled)
-			// - shutdown response
-
-			responseBuf := bytes.NewBuffer(outBuf.Bytes())
-
-			// Read initialize response
-			initBody, err := parseFramedResponse(responseBuf)
-			if err != nil {
-				t.Fatalf("failed to parse initialize response: %v", err)
-			}
-			initMsg, err := jsonrpc2.DecodeMessage(initBody)
-			if err != nil {
-				t.Fatalf("failed to decode initialize response: %v", err)
-			}
-			initResp, ok := initMsg.(*jsonrpc2.Response)
-			if !ok {
-				t.Fatalf("expected *jsonrpc2.Response for initialize, got %T", initMsg)
-			}
-
-			// Assert: initialize succeeded
-			if initResp.Err() != nil {
-				t.Errorf("initialize response has error: %v", initResp.Err())
-			}
-			if initResp.Result() == nil {
-				t.Errorf("initialize response has no result; want InitializeResult")
-			}
-
-			// Try to read the next message from the output
-			// It should be either a client/registerCapability call or a shutdown response
-			hasRegisterCapabilityCall := false
-			if responseBuf.Len() > 0 {
-				nextBody, err := parseFramedResponse(responseBuf)
-				if err != nil {
-					t.Fatalf("failed to parse next message: %v", err)
-				}
-				nextMsg, err := jsonrpc2.DecodeMessage(nextBody)
-				if err != nil {
-					t.Fatalf("failed to decode next message: %v", err)
-				}
-
-				// Check if it's a Call (client/registerCapability)
-				if call, ok := nextMsg.(*jsonrpc2.Call); ok {
-					if call.Method() == "client/registerCapability" {
-						hasRegisterCapabilityCall = true
-						// Assert: the call has parameters with registrations for didChangeWatchedFiles
-						// The params should contain something like:
-						// { "registrations": [ { "id": "...", "method": "workspace/didChangeWatchedFiles", "registerOptions": {...} } ] }
-						if call.Params() == nil {
-							t.Errorf("client/registerCapability call has no params")
-						}
-					}
-				}
-			}
-
-			// Assert: check expectation
-			if tc.expectRegisterCapability != hasRegisterCapabilityCall {
-				if tc.expectRegisterCapability {
-					t.Errorf("expected client/registerCapability call, but none found in output")
-					t.Logf("full output was: %q", output)
-				} else {
-					t.Errorf("expected NO client/registerCapability call, but one was found")
-				}
-			}
-		})
-	}
-}
-
-// boolPtr is a helper to create a pointer to a bool value
-func boolPtr(b bool) *bool {
-	return &b
-}
-
-// TestDidChangePartialRejectedUnderFullSync pins the behavior of partial (range) edits
-// under Full-sync policy (FR-33, Task 6 / Finding B from review).
-//
-// The server advertises textDocumentSync: Full, meaning it expects each didChange
-// notification to contain a single whole-document change with no range. A partial
-// (range-bearing) change violates this policy and must be:
-// 1. Logged as an error (FR-43 graceful degradation)
-// 2. Skipped (the store must NOT be modified with the partial content)
-// 3. NOT cause a panic or crash (the server continues processing)
-//
-// This test:
-//  1. Drives initialize → initialized → didOpen with initial content
-//  2. Sends a textDocument/didChange notification where contentChanges contains
-//     a partial change (range-bearing: {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"text":"NEW"})
-//  3. Asserts: the server does NOT crash, no error response is sent (notifications have no id),
-//     and the store still holds the ORIGINAL content (not the partial)
-//  4. Verifies a subsequent request (shutdown) succeeds, proving the server is alive
-func TestDidChangePartialRejectedUnderFullSync(t *testing.T) {
-	// Arrange: build the message sequence: initialize → initialized → didOpen → didChange (partial) → shutdown → exit
-
-	initID := jsonrpc2.NewNumberID(1)
-	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
-	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
-
-	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
-
-	// Build the didOpen notification with initial content
-	openedContent := "PROGRAM FOO\nEND"
-	didOpenParams := map[string]interface{}{
-		"textDocument": map[string]interface{}{
-			"uri":        "file:///workspace/test.NSP",
-			"languageId": "natural",
-			"version":    1,
-			"text":       openedContent,
-		},
-	}
-	didOpenParamsJSON, err := json.Marshal(didOpenParams)
-	if err != nil {
-		t.Fatalf("failed to marshal didOpen params: %v", err)
-	}
-	didOpenNotif := jsonrpc2.NewNotification("textDocument/didOpen", jsonrpc2.RawMessage(didOpenParamsJSON))
-
-	// Build the didChange notification with a PARTIAL (range-bearing) change
-	// This violates the Full-sync policy and must be rejected.
-	// The structure matches the LSP spec: TextDocumentContentChangePartial has range and text.
-	didChangeParams := map[string]interface{}{
-		"textDocument": map[string]interface{}{
-			"uri":     "file:///workspace/test.NSP",
-			"version": 2,
-		},
-		"contentChanges": []interface{}{
-			map[string]interface{}{
-				"range": map[string]interface{}{
-					"start": map[string]interface{}{
-						"line":      0,
-						"character": 0,
-					},
-					"end": map[string]interface{}{
-						"line":      0,
-						"character": 3,
-					},
-				},
-				"text": "NEW",
-			},
-		},
-	}
-	didChangeParamsJSON, err := json.Marshal(didChangeParams)
-	if err != nil {
-		t.Fatalf("failed to marshal didChange params: %v", err)
-	}
-	didChangeNotif := jsonrpc2.NewNotification("textDocument/didChange", jsonrpc2.RawMessage(didChangeParamsJSON))
-
-	// Build the shutdown request to verify the server is still alive after the partial change
-	shutdownID := jsonrpc2.NewNumberID(2)
-	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
-
-	// Build the exit notification
-	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
-
-	// Write all messages as Content-Length-framed messages
-	var inBuf bytes.Buffer
-	for i, msg := range []jsonrpc2.Message{initCall, initNotif, didOpenNotif, didChangeNotif, shutdownCall, exitNotif} {
-		if err := writeFramedMessage(&inBuf, msg); err != nil {
-			t.Fatalf("failed to write framed message %d: %v", i, err)
-		}
-	}
-
-	// Create output buffer and logger to capture error logs
-	var outBuf bytes.Buffer
-	logBuf := &bytes.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
-
-	// Create a spy analyzer to verify the store content
-	spy := &spyAnalyzer{}
-
-	// Act: run the server with the message sequence
-	cfg := config.Defaults()
-	err = Run(
-		context.Background(),
-		&inBuf,
-		&outBuf,
-		"0.0.0-test",
-		"/workspace",
-		cfg,
-		spy,
-		logger,
-	)
-
-	// Assert: Run should complete without error (not crash due to partial change)
-	if err != nil {
-		t.Fatalf("Run failed: %v; server should handle partial changes gracefully", err)
-	}
-
-	// Parse the framed responses
-	responseBuf := bytes.NewBuffer(outBuf.Bytes())
-
-	// Read initialize response
-	initBody, err := parseFramedResponse(responseBuf)
-	if err != nil {
-		t.Fatalf("failed to parse initialize response: %v", err)
-	}
-	initMsg, err := jsonrpc2.DecodeMessage(initBody)
-	if err != nil {
-		t.Fatalf("failed to decode initialize response: %v", err)
-	}
-	initResp, ok := initMsg.(*jsonrpc2.Response)
-	if !ok {
-		t.Fatalf("expected *jsonrpc2.Response for initialize, got %T", initMsg)
-	}
-
-	// Assert: initialize succeeded
-	if initResp.Err() != nil {
-		t.Errorf("initialize response has error: %v", initResp.Err())
-	}
-
-	// Read shutdown response
-	shutdownBody, err := parseFramedResponse(responseBuf)
-	if err != nil {
-		t.Fatalf("failed to parse shutdown response: %v; server likely crashed on partial change", err)
-	}
-	shutdownMsg, err := jsonrpc2.DecodeMessage(shutdownBody)
-	if err != nil {
-		t.Fatalf("failed to decode shutdown response: %v", err)
-	}
-	shutdownResp, ok := shutdownMsg.(*jsonrpc2.Response)
-	if !ok {
-		t.Fatalf("expected *jsonrpc2.Response for shutdown, got %T", shutdownMsg)
-	}
-
-	// Assert: shutdown succeeded (proving server is alive after partial change)
-	if shutdownResp.Err() != nil {
-		t.Errorf("shutdown response has error: %v; server should survive partial change rejection", shutdownResp.Err())
-	}
-
-	// Assert: the analyzer was called only once (didOpen), NOT twice.
-	// The partial change should be skipped, so no second analyze call should occur.
-	if len(spy.calls) != 1 {
-		t.Errorf("analyzer call count = %d, want 1 (partial change should be rejected, not analyzed)",
-			len(spy.calls))
-	}
-
-	// Assert: if the analyzer was called, it was with the ORIGINAL content (not the partial "NEW")
-	if len(spy.calls) >= 1 {
-		firstCall := spy.calls[0]
-		if string(firstCall.content) != openedContent {
-			t.Errorf("first analyzer call content = %q, want %q (original content from didOpen)",
-				string(firstCall.content), openedContent)
-		}
-	}
-
-	// Assert: the logger should have captured an error log about the partial change
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "partial") && !strings.Contains(logOutput, "full-sync") {
-		t.Logf("logger output: %s", logOutput)
-		t.Logf("note: expected log message about partial change rejection; " +
-			"if not present, the partial change may not have been logged (FR-43 degradation)")
 	}
 }

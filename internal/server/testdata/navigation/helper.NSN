@@ -1,0 +1,12 @@
+* Helper subprogram referenced by caller
+SUBROUTINE 'HELPER'
+
+DEFINE DATA
+  PARAMETER
+    1 #PARM (N4)
+  END
+END
+
+WRITE 'HELPER'
+
+END

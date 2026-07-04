@@ -1,0 +1,5 @@
+* Data area shared across programs
+LOCAL DATA AREA SHARED-DATA
+1 #SHARED-FIELD (A10)
+1 #COUNTER (N5)
+END

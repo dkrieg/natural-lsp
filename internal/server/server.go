@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/go-json-experiment/json/jsontext"
@@ -21,6 +22,7 @@ import (
 	"natural-lsp/internal/config"
 	"natural-lsp/internal/document"
 	"natural-lsp/internal/model"
+	"natural-lsp/internal/workspace"
 )
 
 // bgCtxHook is a test-only hook called after creating the background context.
@@ -29,6 +31,15 @@ import (
 var (
 	bgCtxHook   func(context.Context)
 	bgCtxHookMu sync.Mutex
+)
+
+// indexReadyHook is a test-only hook called after the workspace index is built
+// and the server reaches the initialized state. It allows tests to observe
+// the built index and the negotiated position encoding.
+// Set only in tests; nil in production.
+var (
+	indexReadyHook   func(*workspace.Index, protocol.PositionEncodingKind)
+	indexReadyHookMu sync.Mutex
 )
 
 // readWriteCloser wraps separate Reader and Writer into an io.ReadWriteCloser
@@ -88,23 +99,21 @@ func buildWatchedFilesRegisterOptions(extensions []string) (protocol.LSPAny, err
 
 // handleInitialize processes an LSP "initialize" request, negotiates
 // positionEncoding (UTF-8 preferred, UTF-16 default per ADR-008), and returns
-// the marshalled InitializeResult bytes and a flag indicating whether the client
-// supports dynamic registration for workspace/didChangeWatchedFiles.
+// the marshalled InitializeResult bytes, the negotiated PositionEncodingKind
+// (for direct retention — no JSON round-trip), and a flag indicating whether
+// the client supports dynamic registration for workspace/didChangeWatchedFiles.
 //
 // Capabilities advertised here are intentionally minimal: only textDocumentSync
 // and positionEncoding. This is a deliberate allow-list locked by TestInitialize —
 // when features 09–13 add a provider (hover, definition, references, …) they MUST
 // update that test to extend the allow-list, making the addition explicit.
-func handleInitialize(params protocol.InitializeParams, version string) ([]byte, bool, error) {
+func handleInitialize(params protocol.InitializeParams, version string) ([]byte, protocol.PositionEncodingKind, bool, error) {
 	// Negotiate position encoding: prefer UTF-8 if offered, else fall back to UTF-16.
+	// slices.Contains is O(n) over a typically-tiny list (1–3 entries).
 	posEncoding := protocol.PositionEncodingKindUTF16
-	if params.Capabilities.General != nil {
-		for _, enc := range params.Capabilities.General.PositionEncodings {
-			if enc == protocol.PositionEncodingKindUTF8 {
-				posEncoding = protocol.PositionEncodingKindUTF8
-				break
-			}
-		}
+	if params.Capabilities.General != nil &&
+		slices.Contains(params.Capabilities.General.PositionEncodings, protocol.PositionEncodingKindUTF8) {
+		posEncoding = protocol.PositionEncodingKindUTF8
 	}
 
 	// Check whether the client supports dynamic registration for workspace/didChangeWatchedFiles (FR-34, A2).
@@ -132,9 +141,32 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	var buf bytes.Buffer
 	enc := jsontext.NewEncoder(&buf)
 	if err := initResult.MarshalJSONTo(enc); err != nil {
-		return nil, false, fmt.Errorf("marshal initialize result: %w", err)
+		return nil, posEncoding, false, fmt.Errorf("marshal initialize result: %w", err)
 	}
-	return buf.Bytes(), clientSupportsWatchedFilesReg, nil
+	return buf.Bytes(), posEncoding, clientSupportsWatchedFilesReg, nil
+}
+
+// handlerContext is the shared state available to every request handler in the
+// dispatch switch. It is populated once — the index after "initialized", the
+// encoding after "initialize" — and then read-only for the remainder of the
+// session (T2–T13).
+//
+// Concurrency note (single-threaded access today): the dispatch loop is
+// single-threaded; the index is built synchronously before handlers run, and
+// no mutation path exists yet. T14 (incremental updates from didChange/watcher)
+// will mutate hctx.idx from the same goroutine (store/watcher callbacks fire
+// synchronously in the notification handler) and will recompute and publish a
+// fresh *ResolutionSet behind a lock — following the build-then-publish
+// discipline described in tasks.md F7 / F6a: build a new set, then swap the
+// pointer under a sync.RWMutex; handlers read the current pointer under RLock.
+// Until T14 lands, no lock is needed here.
+type handlerContext struct {
+	idx         *workspace.Index              // workspace index; nil until "initialized" (guard with idx != nil)
+	posEncoding protocol.PositionEncodingKind // negotiated in "initialize"; used by all position converters (T1)
+	store       *document.Store               // in-memory open-document view (didOpen/didChange/didClose)
+	root        string                        // absolute workspace root path
+	cfg         config.Config                 // workspace configuration
+	logger      *slog.Logger                  // structured logger; MUST NOT write to the protocol stream
 }
 
 // Run serves a JSON-RPC connection from an in-memory or stdio reader/writer.
@@ -180,12 +212,23 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 		hook(bgCtx)
 	}
 
-	// Construct the document store (in-memory view of open documents).
-	// Wire the analyze function to perform file analysis with graceful degradation (FR-43).
-	store := document.New(root, func(relPath string, content []byte) model.FileAnalysis {
-		result := analyzeOne(cfg, az, relPath, content, logger)
-		return result.FileAnalysis
-	}, logger)
+	// hctx bundles all state that request handlers need (feature 10, T2).
+	// Fields are filled incrementally: posEncoding is set when "initialize" is
+	// processed; idx is set when "initialized" is processed and the index build
+	// completes. Until then, hctx.idx is nil and hctx.posEncoding is the zero
+	// string (which equals PositionEncodingKindUTF16 — safe default, ADR-008).
+	//
+	// The document store (in-memory view of open documents) is constructed here
+	// and wired to re-analyze content on Open/Update with graceful degradation (FR-43).
+	hctx := &handlerContext{
+		store: document.New(root, func(relPath string, content []byte) model.FileAnalysis {
+			result := analyzeOne(cfg, az, relPath, content, logger)
+			return result.FileAnalysis
+		}, logger),
+		root:   root,
+		cfg:    cfg,
+		logger: logger,
+	}
 
 	// Start the filesystem watcher (FR-34) to detect externally-changed files.
 	// The watcher runs in a background goroutine and dispatches re-analysis via
@@ -297,6 +340,28 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 					if state == statePreInit {
 						state = stateInitialized
 
+						// Feature 10, T2: build the workspace index after initialized.
+						// Errors are logged but don't abort the server (FR-43: graceful degradation).
+						// onProgress is nil for MVP (no work-done progress yet).
+						if hctx.idx == nil {
+							builtIdx, buildErr := workspace.Build(root, cfg, az, logger, nil)
+							if buildErr != nil {
+								logger.Error("failed to build workspace index", "err", buildErr)
+								// Leave hctx.idx nil; handlers guard with hctx.idx != nil
+							} else {
+								hctx.idx = builtIdx
+							}
+						}
+
+						// Test hook: if set, call it with the index and encoding (feature 10, T2).
+						// This allows tests to verify the index is populated after initialization.
+						indexReadyHookMu.Lock()
+						hook := indexReadyHook
+						indexReadyHookMu.Unlock()
+						if hook != nil {
+							hook(hctx.idx, hctx.posEncoding)
+						}
+
 						// FR-34, A2: if the client supports dynamic registration for workspace/didChangeWatchedFiles,
 						// send a client/registerCapability request to register our interest in file change events.
 						// This is a call (not a notification) — the client's response will be handled below.
@@ -357,7 +422,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 							logger.Error("invalid textDocument/didOpen params", "err", err)
 						} else {
 							u := params.TextDocument.URI
-							store.Open(u, int(params.TextDocument.Version), []byte(params.TextDocument.Text))
+							hctx.store.Open(u, int(params.TextDocument.Version), []byte(params.TextDocument.Text))
 						}
 					}
 				case "textDocument/didChange":
@@ -373,7 +438,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 							// Handle each content change; full sync means we expect a single whole-document change
 							for _, change := range params.ContentChanges {
 								if whole, ok := change.(*protocol.TextDocumentContentChangeWholeDocument); ok {
-									store.Update(u, int(params.TextDocument.Version), []byte(whole.Text))
+									hctx.store.Update(u, int(params.TextDocument.Version), []byte(whole.Text))
 								} else if _, ok := change.(*protocol.TextDocumentContentChangePartial); ok {
 									// Partial (range) edit under Full-sync policy: log and skip
 									logger.Error("received partial change under full-sync policy; skipping", "uri", u)
@@ -390,7 +455,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						if err := params.UnmarshalJSONFrom(dec); err != nil {
 							logger.Error("invalid textDocument/didClose params", "err", err)
 						} else {
-							store.Close(params.TextDocument.URI)
+							hctx.store.Close(params.TextDocument.URI)
 						}
 					}
 				case "workspace/didChangeWatchedFiles":
@@ -491,7 +556,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid initialize params: %v", err))
 					return
 				}
-				respResult, clientSupportsWatchedFilesReg, err = handleInitialize(params, version)
+				respResult, hctx.posEncoding, clientSupportsWatchedFilesReg, err = handleInitialize(params, version)
 				if err != nil {
 					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
 					return
