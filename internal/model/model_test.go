@@ -526,3 +526,349 @@ func TestDiagnosticRange(t *testing.T) {
 		})
 	}
 }
+
+// TestSymbolKindConstants asserts exact string values of the new SymbolKind
+// constants added for the hierarchical Symbol type (feature 09).
+// These values are cache keys and must never be mutated.
+func TestSymbolKindConstants(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     SymbolKind
+		expected string
+	}{
+		{"SymbolProgram", SymbolProgram, "program"},
+		{"SymbolObject", SymbolObject, "object"},
+		{"SymbolSubroutine", SymbolSubroutine, "subroutine"},
+		{"SymbolDataSection", SymbolDataSection, "data-section"},
+		{"SymbolDataField", SymbolDataField, "data-field"},
+		{"SymbolMap", SymbolMap, "map"},
+		{"SymbolDDMReference", SymbolDDMReference, "ddm-reference"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.kind != SymbolKind(tc.expected) {
+				t.Errorf("SymbolKind constant %s = %q, want %q", tc.name, tc.kind, tc.expected)
+			}
+		})
+	}
+}
+
+// TestSymbolHierarchicalStructure asserts that the Symbol type supports
+// hierarchical, recursive nesting with Kind, Name, Range, SelectionRange,
+// and Children fields. This test constructs a nested symbol tree (object root
+// with data-section + subroutine children, and data-field children under the
+// section) and verifies round-trip and structure integrity (feature 09, T1).
+func TestSymbolHierarchicalStructure(t *testing.T) {
+	tests := []struct {
+		name   string
+		symbol func() Symbol
+		verify func(t *testing.T, s Symbol)
+	}{
+		{
+			name: "Symbol_root_object_with_nested_section_and_fields",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind: SymbolObject,
+					Name: "MYPROGRAM",
+					Range: Range{
+						Start: Position{Line: 1, Column: 1},
+						End:   Position{Line: 50, Column: 1},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 1, Column: 1},
+						End:   Position{Line: 1, Column: 10},
+					},
+					Children: []Symbol{
+						{
+							Kind: SymbolDataSection,
+							Name: "LOCAL",
+							Range: Range{
+								Start: Position{Line: 3, Column: 1},
+								End:   Position{Line: 10, Column: 1},
+							},
+							SelectionRange: Range{
+								Start: Position{Line: 3, Column: 1},
+								End:   Position{Line: 3, Column: 5},
+							},
+							Children: []Symbol{
+								{
+									Kind: SymbolDataField,
+									Name: "FIELD1",
+									Range: Range{
+										Start: Position{Line: 4, Column: 1},
+										End:   Position{Line: 4, Column: 20},
+									},
+									SelectionRange: Range{
+										Start: Position{Line: 4, Column: 1},
+										End:   Position{Line: 4, Column: 7},
+									},
+									Children: nil,
+								},
+								{
+									Kind: SymbolDataField,
+									Name: "FIELD2",
+									Range: Range{
+										Start: Position{Line: 5, Column: 1},
+										End:   Position{Line: 5, Column: 20},
+									},
+									SelectionRange: Range{
+										Start: Position{Line: 5, Column: 1},
+										End:   Position{Line: 5, Column: 7},
+									},
+									Children: nil,
+								},
+							},
+						},
+						{
+							Kind: SymbolSubroutine,
+							Name: "MYSUB",
+							Range: Range{
+								Start: Position{Line: 15, Column: 1},
+								End:   Position{Line: 20, Column: 1},
+							},
+							SelectionRange: Range{
+								Start: Position{Line: 15, Column: 18},
+								End:   Position{Line: 15, Column: 23},
+							},
+							Children: nil,
+						},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if s.Kind != SymbolObject {
+					t.Errorf("root Kind = %q, want %q", s.Kind, SymbolObject)
+				}
+				if s.Name != "MYPROGRAM" {
+					t.Errorf("root Name = %q, want %q", s.Name, "MYPROGRAM")
+				}
+				if s.Range.Start.Line != 1 {
+					t.Errorf("root Range.Start.Line = %d, want 1", s.Range.Start.Line)
+				}
+				if len(s.Children) != 2 {
+					t.Errorf("root Children length = %d, want 2", len(s.Children))
+				}
+
+				// Verify first child (data section)
+				section := s.Children[0]
+				if section.Kind != SymbolDataSection {
+					t.Errorf("section Kind = %q, want %q", section.Kind, SymbolDataSection)
+				}
+				if section.Name != "LOCAL" {
+					t.Errorf("section Name = %q, want %q", section.Name, "LOCAL")
+				}
+				if len(section.Children) != 2 {
+					t.Errorf("section Children length = %d, want 2", len(section.Children))
+				}
+
+				// Verify field children under section
+				field1 := section.Children[0]
+				if field1.Kind != SymbolDataField {
+					t.Errorf("field1 Kind = %q, want %q", field1.Kind, SymbolDataField)
+				}
+				if field1.Name != "FIELD1" {
+					t.Errorf("field1 Name = %q, want %q", field1.Name, "FIELD1")
+				}
+
+				field2 := section.Children[1]
+				if field2.Kind != SymbolDataField {
+					t.Errorf("field2 Kind = %q, want %q", field2.Kind, SymbolDataField)
+				}
+				if field2.Name != "FIELD2" {
+					t.Errorf("field2 Name = %q, want %q", field2.Name, "FIELD2")
+				}
+
+				// Verify second child (subroutine)
+				sub := s.Children[1]
+				if sub.Kind != SymbolSubroutine {
+					t.Errorf("subroutine Kind = %q, want %q", sub.Kind, SymbolSubroutine)
+				}
+				if sub.Name != "MYSUB" {
+					t.Errorf("subroutine Name = %q, want %q", sub.Name, "MYSUB")
+				}
+				if len(sub.Children) != 0 {
+					t.Errorf("subroutine Children length = %d, want 0", len(sub.Children))
+				}
+			},
+		},
+		{
+			name: "Symbol_with_map_and_fields",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind: SymbolMap,
+					Name: "MYMAP",
+					Range: Range{
+						Start: Position{Line: 1, Column: 1},
+						End:   Position{Line: 10, Column: 1},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 1, Column: 12},
+						End:   Position{Line: 1, Column: 17},
+					},
+					Children: []Symbol{
+						{
+							Kind: SymbolDataField,
+							Name: "MAPFIELD",
+							Range: Range{
+								Start: Position{Line: 2, Column: 1},
+								End:   Position{Line: 2, Column: 15},
+							},
+							SelectionRange: Range{
+								Start: Position{Line: 2, Column: 1},
+								End:   Position{Line: 2, Column: 9},
+							},
+							Children: nil,
+						},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if s.Kind != SymbolMap {
+					t.Errorf("map Kind = %q, want %q", s.Kind, SymbolMap)
+				}
+				if len(s.Children) != 1 {
+					t.Errorf("map Children length = %d, want 1", len(s.Children))
+				}
+				if s.Children[0].Kind != SymbolDataField {
+					t.Errorf("map child Kind = %q, want %q", s.Children[0].Kind, SymbolDataField)
+				}
+			},
+		},
+		{
+			name: "Symbol_DDMReference_leaf_node",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind: SymbolDDMReference,
+					Name: "EMPLOYEE",
+					Range: Range{
+						Start: Position{Line: 25, Column: 1},
+						End:   Position{Line: 25, Column: 20},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 25, Column: 6},
+						End:   Position{Line: 25, Column: 14},
+					},
+					Children: nil,
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if s.Kind != SymbolDDMReference {
+					t.Errorf("DDM Kind = %q, want %q", s.Kind, SymbolDDMReference)
+				}
+				if s.Name != "EMPLOYEE" {
+					t.Errorf("DDM Name = %q, want %q", s.Name, "EMPLOYEE")
+				}
+				if len(s.Children) != 0 {
+					t.Errorf("DDM Children length = %d, want 0", len(s.Children))
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sym := tc.symbol()
+			tc.verify(t, sym)
+		})
+	}
+}
+
+// TestFileAnalysisStructureField verifies that FileAnalysis has a Structure field
+// of type *Symbol (hierarchical symbol tree) and that it can be populated and
+// round-trips correctly. Nil Structure indicates no structure extraction (unknown
+// extension, complete parse failure). This test is for feature 09 (program-structure
+// extraction), T1 (add model.Symbol type).
+func TestFileAnalysisStructureField(t *testing.T) {
+	tests := []struct {
+		name       string
+		initialize func() FileAnalysis
+		verify     func(t *testing.T, fa FileAnalysis)
+	}{
+		{
+			name: "Structure_field_can_be_populated_with_symbol_tree",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{
+					ObjectType: ObjectProgram,
+					Structure: &Symbol{
+						Kind: SymbolObject,
+						Name: "PROG1",
+						Range: Range{
+							Start: Position{Line: 1, Column: 1},
+							End:   Position{Line: 30, Column: 1},
+						},
+						SelectionRange: Range{
+							Start: Position{Line: 1, Column: 1},
+							End:   Position{Line: 1, Column: 6},
+						},
+						Children: []Symbol{
+							{
+								Kind: SymbolSubroutine,
+								Name: "SUB1",
+								Range: Range{
+									Start: Position{Line: 10, Column: 1},
+									End:   Position{Line: 15, Column: 1},
+								},
+								SelectionRange: Range{
+									Start: Position{Line: 10, Column: 18},
+									End:   Position{Line: 10, Column: 22},
+								},
+								Children: nil,
+							},
+						},
+					},
+				}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if fa.Structure == nil {
+					t.Fatal("FileAnalysis.Structure is nil, want non-nil *Symbol")
+				}
+				if fa.Structure.Kind != SymbolObject {
+					t.Errorf("Structure.Kind = %q, want %q", fa.Structure.Kind, SymbolObject)
+				}
+				if fa.Structure.Name != "PROG1" {
+					t.Errorf("Structure.Name = %q, want %q", fa.Structure.Name, "PROG1")
+				}
+				if len(fa.Structure.Children) != 1 {
+					t.Errorf("Structure.Children length = %d, want 1", len(fa.Structure.Children))
+				}
+				if fa.Structure.Children[0].Kind != SymbolSubroutine {
+					t.Errorf("first child Kind = %q, want %q", fa.Structure.Children[0].Kind, SymbolSubroutine)
+				}
+			},
+		},
+		{
+			name: "Structure_field_is_nil_when_not_set",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{
+					ObjectType: ObjectProgram,
+				}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if fa.Structure != nil {
+					t.Errorf("FileAnalysis.Structure = %v, want nil", fa.Structure)
+				}
+			},
+		},
+		{
+			name: "Structure_field_is_nil_for_unknown_object",
+			initialize: func() FileAnalysis {
+				return FileAnalysis{
+					ObjectType: ObjectUnknown,
+					Structure:  nil,
+				}
+			},
+			verify: func(t *testing.T, fa FileAnalysis) {
+				if fa.Structure != nil {
+					t.Errorf("FileAnalysis.Structure = %v, want nil for unknown object", fa.Structure)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fa := tc.initialize()
+			tc.verify(t, fa)
+		})
+	}
+}

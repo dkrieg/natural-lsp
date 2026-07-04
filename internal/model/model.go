@@ -103,12 +103,74 @@ const (
 )
 
 // SymbolKind classifies the kind of symbol in the workspace index.
+// String values are stable and machine-readable: they are used as keys in the
+// on-disk cache and may be consumed by external tools. Never change an existing
+// value; add a new constant instead.
 type SymbolKind string
 
 const (
 	// SymbolProgram represents a program symbol.
+	// This constant is part of the legacy flat SymbolEntry model; newer code
+	// should use the recursive Symbol type and related constants.
 	SymbolProgram SymbolKind = "program"
+
+	// SymbolObject represents the root object symbol (program, subprogram, DDM, etc.)
+	// derived from file name. Used by the hierarchical Symbol type (feature 09).
+	SymbolObject SymbolKind = "object"
+
+	// SymbolSubroutine represents a subroutine defined via DEFINE SUBROUTINE.
+	SymbolSubroutine SymbolKind = "subroutine"
+
+	// SymbolDataSection represents a DEFINE DATA section (LOCAL, PARAMETER, GLOBAL, LINKAGE, etc.).
+	SymbolDataSection SymbolKind = "data-section"
+
+	// SymbolDataField represents a data item declared within a DEFINE DATA section.
+	SymbolDataField SymbolKind = "data-field"
+
+	// SymbolMap represents a map defined via DEFINE MAP.
+	SymbolMap SymbolKind = "map"
+
+	// SymbolDDMReference represents a reference to a data definition module (DDM).
+	SymbolDDMReference SymbolKind = "ddm-reference"
 )
+
+// Symbol represents a named construct extracted from a Natural source file,
+// arranged as a hierarchical tree rooted at the object level. It is used by
+// LSP providers (document outline, workspace symbol search, hover) to navigate
+// and present the source structure to the user.
+//
+// The tree structure mirrors LSP DocumentSymbol: Range is the whole-construct
+// span, SelectionRange is the name/identifier token span. Children are nested
+// recursively and always kept in stable, deterministic source order
+// (sorted by Range.Start).
+//
+// Kinds correspond to Natural constructs: SymbolObject (object root), SymbolSubroutine,
+// SymbolDataSection, SymbolDataField, SymbolMap, SymbolDDMReference. The root object
+// node's Children hold (in order): data sections (each with its fields), subroutines,
+// maps (each with their fields), and DDM references.
+type Symbol struct {
+	// Kind identifies the type of symbol (object, subroutine, data-section, etc.).
+	Kind SymbolKind
+
+	// Name is the identifier of the symbol, captured as written in the source
+	// (normalized by the parser/extractor but not case-adjusted for matching).
+	Name string
+
+	// Range is the whole-construct source span (e.g., from DEFINE SUBROUTINE
+	// to END-SUBROUTINE, from DEFINE DATA to the end of the section).
+	Range Range
+
+	// SelectionRange is the name/identifier token span within Range, used by
+	// editors to position the cursor for go-to-definition and symbol highlighting.
+	// For constructs without a discrete name token (e.g., data sections identified
+	// by keyword), SelectionRange is the keyword's span.
+	SelectionRange Range
+
+	// Children holds nested symbols in deterministic order (by Range.Start).
+	// Nil/empty for leaf symbols (subroutines, maps, data fields with no children).
+	// For the object root and data sections, children are nested recursively.
+	Children []Symbol
+}
 
 // Range represents a span in a file, identified by start and end positions.
 type Range struct {
@@ -275,6 +337,14 @@ type FileAnalysis struct {
 	// Used for binding host vars back to DEFINE DATA declarations (feature 08b).
 	// Populated by the workspace indexer for embedded-SQL extraction.
 	HostVarRefs []HostVarRef
+
+	// Structure is the hierarchical symbol tree for this file, rooted at the object level.
+	// It unifies subroutines, data sections, maps, and data-access references into a single,
+	// kind-tagged, walkable tree (mirrors LSP DocumentSymbol). Nil when the file is not a
+	// parseable object (e.g., unknown extension, parse fails completely).
+	// Populated by the analyzer's structure-extraction backend (feature 09);
+	// persisted in the workspace cache (0.6.0+).
+	Structure *Symbol
 
 	// AST holds the parsed AST for this file. Populated by the parser
 	// backend when available; nil when the parser is not integrated.
