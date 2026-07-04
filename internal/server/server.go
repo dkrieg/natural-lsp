@@ -103,10 +103,11 @@ func buildWatchedFilesRegisterOptions(extensions []string) (protocol.LSPAny, err
 // (for direct retention — no JSON round-trip), and a flag indicating whether
 // the client supports dynamic registration for workspace/didChangeWatchedFiles.
 //
-// Capabilities advertised here are intentionally minimal: only textDocumentSync
-// and positionEncoding. This is a deliberate allow-list locked by TestInitialize —
-// when features 09–13 add a provider (hover, definition, references, …) they MUST
-// update that test to extend the allow-list, making the addition explicit.
+// Capabilities advertised here form a deliberately locked allow-list enforced
+// by TestInitialize. Feature 10 (T3) adds the three navigation providers:
+// definitionProvider, referencesProvider, workspaceSymbolProvider (each true).
+// When features 09, 11–13 add further providers (hover, document symbols, …),
+// they MUST update TestInitialize to extend the allow-list, making additions explicit.
 func handleInitialize(params protocol.InitializeParams, version string) ([]byte, protocol.PositionEncodingKind, bool, error) {
 	// Negotiate position encoding: prefer UTF-8 if offered, else fall back to UTF-16.
 	// slices.Contains is O(n) over a typically-tiny list (1–3 entries).
@@ -127,10 +128,14 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	}
 
 	// Intentional minimal capability set — see comment above.
+	// Feature 10, T3: advertise the three navigation providers (definition, references, workspace symbol).
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
-			TextDocumentSync: protocol.TextDocumentSyncKindFull,
-			PositionEncoding: posEncoding,
+			TextDocumentSync:        protocol.TextDocumentSyncKindFull,
+			PositionEncoding:        posEncoding,
+			DefinitionProvider:      protocol.Boolean(true),
+			ReferencesProvider:      protocol.Boolean(true),
+			WorkspaceSymbolProvider: protocol.Boolean(true),
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",

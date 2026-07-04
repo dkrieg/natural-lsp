@@ -482,17 +482,28 @@ func TestInitialize(t *testing.T) {
 					t.Errorf("positionEncoding = %v, want %q", caps["positionEncoding"], tc.expectedEncoding)
 				}
 
-				// Assert: no feature provider flags are set (FR-41, NFR-11).
-				// This is a regression guard — when features 09–13 add providers, this assertion will catch the change.
-				providerFlags := []string{
+				// Assert: the three navigation providers are advertised (feature 10, T3).
+				// These are intentional additions per the locked allow-list convention:
+				// when features add providers, TestInitialize is extended to assert them explicitly.
+				requiredProviders := []string{
 					"definitionProvider",
 					"referencesProvider",
+					"workspaceSymbolProvider",
+				}
+				for _, providerFlag := range requiredProviders {
+					val, exists := caps[providerFlag]
+					if !exists || val == nil || val == false {
+						t.Errorf("%s = %v; want true (required by feature 10, T3)", providerFlag, val)
+					}
+				}
+
+				// Assert: other feature provider flags are not advertised (they come in future features).
+				otherProviderFlags := []string{
 					"hoverProvider",
 					"documentSymbolProvider",
-					"workspaceSymbolProvider",
 					"codeLensProvider",
 				}
-				for _, flag := range providerFlags {
+				for _, flag := range otherProviderFlags {
 					if val, exists := caps[flag]; exists && val != nil && val != false {
 						t.Errorf("%s is advertised (%v); want nil/false (not yet implemented)", flag, val)
 					}
