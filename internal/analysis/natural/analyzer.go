@@ -104,6 +104,11 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 		// Extract host-variable references from SQL statements. This is a new field
 		// with no prior entries to merge; just assign directly.
 		result.HostVarRefs = extractHostVarRefs(ast)
+
+		// Wire extractStructure into the analysis pipeline (Feature 09, Task 5).
+		// Call after all extractors (Edges, DataAccess, Definitions, WorkFiles, HostVarRefs)
+		// and after all sorting is complete, so DataAccess slice is final.
+		result.Structure = extractStructure(path, ast, result.Definitions, result.DataAccess)
 	}
 
 	return result, nil

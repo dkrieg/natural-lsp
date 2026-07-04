@@ -1,0 +1,15 @@
+* T4 fixture: Partial/legacy object with valid structure interleaved with garbled line
+* Tests Story 2: extraction yields structure for recognized parts, unrecognized lines produce diagnostics
+
+DEFINE DATA
+LOCAL
+  1 MY-FIELD (A10)
+END-DEFINE
+
+CALLNAT
+
+DEFINE SUBROUTINE HANDLE-DATA
+  WRITE 'Handling data'
+END-SUBROUTINE
+
+END

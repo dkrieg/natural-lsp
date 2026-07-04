@@ -31,9 +31,12 @@ exported to files before it can be indexed.
 > `DEFINE WORK FILE` definitions. **Embedded-SQL extraction is now implemented** (feature 08b): native SQL
 > and `PROCESS SQL` DDM read/write edges, `CALLDBPROC` call edges, and host-variable references. This is
 > per-file extraction only — cross-file binding (name→DDM/host-var *resolution* across the steplib chain,
-> and the record-form `UPDATE`/`DELETE` enclosing-loop file binding) remains future work. The remaining
-> navigation/hover/completion/call-hierarchy LSP *providers* that surface this to the editor are not yet
-> wired — this README describes the **target** feature set. There are no published binaries. Implemented
+> and the record-form `UPDATE`/`DELETE` enclosing-loop file binding) remains future work.
+> **Program-structure extraction is now implemented** (feature 09): a per-object hierarchical symbol tree
+> (object root, data sections + fields, subroutines, maps, DDM references) with source ranges, backing
+> document outline / workspace symbols / hover. The remaining
+> outline/symbols/navigation/hover/completion/call-hierarchy LSP *providers* that surface this to the
+> editor are not yet wired — this README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
 
 ---
@@ -56,7 +59,9 @@ The capabilities below define the **target** feature set for the first stable re
 
 **Document outline**
 
-- Full symbol tree: `DEFINE DATA` sections, subroutines, maps, external calls
+- Full symbol tree: `DEFINE DATA` sections, subroutines, maps, external calls — the underlying
+  hierarchical symbol model is **shipped** (feature 09, `FileAnalysis.Structure`); the
+  `textDocument/documentSymbol` provider that renders it is not yet wired.
 
 **Workspace indexing** *(full implementation shipped)*
 
@@ -411,6 +416,26 @@ SQL table operands are `.NSD` DDM names (the same namespace as Adabas). Per-file
 binding these SQL-sourced DDM/host-var references to their definitions (cross-file **resolution**) is
 future work.
 
+### Program structure *(extraction shipped — feature 09)*
+
+Each object is walked into a per-object hierarchical **symbol tree** (`FileAnalysis.Structure`), the
+backbone for document outline, workspace symbols, and hover. Every node carries a source `Range` (the
+whole construct) and a `SelectionRange` (the name token), mirroring LSP `DocumentSymbol`.
+
+| Symbol kind          | Source                                                        |
+|----------------------|---------------------------------------------------------------|
+| object (root)        | the object itself (name = file base without extension) — **shipped** |
+| data section         | each `DEFINE DATA` section (LOCAL/PARAMETER/…), fields nested as children incl. REDEFINE — **shipped** |
+| data field           | `DEFINE DATA` items (level/array/REDEFINE nesting) — **shipped** |
+| subroutine           | `DEFINE SUBROUTINE` — **shipped**                             |
+| map                  | `DEFINE MAP` (with its fields) — **shipped**                  |
+| DDM reference        | named `READ`/`FIND`/`GET`/`STORE` + SQL table references — **shipped** |
+
+Children are deterministically source-ordered; fields are grouped into their owning section by source-range
+containment (so multiple same-kind sections keep their own fields). Deferred: inline-vs-external subroutine
+distinction, type-specific members for helproutines/classes/functions, and `INCLUDE` copycode as an outline
+node. The LSP `documentSymbol`/`workspaceSymbol` providers that render this tree are not yet wired.
+
 ### Program structure
 
 | Construct                            | Symbol kind   |
@@ -468,6 +493,10 @@ internal/
                            (produces unresolved references; see resolution.go)
       data.go              DEFINE DATA / READ / FIND / GET / STORE /
                            record UPDATE|DELETE / DEFINE WORK FILE extraction
+      sql.go               Embedded-SQL extraction (DDM edges, CALLDBPROC,
+                           host-var refs, PROCESS SQL opaque-body scan)
+      structure.go         Program-structure extraction (per-object
+                           hierarchical symbol tree for outline/symbols/hover)
 
 editors/
   vscode/                  VS Code companion extension (TypeScript)

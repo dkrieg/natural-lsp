@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"natural-lsp/internal/model"
 )
 
 // FuzzParse is the executable proof of the parser's robustness (M-6, ADR-013):
@@ -278,5 +280,127 @@ func TestExtractSQL_NilGuards(t *testing.T) {
 	// extractHostVarRefs(nil) must not panic and must return nil (or an empty slice).
 	if got := extractHostVarRefs(nil); len(got) > 0 {
 		t.Errorf("extractHostVarRefs(nil) returned %d refs; want nil or empty slice", len(got))
+	}
+}
+
+// FuzzExtractStructure is the executable proof of the structure-extraction function's
+// robustness (FR-43, feature 09 Task 7): extractStructure must NEVER panic on arbitrary
+// input — even malformed, partial, or edge-case bytes — and must ALWAYS return either nil
+// or a well-formed hierarchical tree (no nil *Symbol children, no invariant violations).
+//
+// The fuzzer exercises:
+//   - Arbitrary tokenization (the parser produces partial/nil-safe ASTs)
+//   - Truncated DEFINE DATA sections (missing levels, no END-DEFINE)
+//   - Malformed subroutine definitions (no END-SUBROUTINE)
+//   - Truncated MAP declarations (missing fields, no END-MAP)
+//   - Adversarial input (pure garbage, deeply nested fields, mixed valid/invalid)
+//   - Files with all combinations of the above (robustness to "one bad thing among many")
+//
+// Seed corpus:
+//   - All structure/ fixtures (Tasks 2–5: program, subprogram, map, DDM refs, partial)
+//   - Hand-written adversarial cases (unterminated DEFINE SUBROUTINE, malformed MAP, garbage bytes)
+//
+// Feature 09 Task 7, FR-43, M-6, ADR-013.
+func FuzzExtractStructure(f *testing.F) {
+	// Seed from structure/ fixtures (Tasks 2–5).
+	fixtureNames := []string{
+		"01-program-full.NSP",
+		"02-subprogram-params.NSN",
+		"03-map.NSM",
+		"04-ddm-access.NSP",
+		"05-partial.NSP",
+	}
+
+	for _, name := range fixtureNames {
+		path := filepath.Join("testdata", "structure", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			// Skip missing fixtures (not a test failure).
+			continue
+		}
+		f.Add(data)
+	}
+
+	// Hand-written adversarial seeds (FR-43 graceful degradation).
+
+	// Unterminated DEFINE SUBROUTINE (no END-SUBROUTINE).
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nDEFINE SUBROUTINE DO-WORK\n  PERFORM 'X'\nEND\n"))
+
+	// Malformed DEFINE MAP (missing fields, no END-MAP).
+	f.Add([]byte("DEFINE MAP\n  1 FIELD-A (A10)\nEND\n"))
+
+	// Truncated DEFINE DATA (no END-DEFINE).
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #VAR (A5)\nCALLNAT 'X'\nEND\n"))
+
+	// Pure garbage bytes (no structure expected).
+	f.Add([]byte("\x00\x01\x02\x03\xFF\xFE\xFD"))
+
+	// Empty input.
+	f.Add([]byte(""))
+
+	// Deeply nested field groups (tests recursive symbol conversion).
+	f.Add([]byte("DEFINE DATA LOCAL\n1 GROUP1\n  2 GROUP2\n    3 GROUP3\n      4 #DEEP (A5)\nEND-DEFINE\nEND\n"))
+
+	// Mixed valid subroutine + malformed MAP.
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nDEFINE SUBROUTINE GOOD\nEND-SUBROUTINE\nDEFINE MAP BROKEN\nEND\n"))
+
+	// Multiple data sections with REDEFINE.
+	f.Add([]byte("DEFINE DATA\nLOCAL\n  1 #X (A5)\n  1 #Y REDEFINE #X (N5)\nGLOBAL\n  1 #G (A10)\nEND-DEFINE\nEND\n"))
+
+	// Lone DEFINE WORK FILE (may be recognized or ignored gracefully).
+	f.Add([]byte("DEFINE WORK FILE 1 'MYFILE'\nEND\n"))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// Arrange: construct the lexer and parser from the arbitrary input.
+		lexer := NewLexer(string(input))
+		parser := NewParser(lexer)
+
+		// Act: parse the input (may be partial/malformed).
+		prog, _ := parser.Parse()
+
+		// Extract definitions.
+		defs := extractDefinitions(prog)
+
+		// Extract data access.
+		access := extractDataAccess(prog)
+
+		// Run extractStructure. Must not panic even over nil or partial ASTs.
+		sym := extractStructure("fuzz.NSP", prog, defs, access)
+
+		// Assert: extractStructure returned either nil or a well-formed tree.
+		// The key assertion is NEVER PANIC; well-formedness check is defensive.
+		if sym != nil {
+			// If a non-nil tree is returned, walk it recursively and verify no
+			// nil children and that the Kind is valid (basic invariant check).
+			var walkSymbols func(s *model.Symbol)
+			walkSymbols = func(s *model.Symbol) {
+				if s == nil {
+					t.Errorf("Symbol tree contains a nil child, want well-formed tree")
+					return
+				}
+				// Basic kind check: all kinds should be non-empty strings.
+				if s.Kind == "" {
+					t.Errorf("Symbol has empty Kind, want a valid SymbolKind")
+				}
+				// Range must be sensible (both Start and End set, or both zero).
+				// We don't enforce strict ordering here (the fuzzer is for crash-testing).
+
+				// Recursively walk children.
+				for i := range s.Children {
+					walkSymbols(&s.Children[i])
+				}
+			}
+			walkSymbols(sym)
+		}
+	})
+}
+
+// TestExtractStructure_NilGuard verifies the nil-guard safety assertion (FR-43, ADR-013):
+// extractStructure must accept a nil *Program and return a non-panicking, nil result.
+func TestExtractStructure_NilGuard(t *testing.T) {
+	// extractStructure(path, nil, nil, nil) must not panic and must return nil.
+	got := extractStructure("x.NSP", nil, nil, nil)
+	if got != nil {
+		t.Errorf("extractStructure(path, nil, nil, nil) returned %v, want nil", got)
 	}
 }
