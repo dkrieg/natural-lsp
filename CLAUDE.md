@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–09 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). Feature 09 produces the hierarchical `model.Symbol` tree (`FileAnalysis.Structure`) that will back document outline, workspace symbols, and hover (see the `structure.go` note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The higher-level LSP providers that surface this to the editor (outline, symbols, completion, signature help, call hierarchy, hover) remain unwired (`hover.go`, `symbols.go` are package-doc + TODO only).
+**Features 00–10 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **Navigation & symbol search (feature 10) is the first shipped LSP provider layer**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) are wired and advertised; the running server now builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (document outline / `textDocument/documentSymbol`, completion, signature help, call hierarchy, hover) remain unwired (`hover.go`, `symbols.go` are package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -69,8 +69,9 @@ retains the edges it could extract (FR-43). Fixtures live under `testdata/calls/
 `internal/server/` implements the LSP lifecycle (feature 03): `Run(ctx, r, w, version, root, cfg, az,
 logger)` serves JSON-RPC 2.0 over `Content-Length`-framed stdio (`go.lsp.dev/jsonrpc2` v1.0.0). The
 server enforces the `initialize → initialized → shutdown → exit` lifecycle; the `initialize` response
-advertises `textDocumentSync: Full` and `positionEncoding` (UTF-8 preferred, UTF-16 default — ADR-008)
-with no feature providers yet. Graceful degradation (FR-43): oversized files are skipped with
+advertises `textDocumentSync: Full`, `positionEncoding` (UTF-8 preferred, UTF-16 default — ADR-008), and
+(feature 10) the `definitionProvider`, `referencesProvider`, and `workspaceSymbolProvider` capabilities —
+a deliberately locked allow-list enforced by `TestInitialize`. Graceful degradation (FR-43): oversized files are skipped with
 `SkipTooLarge`, excluded paths with `SkipExcluded`, unrecognized extensions processed as `ObjectUnknown`,
 and analyzer panics are recovered per-file without aborting the batch — every skip/recovery is logged to
 stderr. Per-request panic recovery returns a JSON-RPC `InternalError` and keeps the loop alive. SIGTERM
@@ -81,6 +82,29 @@ skipped), `textDocument/didClose`, and `workspace/didChangeWatchedFiles` handler
 the server sends `client/registerCapability` for `workspace/didChangeWatchedFiles` when the client
 advertises `Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration`. A background `fsnotify`
 watcher (`document.NewWatcher`) is started at `initialized` and closed on shutdown.
+
+Feature 10 (navigation & symbol search) wires the **first real LSP providers** into the server and, for
+the first time, makes the running process build and hold a `workspace.Index` (feature 05's index was a
+package that was never constructed by the server until now). At `initialized` the server builds the index
+via `workspace.Build` and computes a `workspace.ResolutionSet` (`Resolve`), holding both on a
+`handlerContext` guarded by an `RWMutex`; on `didChange`/watched-file changes, `applyDocumentChange`
+re-analyzes, `idx.Add`s, and swaps in a freshly-recomputed resolution set (`workspace.ResolveInto`, the
+scoped/incremental recompute) under the write lock — build-then-publish, so provider reads that snapshot
+the `(idx, res)` pointers under the read lock are never racing an in-place mutation (F7). The three
+providers live in new files: `position.go` (encoding-aware `model`↔`protocol` position/range conversion —
+model is 1-based with byte-offset columns and inclusive-end ranges; protocol is 0-based, code-unit-counted
+per the negotiated encoding, end-exclusive; ADR-008), `cursor.go` (`findCursorTarget` maps a cursor to the
+`EdgeEntry`/`DataAccessEntry` reference site under it, smallest-containing-range tie-break), `definition.go`
+(`textDocument/definition`: cursor → resolution → target `Location`; a module target lands on the object
+root's `SelectionRange`, an inline `PERFORM` on the matching `DEFINE SUBROUTINE` child; dynamic/unresolved →
+empty per FR-17; a flat-namespace ambiguity returns all candidate `Location`s), `references.go`
+(`textDocument/references`: a reverse sweep over the index binding each edge to its resolved target, plus
+DDM references matched by name; dynamic/unresolved sites are excluded, never falsely linked), and
+`workspace_symbols.go` (`workspace/symbol`: case-insensitive name search over each file's `Structure`,
+returning object roots and subroutines as `SymbolInformation`). This feature made **no `internal/model`
+change and no cache-format bump** (still `0.6.0`) — server capabilities/wiring only. The feature-06 `PERFORM`
+edge `Source` was widened to span through the target name so a cursor on the target resolves to the edge.
+`FuzzPositionConversion`, `FuzzCursorLookup`, and `FuzzProvideDefinition` guard the primitives (FR-43).
 
 `internal/document/` (feature 04) is fully implemented. `Store` is a concurrency-safe in-memory map of
 open documents keyed by LSP URI; it re-analyzes content on `Open`/`Update` via an `AnalyzeFunc`
@@ -111,7 +135,14 @@ recomputed from cached `Edges` on load. `index.go` gained `LookupByName`/`buildN
 name→definition lookup, and `Index.Invalidate` was migrated from a name-vs-path string compare to
 resolved object-name matching (uppercased copycode name vs `EdgeIncludes.TargetName`, transitive). A
 `FuzzResolve` target guards the resolver (never panics, always returns a non-nil `*ResolutionSet`).
-Fixtures live under `internal/workspace/testdata/resolution/`.
+Fixtures live under `internal/workspace/testdata/resolution/`. Feature 10 added
+`ResolveInto(rs, idx, cfg, changedPaths)` — a scoped/incremental recompute that returns a **fresh**
+`ResolutionSet` merging re-resolved changed files plus their affected callers (files whose edge
+`TargetName` matches an object added-to/removed-from a changed file — a definition change affects callers,
+not just INCLUDE dependents) into a copy of the prior set, leaving the input set immutable (build-then-
+publish, F7). Its completeness invariant — the merged set equals a full `Resolve` for the mutated index —
+is asserted against `Resolve` in tests. `Resolve` remains the initial-build path; still no cache-format
+change (recomputed on load, OQ-1).
 
 `internal/analysis/natural/data.go` implements **Adabas data-access extraction** (feature 08), wired into
 `Analyze` alongside `extractEdges`. `extractDataAccess(*Program)` emits `model.DataAccessEntry` values:

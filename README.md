@@ -34,9 +34,12 @@ exported to files before it can be indexed.
 > and the record-form `UPDATE`/`DELETE` enclosing-loop file binding) remains future work.
 > **Program-structure extraction is now implemented** (feature 09): a per-object hierarchical symbol tree
 > (object root, data sections + fields, subroutines, maps, DDM references) with source ranges, backing
-> document outline / workspace symbols / hover. The remaining
-> outline/symbols/navigation/hover/completion/call-hierarchy LSP *providers* that surface this to the
-> editor are not yet wired — this README describes the **target** feature set. There are no published binaries. Implemented
+> document outline / workspace symbols / hover.
+> **Navigation & symbol search is now implemented** (feature 10): the first shipped LSP providers —
+> `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26).
+> The running server now builds and holds a workspace index + resolution set and updates them incrementally
+> on document/watched-file changes. The remaining outline (`documentSymbol`)/hover/completion/call-hierarchy
+> LSP *providers* are not yet wired — this README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
 
 ---
@@ -45,11 +48,11 @@ exported to files before it can be indexed.
 
 The capabilities below define the **target** feature set for the first stable release.
 
-**Navigation**
+**Navigation** *(providers shipped — feature 10)*
 
-- Jump to definition for `CALLNAT`, `FETCH`, `RUN`, and `PERFORM` targets
-- Find all references to a subroutine, program, or DDM field across the workspace
-- Workspace symbol search by program name or subroutine
+- Jump to definition for `CALLNAT`, `FETCH`, `RUN`, and `PERFORM` targets — **shipped**
+- Find all references to a subroutine, program, or DDM field across the workspace — **shipped**
+- Workspace symbol search by program name or subroutine — **shipped**
 
 **Hover**
 
@@ -74,14 +77,14 @@ The capabilities below define the **target** feature set for the first stable re
 
 **LSP protocol compliance**
 
-- `textDocument/definition`
-- `textDocument/references`
+- `textDocument/definition` — **shipped** (feature 10)
+- `textDocument/references` — **shipped** (feature 10)
+- `workspace/symbol` — **shipped** (feature 10)
 - `textDocument/hover`
 - `textDocument/completion` (module names, subroutine names, DDM field names)
 - `textDocument/signatureHelp` (parameter interfaces at call sites)
 - `textDocument/callHierarchy` (incoming/outgoing call panels)
 - `textDocument/documentSymbol`
-- `workspace/symbol`
 - `textDocument/codeLens` (call counts, table write summaries)
 - `window/workDoneProgress` (indexing progress on first run)
 
@@ -434,7 +437,8 @@ whole construct) and a `SelectionRange` (the name token), mirroring LSP `Documen
 Children are deterministically source-ordered; fields are grouped into their owning section by source-range
 containment (so multiple same-kind sections keep their own fields). Deferred: inline-vs-external subroutine
 distinction, type-specific members for helproutines/classes/functions, and `INCLUDE` copycode as an outline
-node. The LSP `documentSymbol`/`workspaceSymbol` providers that render this tree are not yet wired.
+node. The `workspace/symbol` provider over this tree is **shipped** (feature 10); the per-file
+`textDocument/documentSymbol` (outline) provider that renders it is not yet wired.
 
 ### Program structure
 
@@ -460,11 +464,17 @@ internal/
                            workspace-root discovery, library map
 
   server/
-    server.go              LSP lifecycle: initialize, shutdown
-    handlers.go            textDocument/* and workspace/* dispatch
-    progress.go            window/workDoneProgress helpers
-    diagnostics.go         Collects diagnostics from extraction + resolution
-                           and publishes them
+    server.go              LSP lifecycle + dispatch; builds/holds the workspace
+                           index + resolution; incremental update on change
+    position.go            model<->protocol position/range conversion (ADR-008)
+    cursor.go              cursor position -> reference-site (edge/data-access) lookup
+    definition.go          textDocument/definition provider
+    references.go          textDocument/references provider (reverse sweep)
+    workspace_symbols.go   workspace/symbol provider (Structure name search)
+    degradation.go         per-file analyze + graceful-degradation helpers
+    handlers.go            (stub) package doc + TODO
+    progress.go            (stub) window/workDoneProgress helpers — TODO
+    diagnostics.go         (stub) diagnostic aggregation/publish — TODO
 
   document/
     store.go               In-memory document store (didOpen/didChange/didClose)
