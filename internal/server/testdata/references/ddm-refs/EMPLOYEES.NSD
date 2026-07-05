@@ -1,0 +1,5 @@
+* A simple DDM for fixture testing
+DB: 1 FILE: 1 DEFAULT SEQUENCE: AA
+T L DB Name                          F Leng  S D  Remark
+- 1 AA EMPLOYEE-ID                   N    8  N D  Descriptor
+- 1 AB EMPLOYEE-NAME                 A   30  N

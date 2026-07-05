@@ -86,13 +86,11 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 	} else if dataAccess != nil {
 		// We found a data-access entry; treat it as a reference to a DDM/view
 		// For now, use the data-access name as the target
-		targetPath = "" // TODO: resolve data-access to DDM path
+		// DDM resolution is not yet implemented; matching is by name only.
+		targetPath = "" // TODO (future): resolve data-access to DDM path
 		targetName = dataAccess.Name
 		targetType = model.ObjectDDM
-		// For this minimal implementation, if we can't resolve the target path, return empty
-		if targetPath == "" {
-			return nil, nil
-		}
+		// Proceed with name-based matching (DDM resolution is future work)
 	} else {
 		// Should not reach here (both are nil)
 		return nil, nil
@@ -189,8 +187,24 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 			})
 		}
 
-		// TODO: Scan data-access entries for DDM-field references if targetType == ObjectDDM
-		// For now, only handle edges (test cases are edge-based)
+		// Scan data-access entries for DDM-field references when targetType == ObjectDDM
+		// DDM resolution is not yet implemented; matching is by name only.
+		// For a DDM target, scan all DataAccessEntry whose Name matches targetName (case-insensitive).
+		if targetType == model.ObjectDDM {
+			for _, dataAccess := range fa.DataAccess {
+				// Match by normalized name (case-insensitive)
+				if strings.EqualFold(dataAccess.Name, targetName) {
+					// Record the reference site using NameRange (the DDM-name token, not the whole statement)
+					fileURI := uri.File(absPath)
+					protocolRng := toProtocolRange(dataAccess.NameRange, string(fileContent), enc)
+
+					locations = append(locations, protocol.Location{
+						URI:   fileURI,
+						Range: protocolRng,
+					})
+				}
+			}
+		}
 	})
 
 	// If includeDeclaration is true, add the declaration site
