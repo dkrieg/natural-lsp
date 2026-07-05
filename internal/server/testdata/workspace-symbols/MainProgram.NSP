@@ -1,0 +1,26 @@
+* Task T13 fixture: program with mixed-case name and subroutine definitions
+* Demonstrates:
+* - Object (program) with name "MainProgram" for case-insensitive matching
+* - DEFINE SUBROUTINE "ProcessData" for workspace symbol search
+* - DEFINE SUBROUTINE "ValidateInput" for completeness
+
+DEFINE DATA
+LOCAL
+  1 INPUT-STRING (A50)
+  1 OUTPUT-STRING (A50)
+END DEFINE
+
+DEFINE SUBROUTINE ProcessData
+  MOVE INPUT-STRING TO OUTPUT-STRING
+END-SUBROUTINE
+
+DEFINE SUBROUTINE ValidateInput
+  IF INPUT-STRING = '' THEN
+    MOVE 'ERROR' TO OUTPUT-STRING
+  END-IF
+END-SUBROUTINE
+
+CALLNAT 'MYSUB'
+MOVE 'OK' TO OUTPUT-STRING
+
+END

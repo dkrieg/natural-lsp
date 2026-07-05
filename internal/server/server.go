@@ -659,6 +659,34 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 					respResult = locationJSON
 				}
 
+			case "workspace/symbol":
+				// Feature 10, T13: workspace symbol search handler.
+				// Gate on stateInitialized; decode WorkspaceSymbolParams; call provideWorkspaceSymbols.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.WorkspaceSymbolParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid workspace symbol params: %v", err))
+					return
+				}
+				// Call the provider function.
+				symbols := provideWorkspaceSymbols(hctx, params.Query)
+				// Marshal the result: symbols may be nil (empty) for a no-match case.
+				if symbols == nil {
+					respResult = []byte(`[]`)
+				} else {
+					// Marshal the symbol information slice as JSON.
+					symbolJSON, marshalErr := json.Marshal(symbols)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal symbols: %v", marshalErr))
+						return
+					}
+					respResult = symbolJSON
+				}
+
 			default:
 				// Unknown method — send MethodNotFound per JSON-RPC 2.0 §5.1 and LSP §3.1.
 				// MethodNotFound is the spec-correct response and prevents silently swallowing

@@ -1,0 +1,12 @@
+* Task T13 fixture: subprogram with uppercase name
+* Target of CALLNAT from MainProgram.NSP
+
+DEFINE DATA
+PARAMETER
+  1 INPUT-VALUE (A20)
+  1 OUTPUT-VALUE (A20)
+END DEFINE
+
+MOVE INPUT-VALUE TO OUTPUT-VALUE
+
+END
