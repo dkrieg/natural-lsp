@@ -168,6 +168,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 // Until T14 lands, no lock is needed here.
 type handlerContext struct {
 	idx         *workspace.Index              // workspace index; nil until "initialized" (guard with idx != nil)
+	res         *workspace.ResolutionSet      // resolution set (feature 10, T7); computed after index build in initialized handler
 	posEncoding protocol.PositionEncodingKind // negotiated in "initialize"; used by all position converters (T1)
 	store       *document.Store               // in-memory open-document view (didOpen/didChange/didClose)
 	root        string                        // absolute workspace root path
@@ -357,6 +358,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 							} else {
 								hctx.idx = builtIdx
 							}
+						}
+
+						// Feature 10, T7: compute the resolution set after index build.
+						// This binds call/dependency/data-access edges to their definitions.
+						if hctx.idx != nil {
+							hctx.res = workspace.Resolve(hctx.idx, &cfg)
 						}
 
 						// Test hook: if set, call it with the index and encoding (feature 10, T2).

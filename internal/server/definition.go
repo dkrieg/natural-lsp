@@ -1,7 +1,9 @@
 package server
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
@@ -9,18 +11,102 @@ import (
 	"natural-lsp/internal/model"
 )
 
-// provideDefinition handles the textDocument/definition request (feature 10, T4).
+// provideDefinition handles the textDocument/definition request (feature 10, T7).
 // It is the LSP provider entry point: it decodes the cursor position from the params,
-// looks up any reference at that position, and returns an empty result.
+// looks up any reference at that position, resolves it to a definition, and returns
+// the target location(s).
 //
-// This is the T4 skeleton: it always returns an empty result (nil) since the real
-// resolution logic is T7. The function signature and wiring are in place; the cursor
-// lookup and resolution are added in T5–T7.
+// For a resolved edge:
+// - If the target is in the same file (inline PERFORM), use the subroutine's SelectionRange.
+// - Otherwise, use the target file's object-root Structure.SelectionRange.
+// For unresolved or dynamic targets, returns empty (no error — FR-17, FR-43).
 func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) ([]protocol.Location, error) {
-	// T4: skeleton returns empty for now.
-	// T5: add cursor lookup (findCursorTarget).
-	// T7: add resolution (ResolutionSet.Get) and target Location (definitionLocation).
-	return nil, nil
+	// Guard: hctx must be initialized
+	if hctx == nil || hctx.idx == nil || hctx.res == nil {
+		return nil, nil
+	}
+
+	// Convert LSP URI to relative file path
+	absPath := params.TextDocument.URI.FsPath()
+	relPath, err := filepath.Rel(hctx.root, absPath)
+	if err != nil {
+		// URI outside workspace root — no definition
+		return nil, nil
+	}
+
+	// Normalize path separators for consistency with index keys
+	relPath = strings.ReplaceAll(relPath, "\\", "/")
+
+	// Get the source file's analysis from the index
+	sourceFA, ok := hctx.idx.Get(relPath)
+	if !ok {
+		// Source file not in index — no definition
+		return nil, nil
+	}
+
+	// Read the source file content for position conversion
+	sourceContent, err := os.ReadFile(absPath)
+	if err != nil {
+		// Can't read source; no definition
+		return nil, nil
+	}
+
+	// Convert protocol position (0-based) to model position (1-based)
+	cursorPos := fromProtocolPosition(params.Position, string(sourceContent), hctx.posEncoding)
+
+	// Find the edge (or data-access) at the cursor position
+	edge, _ := findCursorTarget(sourceFA, cursorPos)
+	if edge == nil {
+		// No edge at cursor position — no definition
+		return nil, nil
+	}
+
+	// Look up the resolution for this edge
+	resolution, ok := hctx.res.Get(relPath, edge.Source)
+	if !ok || !resolution.IsResolved() {
+		// Edge unresolved or not found — no definition (FR-17)
+		return nil, nil
+	}
+
+	// Resolution succeeded; read the target file's analysis
+	targetFA, ok := hctx.idx.Get(resolution.Path)
+	if !ok {
+		// Target file not in index (shouldn't happen after successful resolution)
+		return nil, nil
+	}
+
+	// Read the target file content for range conversion
+	targetAbsPath := filepath.Join(hctx.root, resolution.Path)
+	targetContent, err := os.ReadFile(targetAbsPath)
+	if err != nil {
+		// Can't read target file — no definition
+		return nil, nil
+	}
+
+	// Handle inline PERFORM (target in same file): use the subroutine's SelectionRange
+	// Normalize both paths for comparison (convert backslashes to forward slashes)
+	normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+	if strings.EqualFold(normalizedResPath, relPath) {
+		// Same file: find the matching subroutine in Structure.Children
+		if targetFA.Structure != nil && targetFA.Structure.Children != nil {
+			targetName := strings.ToUpper(edge.TargetName)
+			for _, child := range targetFA.Structure.Children {
+				if child.Kind == model.SymbolSubroutine && strings.EqualFold(child.Name, targetName) {
+					// Found the inline subroutine; use its SelectionRange
+					loc := protocol.Location{
+						URI:   uri.File(targetAbsPath),
+						Range: toProtocolRange(child.SelectionRange, string(targetContent), hctx.posEncoding),
+					}
+					return []protocol.Location{loc}, nil
+				}
+			}
+		}
+		// Fallback: use object root
+	}
+
+	// External target: use the object-root Structure.SelectionRange
+	loc := definitionLocation(hctx.root, resolution.Path, targetFA, string(targetContent), hctx.posEncoding)
+	return []protocol.Location{loc}, nil
 }
 
 // definitionLocation builds a protocol.Location for a resolved definition.
