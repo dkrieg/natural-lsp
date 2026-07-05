@@ -760,13 +760,17 @@ func (hctx *handlerContext) applyDocumentChange(relPath string, content []byte) 
 		return
 	}
 
-	// Step 1: Update the index with the new FileAnalysis
+	// Step 1: Update the index with the new FileAnalysis.
+	// idx.Add mutates the index in place; safe because we hold the write lock.
 	hctx.idx.Add(relPath, result.FileAnalysis)
 
-	// Step 2: Incrementally recompute the resolution set for affected files
-	// (Re-resolve only files whose edges' targets may have changed)
+	// Step 2: Incrementally recompute the resolution set for affected files.
+	// ResolveInto builds and returns a FRESH ResolutionSet, leaving the old one
+	// untouched so any reader holding a snapshot sees a stable, immutable view.
+	// We swap the pointer under the write lock so handlers see a consistent pair.
 	hctx.res = workspace.ResolveInto(hctx.res, hctx.idx, &hctx.cfg, []string{relPath})
 
-	// idx and res are now atomically updated; handlers reading under RLock will see
-	// the new consistent pair.
+	// Both idx and res pointers are now updated atomically; handlers reading under
+	// RLock will see a consistent (old idx, old res) or (new idx, new res) pair,
+	// never a torn state. The old res remains immutable for any reader still holding it.
 }

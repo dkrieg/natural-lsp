@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"natural-lsp/internal/analysis/natural"
 	"natural-lsp/internal/config"
@@ -3679,4 +3681,124 @@ func TestResolveInto_ScopedRecomputeFlipsOutcome_T13a(t *testing.T) {
 			}
 		})
 	})
+}
+
+// TestResolveInto_ConcurrencyRace (Feature 10 remediation) reproduces the data race
+// that occurs when ResolveInto mutates a ResolutionSet in place while a concurrent
+// reader (via Get) tries to access its maps. This test MUST fail under -race before
+// the fix and pass after.
+//
+// Scenario: simulates the server's lock discipline:
+//   - Writer goroutine: holds a write lock, calls ResolveInto on hctx.res, reads back
+//     the returned set (the bug is that ResolveInto mutates in place, so the reader
+//     would see partial mutations).
+//   - Reader goroutine: snapshot hctx.res under read lock, then read its maps lock-free
+//     (the way providers do). If ResolveInto mutates in place, this races.
+//
+// After the fix: ResolveInto builds and returns a FRESH ResolutionSet, leaving the
+// input set untouched. The writer swaps pointers; the old set is never mutated.
+// The reader sees a stable snapshot.
+func TestResolveInto_ConcurrencyRace(t *testing.T) {
+	// Build a minimal index with a few files and edges to trigger the resolution logic.
+	idx := &Index{entries: make(map[string]model.FileAnalysis)}
+	cfg := config.Defaults()
+
+	// Add some files with edges.
+	idx.Add("subprog1.NSN", model.FileAnalysis{
+		ObjectType: model.ObjectSubprogram,
+		Edges: []model.EdgeEntry{
+			{
+				Kind:       model.EdgeCalls,
+				TargetName: "SUBPROG2",
+				Library:    "",
+				Source: model.Range{
+					Start: model.Position{Line: 1, Column: 0},
+					End:   model.Position{Line: 1, Column: 10},
+				},
+			},
+		},
+	})
+
+	idx.Add("subprog2.NSN", model.FileAnalysis{
+		ObjectType: model.ObjectSubprogram,
+		Edges:      []model.EdgeEntry{},
+	})
+
+	// Create an initial resolution set.
+	initialRes := Resolve(idx, &cfg)
+	if initialRes == nil {
+		t.Fatal("Resolve returned nil")
+	}
+
+	// Simulate the server's lock pattern.
+	var mu sync.RWMutex
+	var publishedRes *ResolutionSet = initialRes
+
+	// Number of iterations to increase chance of hitting race condition.
+	const iterations = 100
+	done := make(chan error, 4)
+
+	// Writer goroutine: simulates applyDocumentChange behavior.
+	// It calls ResolveInto under the write lock.
+	go func() {
+		for i := 0; i < iterations; i++ {
+			// Acquire write lock (like applyDocumentChange does).
+			mu.Lock()
+
+			// Call ResolveInto (the buggy code mutates publishedRes in place).
+			// After the fix, this returns a fresh set and we swap pointers.
+			newRes := ResolveInto(publishedRes, idx, &cfg, []string{"subprog1.NSN"})
+
+			// Under the fix: publishedRes should be swapped to newRes.
+			// Before the fix: publishedRes is mutated in place, and newRes == publishedRes.
+			publishedRes = newRes
+
+			mu.Unlock()
+
+			// Small delay to let readers interleave.
+			if i%10 == 0 {
+				// Yield to other goroutines.
+				time.Sleep(1 * time.Microsecond)
+			}
+		}
+		done <- nil
+	}()
+
+	// Reader goroutines: simulate provider behavior.
+	// They snapshot the pointer under read lock, then read the maps lock-free.
+	for r := 0; r < 3; r++ {
+		go func(readerID int) {
+			for i := 0; i < iterations; i++ {
+				// Acquire read lock and snapshot the pointer (like providers do).
+				mu.RLock()
+				snapshotRes := publishedRes
+				mu.RUnlock()
+
+				// Read the maps lock-free (RACE WINDOW: if the writer is mutating
+				// the maps while we read, this crashes under -race).
+				if snapshotRes != nil {
+					// Get and All both read rs.entries map.
+					_ = snapshotRes.All()
+					_, _ = snapshotRes.Get("subprog1.NSN", model.Range{})
+				}
+
+				// Small delay.
+				if i%10 == 0 {
+					time.Sleep(1 * time.Microsecond)
+				}
+			}
+			done <- nil
+		}(r)
+	}
+
+	// Wait for all goroutines.
+	for i := 0; i < 4; i++ {
+		err := <-done
+		if err != nil {
+			t.Errorf("goroutine failed: %v", err)
+		}
+	}
+
+	// If -race detected no data race, this test passes.
+	// If -race detected a race (before the fix), this test fails.
 }

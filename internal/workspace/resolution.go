@@ -643,58 +643,70 @@ func Resolve(idx *Index, cfg *config.Config) *ResolutionSet {
 }
 
 // ResolveInto incrementally re-resolves a scoped set of changed files and
-// merges the outcome into an existing ResolutionSet, rather than re-walking
+// returns a fresh ResolutionSet with the merged outcome, rather than re-walking
 // the whole index with Resolve.
 //
 // Parameters:
-//   - rs: existing ResolutionSet to merge results into (may be nil)
+//   - rs: existing ResolutionSet (may be nil); left UNTOUCHED (never mutated)
 //   - idx: the updated Index (with changes applied)
 //   - cfg: the workspace configuration (for library mapping, etc.)
 //   - changedPaths: workspace-relative paths of files that have changed
 //
-// Behavior:
-// 1. Rebuilds the name index (targets can live anywhere)
-// 2. Re-resolves edges in the changed files + affected dependents
-// 3. Merges/re-keys `(filePath, source)` entries into rs
-// 4. Drops stale entries for edges that no longer exist in changed files
-// 5. Returns the merged ResolutionSet
+// Behavior (build-then-publish pattern per tasks.md F6a/F7):
+// 1. Allocates a FRESH ResolutionSet with new maps (never mutates input rs)
+// 2. Copies all non-affected entries from the input rs into the fresh set
+// 3. Rebuilds the name index and determines the affected file set
+// 4. Re-resolves edges in the changed files + affected dependents
+// 5. Inserts the re-computed entries into the fresh set
+// 6. Returns the fresh set
+//
+// The input rs remains immutable; callers can safely hold references to it
+// while the server swaps to a new set under the write lock. This enables
+// providers to snapshot the old pointer, release the lock, and read the maps
+// lock-free without racing against mutation.
 //
 // Correctness invariant (F6a): after scoped recompute for the changed state,
-// the merged set must EQUAL what a full Resolve(idx, cfg) would produce for
+// the returned set must EQUAL what a full Resolve(idx, cfg) would produce for
 // that same index state (completeness — no stale entry left claiming a removed target).
 //
-// This is the feature 10, task T13a entry point (F6a — resolution API extension).
-// Currently stubbed to return rs unchanged; implementation in tdd-green phase.
+// Feature 10, task T13a (F6a — resolution API extension + concurrency fix).
 func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths []string) *ResolutionSet {
-	// Initialize ResolutionSet if nil.
-	if rs == nil {
-		rs = &ResolutionSet{
-			entries:          make(map[resolutionKey]Resolution),
+	// Handle nil or empty changedPaths: return a copy of the input set (or a fresh empty set if nil).
+	if len(changedPaths) == 0 {
+		if rs == nil {
+			return &ResolutionSet{
+				entries:          make(map[resolutionKey]Resolution),
+				ambigDiagnostics: make(map[string][]model.Diagnostic),
+			}
+		}
+		// Copy the input set: allocate fresh maps and copy entries.
+		newRS := &ResolutionSet{
+			entries:          make(map[resolutionKey]Resolution, len(rs.entries)),
 			ambigDiagnostics: make(map[string][]model.Diagnostic),
 		}
+		for k, v := range rs.entries {
+			newRS.entries[k] = v
+		}
+		for filePath, diags := range rs.ambigDiagnostics {
+			newRS.ambigDiagnostics[filePath] = append([]model.Diagnostic{}, diags...)
+		}
+		return newRS
 	}
 
-	// Handle nil or empty changedPaths: return early.
-	if len(changedPaths) == 0 {
-		return rs
+	// Create a fresh ResolutionSet with new maps (never touch input rs).
+	newRS := &ResolutionSet{
+		entries:          make(map[resolutionKey]Resolution),
+		ambigDiagnostics: make(map[string][]model.Diagnostic),
 	}
 
-	// Step 1: Build a fresh name index over the current (mutated) index.
-	nameIndex := idx.buildNameIndex(cfg)
-
-	// Step 2: Determine the affected file set.
-	// Start with the changed files themselves.
+	// Copy all non-affected entries from the input set.
+	// affected will hold files that need re-resolution.
 	affectedSet := make(map[string]bool)
 	for _, path := range changedPaths {
 		affectedSet[path] = true
 	}
 
-	// (b) Every file with an edge whose existing resolution in rs pointed at any changed path.
-	// Also, (c) every file whose edges' TargetName match objects that were defined-in or
-	// removed-from the changed files. For safety/correctness, re-resolve any file whose
-	// edges' TargetName set intersects the set of object names in the changed files.
-
-	// Build the set of object names in changed files.
+	// Build the set of object names in changed files (for dependency tracking).
 	changedObjectNames := make(map[string]bool)
 	for _, path := range changedPaths {
 		if _, ok := idx.Get(path); ok {
@@ -712,20 +724,26 @@ func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths
 		}
 	})
 
-	// Step 3: For each affected file, delete existing entries and re-resolve.
-	// Delete stale entries for affected files.
-	for affectedPath := range affectedSet {
-		// Remove all entries keyed by (affectedPath, *)
-		for key := range rs.entries {
-			if key.filePath == affectedPath {
-				delete(rs.entries, key)
+	// Copy entries from the input set, skipping affected files.
+	if rs != nil {
+		for key, res := range rs.entries {
+			if !affectedSet[key.filePath] {
+				// Not affected: copy to fresh set.
+				newRS.entries[key] = res
 			}
 		}
-		// Also clear ambiguity diagnostics for this file.
-		delete(rs.ambigDiagnostics, affectedPath)
+		// Copy ambiguity diagnostics, skipping affected files.
+		for filePath, diags := range rs.ambigDiagnostics {
+			if !affectedSet[filePath] {
+				newRS.ambigDiagnostics[filePath] = append([]model.Diagnostic{}, diags...)
+			}
+		}
 	}
 
-	// Re-resolve edges in affected files.
+	// Step 1: Build the name index over the current (updated) index.
+	nameIndex := idx.buildNameIndex(cfg)
+
+	// Step 2: Re-resolve edges in affected files.
 	for affectedPath := range affectedSet {
 		if fa, ok := idx.Get(affectedPath); ok {
 			for _, edge := range fa.Edges {
@@ -746,7 +764,7 @@ func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths
 							edge,
 							nameIndex,
 							cfg,
-							rs.ambigDiagnostics,
+							newRS.ambigDiagnostics,
 						)
 					}
 
@@ -758,7 +776,7 @@ func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths
 						edge,
 						nameIndex,
 						cfg,
-						rs.ambigDiagnostics,
+						newRS.ambigDiagnostics,
 					)
 
 				case model.EdgeNavigatesTo:
@@ -769,7 +787,7 @@ func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths
 						edge,
 						nameIndex,
 						cfg,
-						rs.ambigDiagnostics,
+						newRS.ambigDiagnostics,
 					)
 
 				case model.EdgeIncludes:
@@ -780,7 +798,7 @@ func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths
 						edge,
 						nameIndex,
 						cfg,
-						rs.ambigDiagnostics,
+						newRS.ambigDiagnostics,
 					)
 
 				default:
@@ -791,12 +809,12 @@ func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths
 					filePath: affectedPath,
 					source:   edge.Source,
 				}
-				rs.entries[key] = resolution
+				newRS.entries[key] = resolution
 			}
 		}
 	}
 
-	return rs
+	return newRS
 }
 
 // formatAmbiguityMessage constructs a diagnostic message for an ambiguous
