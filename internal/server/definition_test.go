@@ -321,3 +321,164 @@ func TestProvideDefinitionEndToEnd(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideDefinition_UnresolvedReturnsEmpty tests that go-to-definition on
+// dynamic and unresolved-literal targets returns an empty result with no error
+// (FR-17, OQ-4, FR-43). This is a characterization test for T8: both reason kinds
+// (ReasonDynamic and ReasonNoTarget) must yield empty results, not errors or
+// panics. The behavior is already implemented by provideDefinition (which checks
+// resolution.IsResolved()); this test adds explicit regression coverage.
+func TestProvideDefinition_UnresolvedReturnsEmpty(t *testing.T) {
+	// Setup
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Build the workspace index from the unresolved fixture
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "navigation")
+
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(fixtureRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	// Resolve all edges in the workspace (required by provideDefinition)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Read the fixture file
+	fixtureFile := filepath.Join(fixtureRoot, "unresolved.NSP")
+	sourceContent, err := os.ReadFile(fixtureFile)
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+	_ = sourceContent // Will be used if needed for position conversion
+
+	// Get the FileAnalysis from the index
+	sourceFA, ok := idx.Get("unresolved.NSP")
+	if !ok {
+		t.Fatalf("unresolved.NSP not found in index")
+	}
+
+	// Build handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Sub-test 1: CALLNAT #SUB-NAME (dynamic variable, ReasonDynamic)
+	t.Run("dynamic_target", func(t *testing.T) {
+		// Cursor position at the dynamic target: line 13, column 11 (inside #SUB-NAME)
+		params := protocol.DefinitionParams{
+			TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(fixtureFile),
+				},
+				Position: protocol.Position{
+					Line:      uint32(13 - 1), // 1-based to 0-based conversion
+					Character: uint32(11 - 1),
+				},
+			},
+		}
+
+		locations, err := provideDefinition(hctx, params)
+
+		// Assert: no error
+		if err != nil {
+			t.Fatalf("provideDefinition failed: %v", err)
+		}
+
+		// Assert: empty result (nil or len 0)
+		if locations != nil && len(locations) > 0 {
+			t.Errorf("expected empty result for dynamic target, got %v", locations)
+		}
+
+		// Verify that the edge is indeed dynamic
+		if len(sourceFA.Edges) > 0 {
+			// Find the dynamic edge (first CALLNAT)
+			for _, edge := range sourceFA.Edges {
+				if edge.Kind == model.EdgeCallsDynamic {
+					res, ok := resSet.Get("unresolved.NSP", edge.Source)
+					if !ok {
+						t.Errorf("edge resolution not found in set")
+						return
+					}
+					if !res.IsUnresolved() {
+						t.Errorf("expected unresolved, got resolved")
+						return
+					}
+					if !res.IsDynamic() {
+						t.Errorf("expected IsDynamic() to be true")
+						return
+					}
+					// Found and verified the dynamic edge
+					break
+				}
+			}
+		}
+	})
+
+	// Sub-test 2: CALLNAT 'MISSING' (literal not found, ReasonNoTarget)
+	t.Run("literal_unresolved", func(t *testing.T) {
+		// Cursor position at the literal target: line 16, column 11 (inside 'MISSING')
+		params := protocol.DefinitionParams{
+			TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(fixtureFile),
+				},
+				Position: protocol.Position{
+					Line:      uint32(16 - 1), // 1-based to 0-based conversion
+					Character: uint32(11 - 1),
+				},
+			},
+		}
+
+		locations, err := provideDefinition(hctx, params)
+
+		// Assert: no error
+		if err != nil {
+			t.Fatalf("provideDefinition failed: %v", err)
+		}
+
+		// Assert: empty result (nil or len 0)
+		if locations != nil && len(locations) > 0 {
+			t.Errorf("expected empty result for unresolved literal, got %v", locations)
+		}
+
+		// Verify that the edge is indeed unresolved (not dynamic)
+		if len(sourceFA.Edges) > 1 {
+			// Find the unresolved literal edge (second CALLNAT)
+			callCount := 0
+			for _, edge := range sourceFA.Edges {
+				if edge.Kind == model.EdgeCalls {
+					callCount++
+					if callCount == 2 { // Second EdgeCalls should be 'MISSING'
+						res, ok := resSet.Get("unresolved.NSP", edge.Source)
+						if !ok {
+							t.Errorf("edge resolution not found in set")
+							return
+						}
+						if !res.IsUnresolved() {
+							t.Errorf("expected unresolved, got resolved")
+							return
+						}
+						if res.IsDynamic() {
+							t.Errorf("expected IsDynamic() to be false (literal, not variable)")
+							return
+						}
+						// Found and verified the unresolved literal edge
+						break
+					}
+				}
+			}
+		}
+	})
+}

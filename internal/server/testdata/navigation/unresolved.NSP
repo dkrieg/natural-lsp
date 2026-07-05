@@ -1,0 +1,19 @@
+* Program to test go-to-definition on unresolved targets (T8, FR-17)
+* Demonstrates:
+* - CALLNAT #DYN (dynamic variable) → Unresolved(ReasonDynamic), no destination
+* - CALLNAT 'MISSING' (literal not found) → Unresolved(ReasonNoTarget), no destination
+PROGRAM UNRESOLVED-TEST
+
+DEFINE DATA
+  LOCAL
+    1 #SUB-NAME (A20)
+  END
+END
+
+* Dynamic call — variable target, not statically resolvable
+CALLNAT #SUB-NAME
+
+* Literal call with no matching definition in the workspace
+CALLNAT 'MISSING'
+
+END

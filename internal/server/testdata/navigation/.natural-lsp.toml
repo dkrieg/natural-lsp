@@ -1,0 +1,3 @@
+# Configuration for navigation test fixtures
+# No [resolution] section means flat namespace mode
+[analysis]
