@@ -322,6 +322,168 @@ func TestProvideDefinitionEndToEnd(t *testing.T) {
 	}
 }
 
+// TestProvideDefinition_AmbiguousReturnsAllCandidates tests that go-to-definition on
+// an ambiguous name in a flat namespace (no library map) returns ALL candidate Locations
+// (one per candidate file), not an empty result or an arbitrary single pick (feature 10, T9).
+//
+// This test uses the ambiguous-flat fixture: MAIN.NSP calls CALLNAT 'DUP' where DUP
+// has two definitions (LIBA/DUP.NSN and LIBB/DUP.NSN) in a flat namespace. The resolver
+// produces Resolution.IsAmbiguous() == true with Candidates = [LIBA/DUP.NSN, LIBB/DUP.NSN]
+// (sorted). provideDefinition must return two Locations, each pointing at a distinct
+// candidate file. It also asserts that an ambiguity diagnostic exists on the resolution set
+// for the referencing file (the diagnostic is surfaced by a separate diagnostics path,
+// but must be present to satisfy the feature plan's "diagnostic is present" clause).
+//
+// FR-24, M-5 (go-to-definition returns all candidates on ambiguity).
+func TestProvideDefinition_AmbiguousReturnsAllCandidates(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: build the workspace index from the ambiguous-flat fixture
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "..", "..", "workspace", "testdata", "resolution", "ambiguous-flat")
+
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(fixtureRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	// Resolve all edges in the workspace (required by provideDefinition)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Read the source file (MAIN.NSP)
+	sourceFile := filepath.Join(fixtureRoot, "MAIN.NSP")
+	_, err = os.ReadFile(sourceFile)
+	if err != nil {
+		t.Fatalf("failed to read source file: %v", err)
+	}
+
+	// Get the source file's analysis from the index
+	sourceFA, ok := idx.Get("MAIN.NSP")
+	if !ok {
+		t.Fatalf("MAIN.NSP not found in index")
+	}
+
+	// Build handlerContext (simulating the server state)
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Act: call provideDefinition with the cursor positioned on the ambiguous CALLNAT 'DUP'
+	// Line 14 is "CALLNAT 'DUP'" (1-based); cursor at column 9 (the opening quote of 'DUP')
+	// Note: The parser's EndPos for CALLNAT statements is set to the START column of
+	// the last token (the operand), not its END column, so column 9 is the rightmost
+	// position within the statement's source range.
+	params := protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(sourceFile),
+			},
+			Position: protocol.Position{
+				Line:      uint32(14 - 1), // Convert 1-based to 0-based
+				Character: uint32(9 - 1),  // Column 9 (1-based) → char 8 (0-based), the opening quote
+			},
+		},
+	}
+
+	locations, err := provideDefinition(hctx, params)
+
+	// Assert: no error
+	if err != nil {
+		t.Fatalf("provideDefinition failed: %v", err)
+	}
+
+	// Assert: provideDefinition returns multiple Locations (one per candidate)
+	// The fixture has two candidates: LIBA/DUP.NSN and LIBB/DUP.NSN
+	if locations == nil || len(locations) != 2 {
+		t.Errorf("provideDefinition: expected 2 locations (one per candidate), got %d", len(locations))
+		if locations != nil {
+			for i, loc := range locations {
+				t.Logf("  location[%d]: %s", i, loc.URI)
+			}
+		}
+	}
+
+	// Assert: each location points to a distinct candidate file
+	// Normalize and collect the relative paths from the returned URIs
+	candidatePaths := make(map[string]bool)
+	expectedCandidates := map[string]bool{
+		"LIBA/DUP.NSN": true,
+		"LIBB/DUP.NSN": true,
+	}
+	if locations != nil && len(locations) >= 2 {
+		for i, loc := range locations {
+			absPath := loc.URI.FsPath()
+			relPath, err := filepath.Rel(fixtureRoot, absPath)
+			if err != nil {
+				t.Fatalf("failed to compute relative path for location[%d]: %v", i, err)
+			}
+			// Normalize to forward slashes for comparison
+			relPath = strings.ReplaceAll(relPath, "\\", "/")
+			candidatePaths[relPath] = true
+			t.Logf("location[%d]: %s", i, relPath)
+		}
+
+		// Verify both expected candidates are present
+		for expected := range expectedCandidates {
+			if !candidatePaths[expected] {
+				t.Errorf("provideDefinition: expected candidate %q not in locations", expected)
+			}
+		}
+	}
+
+	// Assert: verify the edge is indeed ambiguous in the resolution set
+	if len(sourceFA.Edges) > 0 {
+		// Find the CALLNAT 'DUP' edge (should be EdgeCalls kind)
+		for _, edge := range sourceFA.Edges {
+			if edge.Kind == model.EdgeCalls && strings.EqualFold(edge.TargetName, "DUP") {
+				res, ok := resSet.Get("MAIN.NSP", edge.Source)
+				if !ok {
+					t.Errorf("provideDefinition test: edge resolution not found in set")
+					return
+				}
+				if !res.IsAmbiguous() {
+					t.Errorf("provideDefinition test: expected IsAmbiguous() == true, got false (IsResolved=%v, IsDynamic=%v)", res.IsResolved(), res.IsDynamic())
+				}
+				// Verify candidates match expectations
+				if len(res.Candidates) != 2 {
+					t.Errorf("provideDefinition test: expected 2 candidates, got %d: %v", len(res.Candidates), res.Candidates)
+				}
+				break
+			}
+		}
+	}
+
+	// Assert: ambiguity diagnostic exists on the resolution set for MAIN.NSP
+	diags := resSet.DiagnosticsFor("MAIN.NSP")
+	if diags == nil || len(diags) == 0 {
+		t.Errorf("provideDefinition test: expected ambiguity diagnostic for MAIN.NSP, got none")
+	} else {
+		// Verify the diagnostic mentions the ambiguity
+		found := false
+		for _, diag := range diags {
+			if strings.Contains(strings.ToLower(diag.Message), "ambiguous") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("provideDefinition test: expected 'ambiguous' in diagnostic message, got %q", diags[0].Message)
+		}
+	}
+}
+
 // TestProvideDefinition_UnresolvedReturnsEmpty tests that go-to-definition on
 // dynamic and unresolved-literal targets returns an empty result with no error
 // (FR-17, OQ-4, FR-43). This is a characterization test for T8: both reason kinds

@@ -63,50 +63,85 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 
 	// Look up the resolution for this edge
 	resolution, ok := hctx.res.Get(relPath, edge.Source)
-	if !ok || !resolution.IsResolved() {
-		// Edge unresolved or not found — no definition (FR-17)
-		return nil, nil
-	}
-
-	// Resolution succeeded; read the target file's analysis
-	targetFA, ok := hctx.idx.Get(resolution.Path)
 	if !ok {
-		// Target file not in index (shouldn't happen after successful resolution)
+		// Edge not found in resolution set — no definition
 		return nil, nil
 	}
 
-	// Read the target file content for range conversion
-	targetAbsPath := filepath.Join(hctx.root, resolution.Path)
-	targetContent, err := os.ReadFile(targetAbsPath)
-	if err != nil {
-		// Can't read target file — no definition
-		return nil, nil
-	}
+	// Handle resolved case: single definition
+	if resolution.IsResolved() {
+		// Resolution succeeded; read the target file's analysis
+		targetFA, ok := hctx.idx.Get(resolution.Path)
+		if !ok {
+			// Target file not in index (shouldn't happen after successful resolution)
+			return nil, nil
+		}
 
-	// Handle inline PERFORM (target in same file): use the subroutine's SelectionRange
-	// Normalize both paths for comparison (convert backslashes to forward slashes)
-	normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
-	if strings.EqualFold(normalizedResPath, relPath) {
-		// Same file: find the matching subroutine in Structure.Children
-		if targetFA.Structure != nil && targetFA.Structure.Children != nil {
-			targetName := strings.ToUpper(edge.TargetName)
-			for _, child := range targetFA.Structure.Children {
-				if child.Kind == model.SymbolSubroutine && strings.EqualFold(child.Name, targetName) {
-					// Found the inline subroutine; use its SelectionRange
-					loc := protocol.Location{
-						URI:   uri.File(targetAbsPath),
-						Range: toProtocolRange(child.SelectionRange, string(targetContent), hctx.posEncoding),
+		// Read the target file content for range conversion
+		targetAbsPath := filepath.Join(hctx.root, resolution.Path)
+		targetContent, err := os.ReadFile(targetAbsPath)
+		if err != nil {
+			// Can't read target file — no definition
+			return nil, nil
+		}
+
+		// Handle inline PERFORM (target in same file): use the subroutine's SelectionRange
+		// Normalize both paths for comparison (convert backslashes to forward slashes)
+		normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+		if strings.EqualFold(normalizedResPath, relPath) {
+			// Same file: find the matching subroutine in Structure.Children
+			if targetFA.Structure != nil && targetFA.Structure.Children != nil {
+				targetName := strings.ToUpper(edge.TargetName)
+				for _, child := range targetFA.Structure.Children {
+					if child.Kind == model.SymbolSubroutine && strings.EqualFold(child.Name, targetName) {
+						// Found the inline subroutine; use its SelectionRange
+						loc := protocol.Location{
+							URI:   uri.File(targetAbsPath),
+							Range: toProtocolRange(child.SelectionRange, string(targetContent), hctx.posEncoding),
+						}
+						return []protocol.Location{loc}, nil
 					}
-					return []protocol.Location{loc}, nil
 				}
 			}
+			// Fallback: use object root
 		}
-		// Fallback: use object root
+
+		// External target: use the object-root Structure.SelectionRange
+		loc := definitionLocation(hctx.root, resolution.Path, targetFA, string(targetContent), hctx.posEncoding)
+		return []protocol.Location{loc}, nil
 	}
 
-	// External target: use the object-root Structure.SelectionRange
-	loc := definitionLocation(hctx.root, resolution.Path, targetFA, string(targetContent), hctx.posEncoding)
-	return []protocol.Location{loc}, nil
+	// Handle ambiguous case: multiple candidates
+	if resolution.IsAmbiguous() {
+		locations := make([]protocol.Location, 0, len(resolution.Candidates))
+		for _, candidatePath := range resolution.Candidates {
+			// Fetch the candidate file's analysis
+			candidateFA, ok := hctx.idx.Get(candidatePath)
+			if !ok {
+				// Candidate not in index; skip (defensive, FR-43)
+				continue
+			}
+
+			// Read the candidate file content
+			candidateAbsPath := filepath.Join(hctx.root, candidatePath)
+			candidateContent, err := os.ReadFile(candidateAbsPath)
+			if err != nil {
+				// Can't read candidate file; skip (defensive)
+				continue
+			}
+
+			// Build the Location for this candidate (object-root range)
+			loc := definitionLocation(hctx.root, candidatePath, candidateFA, string(candidateContent), hctx.posEncoding)
+			locations = append(locations, loc)
+		}
+		if len(locations) > 0 {
+			return locations, nil
+		}
+		// If no locations could be built, fall through to return empty
+	}
+
+	// Unresolved case (dynamic or no-target): return empty (FR-17)
+	return nil, nil
 }
 
 // definitionLocation builds a protocol.Location for a resolved definition.
