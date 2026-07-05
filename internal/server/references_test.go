@@ -404,18 +404,48 @@ func TestReferenceSites_PositionEncoding(t *testing.T) {
 			t.Errorf("Location %d: UTF-8 line=%d, UTF-16 line=%d (must be same)",
 				i, locationsUTF8[i].Range.Start.Line, locationsUTF16[i].Range.Start.Line)
 		}
-
-		// For ranges that contain only ASCII, Character should be the same.
-		// For ranges that contain multi-byte characters, Character would differ.
-		// Since the fixture is ASCII-only, we expect Character to match.
-		// The key assertion is that BOTH encodings are used, not hardcoded to UTF-8.
-		// We verify this by checking that the encoding parameter is actually threaded.
-		_ = locationsUTF8[i].Range.Start.Character
-		_ = locationsUTF16[i].Range.Start.Character
 	}
 
-	t.Logf("✓ referenceSites threads encoding parameter: found %d locations with both UTF-8 and UTF-16",
-		len(locationsUTF8))
+	// Lock that referenceSites DELEGATES to the shared, encoding-aware
+	// toProtocolRange primitive with the passed encoding (rather than a
+	// hardcoded constant): each returned range must equal what toProtocolRange
+	// produces for that reference site's source range under the same encoding
+	// and file content. (Natural reference tokens — CALLNAT targets, DDM names —
+	// are only ever preceded by ASCII whitespace on their line, so UTF-8 and
+	// UTF-16 Character values coincide for them by construction; the UTF-8-vs-
+	// UTF-16 divergence of the primitive itself is locked separately by the
+	// multi-byte cases in position_test.go.)
+	assertDelegates := func(enc protocol.PositionEncodingKind, got []protocol.Location) {
+		// Build the set of (URI, range) pairs the shared primitive would produce
+		// for every edge across the fixture files under this encoding.
+		type locKey struct {
+			uri string
+			rng protocol.Range
+		}
+		want := make(map[locKey]bool)
+		for _, filename := range files {
+			relPath := strings.ReplaceAll(filepath.Join("testdata", "references", "multi-caller", filename), "\\", "/")
+			fa, ok := idx.Get(relPath)
+			if !ok {
+				continue
+			}
+			content, rerr := os.ReadFile(filepath.Join(root, relPath))
+			if rerr != nil {
+				continue
+			}
+			u := string(uri.File(filepath.Join(root, relPath)))
+			for i := range fa.Edges {
+				want[locKey{u, toProtocolRange(fa.Edges[i].Source, string(content), enc)}] = true
+			}
+		}
+		for _, loc := range got {
+			if !want[locKey{string(loc.URI), loc.Range}] {
+				t.Errorf("reference location %v (enc %v) does not match any edge's toProtocolRange output; encoding may not be threaded via the shared primitive", loc, enc)
+			}
+		}
+	}
+	assertDelegates(protocol.PositionEncodingKindUTF8, locationsUTF8)
+	assertDelegates(protocol.PositionEncodingKindUTF16, locationsUTF16)
 }
 
 // TestProvideReferencesCompleteness_DDMFieldCrossFile tests find-all-references completeness
