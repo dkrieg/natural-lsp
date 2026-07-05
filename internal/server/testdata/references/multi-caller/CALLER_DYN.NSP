@@ -1,0 +1,12 @@
+* Dynamic caller with a variable reference (should NOT resolve)
+DEFINE DATA
+LOCAL
+  1 #SUBVAR (A20)
+END-DEFINE
+
+MOVE 'SHARED' TO #SUBVAR
+CALLNAT #SUBVAR
+
+DISPLAY 'This call is dynamic and unresolvable'
+
+END

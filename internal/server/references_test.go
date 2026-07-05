@@ -241,6 +241,92 @@ func TestReferenceSitesIncludeDeclaration(t *testing.T) {
 	}
 }
 
+// TestReferenceSites_ExcludesDynamicSites tests that dynamic/unresolved reference sites
+// are NOT included in a specific symbol's reference list (feature 10, T12).
+//
+// FR-ID: FR-25 (find-all-references), criterion "dynamic/unresolved refs not falsely
+// claiming a link" — and T12 requirement "A dynamic/unresolved site is excluded from
+// a specific symbol's reference list (it does not falsely claim a link)."
+//
+// The test creates a fixture with:
+// - A real SHARED subprogram definition (SHARED.NSN)
+// - A static CALLNAT 'SHARED' in CALLER1.NSP (resolves to SHARED)
+// - A dynamic CALLNAT #SUBVAR in CALLER_DYN.NSP (does NOT resolve; target is unknown)
+//
+// When find-references is called for SHARED, the result should contain ONLY the static
+// CALLNAT site from CALLER1.NSP. The dynamic CALLNAT site from CALLER_DYN.NSP must be
+// excluded because its resolution is Unresolved (the target is a variable, not a known
+// object). This prevents a false link.
+func TestReferenceSites_ExcludesDynamicSites(t *testing.T) {
+	testdata := filepath.Join("testdata", "references", "multi-caller")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing all files in the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{} // Empty config for flat-namespace resolution
+
+	// Files: SHARED definition + static caller + dynamic caller
+	files := []string{"SHARED.NSN", "CALLER1.NSP", "CALLER_DYN.NSP"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "references", "multi-caller", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute the resolution set over the index
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// The target is SHARED (the real subprogram definition)
+	targetPath := "testdata/references/multi-caller/SHARED.NSN"
+	targetName := "SHARED"
+	targetType := model.ObjectSubprogram
+
+	// Call the sweep primitive to find all reference sites
+	locations := referenceSites(idx, resSet, root, targetPath, targetName, targetType, false)
+
+	// Assertion 1: We expect exactly 1 reference location (from CALLER1.NSP)
+	// The dynamic CALLNAT from CALLER_DYN.NSP must be excluded.
+	if len(locations) != 1 {
+		t.Errorf("referenceSites returned %d locations, want 1 (static only)", len(locations))
+		for i, loc := range locations {
+			t.Logf("  location[%d]: %s at line %d", i, loc.URI.FsPath(), loc.Range.Start.Line)
+		}
+	}
+
+	// Assertion 2: The single location should be from CALLER1.NSP
+	if len(locations) > 0 {
+		fsPath := locations[0].URI.FsPath()
+		if !strings.Contains(fsPath, "CALLER1.NSP") {
+			t.Errorf("expected location from CALLER1.NSP, got %s", fsPath)
+		}
+	}
+
+	// Assertion 3: Verify that CALLER_DYN.NSP is NOT in the results
+	// (even though it has a CALLNAT, it is a dynamic/variable call)
+	for _, loc := range locations {
+		fsPath := loc.URI.FsPath()
+		if strings.Contains(fsPath, "CALLER_DYN.NSP") {
+			t.Errorf("dynamic site from CALLER_DYN.NSP should be excluded, but found: %s", fsPath)
+		}
+	}
+}
+
 // TestProvideReferencesCompleteness_DDMFieldCrossFile tests find-all-references completeness
 // for DDM-field references across multiple files (feature 10, T11).
 //
