@@ -1,0 +1,8 @@
+# Incremental update fixture: a multi-file workspace where document changes
+# are reflected in workspace/symbol and definition results.
+
+[workspace]
+root = "."
+
+[resolution]
+# Empty library map: flat namespace

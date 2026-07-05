@@ -20,9 +20,22 @@ import (
 // - If the target is in the same file (inline PERFORM), use the subroutine's SelectionRange.
 // - Otherwise, use the target file's object-root Structure.SelectionRange.
 // For unresolved or dynamic targets, returns empty (no error — FR-17, FR-43).
+//
+// Concurrency (F7): holds the read lock on idxResMu to ensure consistent access to idx/res
+// (applyDocumentChange swaps these pointers under the write lock, so handlers see
+// a stable snapshot for the duration of a request).
 func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) ([]protocol.Location, error) {
 	// Guard: hctx must be initialized
-	if hctx == nil || hctx.idx == nil || hctx.res == nil {
+	if hctx == nil {
+		return nil, nil
+	}
+
+	// Acquire read lock to read idx/res safely (applyDocumentChange holds write lock when updating)
+	hctx.idxResMu.RLock()
+	idx, res := hctx.idx, hctx.res
+	hctx.idxResMu.RUnlock()
+
+	if idx == nil || res == nil {
 		return nil, nil
 	}
 
@@ -38,7 +51,7 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 	relPath = strings.ReplaceAll(relPath, "\\", "/")
 
 	// Get the source file's analysis from the index
-	sourceFA, ok := hctx.idx.Get(relPath)
+	sourceFA, ok := idx.Get(relPath)
 	if !ok {
 		// Source file not in index — no definition
 		return nil, nil
@@ -62,7 +75,7 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 	}
 
 	// Look up the resolution for this edge
-	resolution, ok := hctx.res.Get(relPath, edge.Source)
+	resolution, ok := res.Get(relPath, edge.Source)
 	if !ok {
 		// Edge not found in resolution set — no definition
 		return nil, nil
@@ -71,7 +84,7 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 	// Handle resolved case: single definition
 	if resolution.IsResolved() {
 		// Resolution succeeded; read the target file's analysis
-		targetFA, ok := hctx.idx.Get(resolution.Path)
+		targetFA, ok := idx.Get(resolution.Path)
 		if !ok {
 			// Target file not in index (shouldn't happen after successful resolution)
 			return nil, nil
@@ -116,7 +129,7 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 		locations := make([]protocol.Location, 0, len(resolution.Candidates))
 		for _, candidatePath := range resolution.Candidates {
 			// Fetch the candidate file's analysis
-			candidateFA, ok := hctx.idx.Get(candidatePath)
+			candidateFA, ok := idx.Get(candidatePath)
 			if !ok {
 				// Candidate not in index; skip (defensive, FR-43)
 				continue

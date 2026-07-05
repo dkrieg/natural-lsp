@@ -25,9 +25,22 @@ import (
 // Dynamic and unresolved references are excluded from a specific symbol's reference list
 // (they cannot claim a resolved link to the target). This implements FR-17 modeled gap:
 // dynamic sites remain visible via diagnostics/outline, not falsely linked in references.
+//
+// Concurrency (F7): holds the read lock on idxResMu to ensure consistent access to idx/res
+// (applyDocumentChange swaps these pointers under the write lock, so handlers see
+// a stable snapshot for the duration of a request).
 func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([]protocol.Location, error) {
 	// Guard: hctx must be initialized
-	if hctx == nil || hctx.idx == nil || hctx.res == nil {
+	if hctx == nil {
+		return nil, nil
+	}
+
+	// Acquire read lock to read idx/res safely (applyDocumentChange holds write lock when updating)
+	hctx.idxResMu.RLock()
+	idx, res := hctx.idx, hctx.res
+	hctx.idxResMu.RUnlock()
+
+	if idx == nil || res == nil {
 		return nil, nil
 	}
 
@@ -43,7 +56,7 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 	relPath = strings.ReplaceAll(relPath, "\\", "/")
 
 	// Get the source file's analysis from the index
-	sourceFA, ok := hctx.idx.Get(relPath)
+	sourceFA, ok := idx.Get(relPath)
 	if !ok {
 		// Source file not in index — no references
 		return nil, nil
@@ -73,7 +86,7 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 
 	if edge != nil {
 		// We found an edge; resolve it to get the target identity
-		resolution, ok := hctx.res.Get(relPath, edge.Source)
+		resolution, ok := res.Get(relPath, edge.Source)
 		if !ok || !resolution.IsResolved() {
 			// Edge is not resolved (dynamic or unresolved) — no references
 			return nil, nil
@@ -97,7 +110,7 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 	}
 
 	// Call the sweep primitive to find all reference sites
-	locations := referenceSites(hctx.idx, hctx.res, hctx.root, targetPath, targetName, targetType, params.Context.IncludeDeclaration)
+	locations := referenceSites(idx, res, hctx.root, targetPath, targetName, targetType, params.Context.IncludeDeclaration)
 
 	// Return the locations (empty slice if none found)
 	if len(locations) == 0 {

@@ -1,0 +1,15 @@
+* Task 14 fixture: incremental updates reflected in workspace/symbol and definition
+* Before the change: NEWSUB is not defined, CALLNAT 'NEWSUB' is unresolved
+* After didChange: NEWSUB is added as a subroutine, CALLNAT resolves, workspace/symbol finds it
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+* This CALLNAT will be unresolved initially (NEWSUB.NSN doesn't exist yet)
+CALLNAT 'NEWSUB'
+
+MOVE 'OK' TO RESULT
+
+END

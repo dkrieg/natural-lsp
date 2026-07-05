@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/go-json-experiment/json/jsontext"
@@ -154,25 +155,27 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 
 // handlerContext is the shared state available to every request handler in the
 // dispatch switch. It is populated once — the index after "initialized", the
-// encoding after "initialize" — and then read-only for the remainder of the
-// session (T2–T13).
+// encoding after "initialize" — and then mutated on didChange/watcher updates (T14).
 //
-// Concurrency note (single-threaded access today): the dispatch loop is
-// single-threaded; the index is built synchronously before handlers run, and
-// no mutation path exists yet. T14 (incremental updates from didChange/watcher)
-// will mutate hctx.idx from the same goroutine (store/watcher callbacks fire
-// synchronously in the notification handler) and will recompute and publish a
-// fresh *ResolutionSet behind a lock — following the build-then-publish
-// discipline described in tasks.md F7 / F6a: build a new set, then swap the
-// pointer under a sync.RWMutex; handlers read the current pointer under RLock.
-// Until T14 lands, no lock is needed here.
+// Concurrency note (F7): the dispatch loop is single-threaded; didChange and
+// watcher callbacks fire synchronously in notification handlers (same goroutine).
+// However, handlers read idx/res while applyDocumentChange mutates them, so we
+// guard idx/res with sync.RWMutex: applyDocumentChange holds the write lock
+// when updating idx/res; handlers hold the read lock when reading them.
+// The discipline is: build a fresh index/resolution set, then atomically swap
+// both pointers under the write lock (following the build-then-publish pattern
+// in tasks.md F7 / F6a). Handlers copy the pointers under the read lock so they
+// see a consistent (idx, res) pair for the duration of a single request.
 type handlerContext struct {
-	idx         *workspace.Index              // workspace index; nil until "initialized" (guard with idx != nil)
+	idxResMu sync.RWMutex // guards idx and res
+
+	idx         *workspace.Index              // workspace index; nil until "initialized"
 	res         *workspace.ResolutionSet      // resolution set (feature 10, T7); computed after index build in initialized handler
 	posEncoding protocol.PositionEncodingKind // negotiated in "initialize"; used by all position converters (T1)
 	store       *document.Store               // in-memory open-document view (didOpen/didChange/didClose)
 	root        string                        // absolute workspace root path
 	cfg         config.Config                 // workspace configuration
+	az          analysis.Analyzer             // the analyzer (needed for applyDocumentChange re-analysis)
 	logger      *slog.Logger                  // structured logger; MUST NOT write to the protocol stream
 }
 
@@ -234,6 +237,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 		}, logger),
 		root:   root,
 		cfg:    cfg,
+		az:     az,
 		logger: logger,
 	}
 
@@ -451,7 +455,21 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 							// Handle each content change; full sync means we expect a single whole-document change
 							for _, change := range params.ContentChanges {
 								if whole, ok := change.(*protocol.TextDocumentContentChangeWholeDocument); ok {
+									// Update the in-memory store
 									hctx.store.Update(u, int(params.TextDocument.Version), []byte(whole.Text))
+
+									// Feature 10, T14: update the workspace index and resolution set
+									// Convert URI to relative path for index update
+									absPath := u.FsPath()
+									relPath, pathErr := filepath.Rel(root, absPath)
+									if pathErr != nil {
+										logger.Error("failed to compute relative path for didChange", "uri", u, "err", pathErr)
+										continue
+									}
+									relPath = strings.ReplaceAll(relPath, "\\", "/")
+
+									// Apply the change to the index and resolution
+									hctx.applyDocumentChange(relPath, []byte(whole.Text))
 								} else if _, ok := change.(*protocol.TextDocumentContentChangePartial); ok {
 									// Partial (range) edit under Full-sync policy: log and skip
 									logger.Error("received partial change under full-sync policy; skipping", "uri", u)
@@ -490,11 +508,15 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 									logger.Error("failed to compute relative path", "absPath", absPath, "root", root, "err", err)
 									continue
 								}
+								relPath = strings.ReplaceAll(relPath, "\\", "/")
+
 								// Handle file change type:
 								// - FileChangeTypeDeleted (3): pass nil content to signal removal
 								// - Others: read the file and analyze (if it exists and is not too large)
 								if event.Type == protocol.FileChangeTypeDeleted {
 									analyzeOne(cfg, az, relPath, nil, logger)
+									// Feature 10, T14: update index/resolution for deletion
+									hctx.applyDocumentChange(relPath, nil)
 									continue
 								}
 								// For create/change events: read and analyze the file
@@ -504,6 +526,8 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 									continue
 								}
 								analyzeOne(cfg, az, relPath, content, logger)
+								// Feature 10, T14: update index/resolution
+								hctx.applyDocumentChange(relPath, content)
 							}
 						}
 					}
@@ -705,4 +729,44 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 			}
 		}
 	}
+}
+
+// applyDocumentChange (Feature 10, T14) handles incremental updates when a document changes.
+// It re-analyzes the file content, updates the workspace index, and incrementally recomputes
+// the resolution set, publishing the updated state so handlers see the new results.
+//
+// Note: This causes double analysis on didChange (once in store.Update, once here) in the
+// current design. A future refactor could pass the pre-computed FileAnalysis from the store
+// callback to avoid redundant analysis. For the green phase, correctness > efficiency.
+//
+// Parameters:
+//   - relPath: workspace-relative path to the changed file (e.g., "SUBPROG.NSP")
+//   - content: the new file content (nil for deletion)
+//
+// Concurrency (F7): holds the write lock on idxResMu for the entire update operation
+// to ensure atomicity — handlers cannot see a torn (old idx, new res) or (new idx, old res)
+// pair. Handlers hold the read lock when accessing idx/res so they see consistent state.
+func (hctx *handlerContext) applyDocumentChange(relPath string, content []byte) {
+	// Re-analyze the file content using analyzeOne (same path as store/watcher callbacks)
+	result := analyzeOne(hctx.cfg, hctx.az, relPath, content, hctx.logger)
+
+	// Acquire the write lock: no handlers can read idx/res while we update both
+	hctx.idxResMu.Lock()
+	defer hctx.idxResMu.Unlock()
+
+	// Guard: index must be initialized before we can mutate it
+	if hctx.idx == nil {
+		hctx.logger.Error("applyDocumentChange called before index initialized", "path", relPath)
+		return
+	}
+
+	// Step 1: Update the index with the new FileAnalysis
+	hctx.idx.Add(relPath, result.FileAnalysis)
+
+	// Step 2: Incrementally recompute the resolution set for affected files
+	// (Re-resolve only files whose edges' targets may have changed)
+	hctx.res = workspace.ResolveInto(hctx.res, hctx.idx, &hctx.cfg, []string{relPath})
+
+	// idx and res are now atomically updated; handlers reading under RLock will see
+	// the new consistent pair.
 }

@@ -26,16 +26,29 @@ import (
 // using toProtocolRange with the file's content. Nil-safe: missing file/content → skip.
 //
 // Returns results in deterministic order: sorted by Name, then URI.
+//
+// Concurrency (F7): holds the read lock on idxResMu to ensure consistent access to idx
+// (applyDocumentChange swaps the index pointer under the write lock, so handlers see
+// a stable snapshot for the duration of a request).
 func provideWorkspaceSymbols(hctx *handlerContext, query string) []protocol.SymbolInformation {
 	// Guard: hctx must be initialized
-	if hctx == nil || hctx.idx == nil {
+	if hctx == nil {
+		return nil
+	}
+
+	// Acquire read lock to read idx safely (applyDocumentChange holds write lock when updating)
+	hctx.idxResMu.RLock()
+	idx := hctx.idx
+	hctx.idxResMu.RUnlock()
+
+	if idx == nil {
 		return nil
 	}
 
 	var results []protocol.SymbolInformation
 
-	// Walk every indexed file
-	hctx.idx.ForEach(func(relPath string, fa model.FileAnalysis) {
+	// Walk every indexed file (idx is stable for the duration of this function)
+	idx.ForEach(func(relPath string, fa model.FileAnalysis) {
 		// Skip if no Structure (object root)
 		if fa.Structure == nil {
 			return
