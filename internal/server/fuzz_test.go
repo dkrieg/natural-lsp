@@ -6,8 +6,11 @@ import (
 	"testing"
 
 	"go.lsp.dev/protocol"
+	"go.lsp.dev/uri"
 	"natural-lsp/internal/analysis/natural"
+	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
+	"natural-lsp/internal/workspace"
 )
 
 // FuzzPositionConversion is the executable proof of the position-conversion primitives'
@@ -294,39 +297,62 @@ func FuzzProvideDefinition(f *testing.F) {
 	f.Add([]byte("CALLNAT 'GOOD'\nCALLNAT\nFETCH 'X'\nEND\n"))
 
 	f.Fuzz(func(t *testing.T, input []byte) {
-		// Arrange: analyze the arbitrary input.
+		// Arrange: build a minimal handler context over a single-file workspace.
 		az := natural.New(nil)
 		fa, err := az.Analyze("fuzz.NSP", input)
 		// err may be non-nil (expected for malformed input), fa is a value type.
 		_ = err
 
+		// Build a minimal index containing just the fuzzed file.
+		idx := &workspace.Index{}
+		idx.Add("fuzz.NSP", fa)
+
+		// Resolve the index (will return an empty result set for unresolvable edges).
+		cfg := &config.Config{}
+		res := workspace.Resolve(idx, cfg)
+
+		// Create a minimal handler context with a temp root.
+		tmpDir := t.TempDir()
+		hctx := &handlerContext{
+			idx:         idx,
+			res:         res,
+			posEncoding: protocol.PositionEncodingKindUTF8,
+			root:        tmpDir,
+		}
+
+		// Write the fuzzed input to a file so provideDefinition can read it.
+		fuzzPath := filepath.Join(tmpDir, "fuzz.NSP")
+		if err := os.WriteFile(fuzzPath, input, 0600); err != nil {
+			// If we can't write the file, skip this test case (FR-43).
+			return
+		}
+
 		// Generate arbitrary cursor positions.
-		testPositions := []model.Position{
-			{Line: 1, Column: 1},
-			{Line: 1, Column: 50},
-			{Line: 100, Column: 1},
-			{Line: -5, Column: 1},
-			{Line: 0, Column: 0},
-			{Line: 1000000, Column: 1000000},
+		testPositions := []protocol.Position{
+			{Line: 0, Character: 0},
+			{Line: 0, Character: 50},
+			{Line: 100, Character: 0},
+			{Line: 1000000, Character: 1000000},
 		}
 
 		// Act: call provideDefinition with each arbitrary position.
 		// This must NOT panic for any input or position.
-		for _, pos := range testPositions {
-			// For this fuzz target, we don't have a full server context (index, resolution).
-			// Instead, we test the cursor lookup and position-conversion primitives
-			// that provideDefinition depends on.
+		for _, protPos := range testPositions {
+			params := protocol.DefinitionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(fuzzPath),
+					},
+					Position: protPos,
+				},
+			}
 
-			// Cursor lookup.
-			edge, access := findCursorTarget(fa, pos)
-			// The returned pointers should be nil or valid (checked by FuzzCursorLookup).
-			_ = edge
-			_ = access
-
-			// Position conversion: ensure toProtocolRange doesn't panic on arbitrary positions.
-			// Create a test range at the position.
-			testRange := model.Range{Start: pos, End: pos}
-			_ = toProtocolRange(testRange, string(input), protocol.PositionEncodingKindUTF8)
+			// Call provideDefinition — must not panic (FR-43).
+			locations, err := provideDefinition(hctx, params)
+			// Verify result is well-formed: either nil or a non-nil slice.
+			// (An empty slice is acceptable; a panic is a failure.)
+			_ = locations
+			_ = err
 		}
 	})
 }

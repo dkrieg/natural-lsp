@@ -110,7 +110,7 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 	}
 
 	// Call the sweep primitive to find all reference sites
-	locations := referenceSites(idx, res, hctx.root, targetPath, targetName, targetType, params.Context.IncludeDeclaration)
+	locations := referenceSites(idx, res, hctx.root, targetPath, targetName, targetType, params.Context.IncludeDeclaration, hctx.posEncoding)
 
 	// Return the locations (empty slice if none found)
 	if len(locations) == 0 {
@@ -130,6 +130,7 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 //   - root: the workspace root (absolute path) for constructing file URIs
 //   - targetPath: workspace-relative path of the target definition (e.g., "APP/SHARED.NSN")
 //   - includeDeclaration: if true, include the declaration site itself
+//   - enc: the negotiated PositionEncodingKind for range conversion
 //
 // Returns protocol.Location slice sorted by URI then range (deterministic).
 // An empty slice (not nil) is returned when no references are found.
@@ -138,7 +139,7 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 // Resolution's Path (the resolved target file) and target name match the target symbol.
 // It uses the edge's Source range (EdgeEntry.Source) for calls and NameRange
 // (DataAccessEntry.NameRange) for data-access sites.
-func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root string, targetPath string, targetName string, targetType model.ObjectType, includeDeclaration bool) []protocol.Location {
+func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root string, targetPath string, targetName string, targetType model.ObjectType, includeDeclaration bool, enc protocol.PositionEncodingKind) []protocol.Location {
 	// Guard: idx and res must be initialized
 	if idx == nil || res == nil {
 		return []protocol.Location{}
@@ -156,9 +157,6 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 			// Can't read file; skip range conversion (this file has no references)
 			return
 		}
-
-		// Determine the position encoding kind (use UTF-8 as default)
-		enc := protocol.PositionEncodingKindUTF8
 
 		// Scan edges: for each edge, check if its resolution matches the target
 		for _, edge := range fa.Edges {
@@ -231,7 +229,6 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 			targetContent, err := os.ReadFile(targetAbsPath)
 			if err == nil {
 				// Successfully read the target file; build the declaration location
-				enc := protocol.PositionEncodingKindUTF8
 				fileURI := uri.File(targetAbsPath)
 				protocolRng := toProtocolRange(targetFA.Structure.SelectionRange, string(targetContent), enc)
 

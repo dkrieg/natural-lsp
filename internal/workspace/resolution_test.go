@@ -3683,6 +3683,173 @@ func TestResolveInto_ScopedRecomputeFlipsOutcome_T13a(t *testing.T) {
 	})
 }
 
+// TestResolveInto_CallerScopePass_F6a (Feature 10, remediation item 3) tests the caller-scope
+// re-resolution pass (F6a) of ResolveInto: when a definition file is added/removed, re-resolve
+// all CALLERS in OTHER files that might now match that definition.
+//
+// Test scenario:
+//   - Initial index: MAIN.NSP (with CALLNAT 'MYSUB' initially UNRESOLVED) but NO MYSUB.NSN definition
+//   - ResolveInto call: changed file is MYSUB.NSN (the DEFINITION, added to the index)
+//   - Expected: MAIN's CALLNAT 'MYSUB' should flip from UNRESOLVED → RESOLVED
+//   - Invariant: merged result equals full Resolve over the updated index (F6a completeness)
+//
+// This test exercises the caller-scope pass where changedPaths contains ONLY the definition file,
+// not the caller file. The caller-scope pass must identify MAIN as a prospective caller and
+// re-resolve its edge against the newly-added definition.
+func TestResolveInto_CallerScopePass_F6a(t *testing.T) {
+	// Arrange: Build initial index with MAIN.NSP (caller) but NO MYSUB.NSN (definition)
+	// so that CALLNAT 'MYSUB' is initially UNRESOLVED.
+
+	// Manually build the initial index
+	initialIdx := &Index{entries: make(map[string]model.FileAnalysis)}
+	cfg := config.Defaults()
+
+	// Add MAIN.NSP (has CALLNAT 'MYSUB' which cannot resolve yet)
+	mainAnalysis := model.FileAnalysis{
+		ObjectType: model.ObjectProgram,
+		Structure: &model.Symbol{
+			Name:           "MAIN",
+			Kind:           model.SymbolObject,
+			SelectionRange: model.Range{Start: model.Position{Line: 1, Column: 1}, End: model.Position{Line: 1, Column: 4}},
+		},
+		Edges: []model.EdgeEntry{
+			{
+				Kind:       model.EdgeCalls,
+				TargetName: "MYSUB",
+				Library:    "",
+				Source:     model.Range{Start: model.Position{Line: 3, Column: 1}, End: model.Position{Line: 3, Column: 6}},
+			},
+		},
+	}
+	initialIdx.Add("MAIN.NSP", mainAnalysis)
+
+	// Compute initial resolution: CALLNAT 'MYSUB' should be UNRESOLVED (no definition)
+	initialRS := Resolve(initialIdx, &cfg)
+
+	mainFA, _ := initialIdx.Get("MAIN.NSP")
+	callnatEdge := mainFA.Edges[0] // The CALLNAT 'MYSUB' edge
+
+	initialRes, exists := initialRS.Get("MAIN.NSP", callnatEdge.Source)
+	if !exists {
+		t.Fatal("Initial resolution for CALLNAT 'MYSUB' not found")
+	}
+	if !initialRes.IsUnresolved() {
+		t.Fatalf("Initial state: CALLNAT 'MYSUB' should be UNRESOLVED, but IsResolved=%v",
+			initialRes.IsResolved())
+	}
+
+	t.Logf("Initial state: CALLNAT 'MYSUB' is UNRESOLVED (reason=%v)", initialRes.Reason)
+
+	// Create mutated index: add MYSUB.NSN (the definition) to the index
+	// This simulates the file being added via didChange
+	mutatedIdx := &Index{entries: make(map[string]model.FileAnalysis)}
+	mutatedIdx.Add("MAIN.NSP", mainAnalysis) // Keep MAIN.NSP
+
+	// Add MYSUB.NSN (the newly-added definition)
+	mysubAnalysis := model.FileAnalysis{
+		ObjectType: model.ObjectSubprogram,
+		Structure: &model.Symbol{
+			Name:           "MYSUB",
+			Kind:           model.SymbolObject,
+			SelectionRange: model.Range{Start: model.Position{Line: 1, Column: 1}, End: model.Position{Line: 1, Column: 5}},
+		},
+		Edges: []model.EdgeEntry{}, // No outgoing edges
+	}
+	mutatedIdx.Add("MYSUB.NSN", mysubAnalysis)
+
+	// Call ResolveInto with changedPaths = ["MYSUB.NSN"] (only the definition changed)
+	// The caller-scope pass should identify MAIN as a prospective caller and re-resolve.
+	mergedRS := ResolveInto(initialRS, mutatedIdx, &cfg, []string{"MYSUB.NSN"})
+
+	if mergedRS == nil {
+		t.Fatal("ResolveInto returned nil; want non-nil merged ResolutionSet")
+	}
+
+	// Act & Assert: Check that MAIN's CALLNAT 'MYSUB' flipped from UNRESOLVED → RESOLVED
+	t.Run("Caller-scope pass: MAIN.NSP resolution flips to Resolved when MYSUB.NSN is added", func(t *testing.T) {
+		t.Helper()
+
+		mergedRes, exists := mergedRS.Get("MAIN.NSP", callnatEdge.Source)
+		if !exists {
+			t.Fatal("Merged resolution for CALLNAT 'MYSUB' not found")
+		}
+
+		if !mergedRes.IsResolved() {
+			t.Errorf("After MYSUB.NSN added, CALLNAT 'MYSUB' should be RESOLVED; IsResolved=%v (reason=%v)",
+				mergedRes.IsResolved(), mergedRes.Reason)
+		}
+
+		if mergedRes.Path != "MYSUB.NSN" {
+			t.Errorf("After MYSUB.NSN added, resolved Path should be 'MYSUB.NSN', got %q",
+				mergedRes.Path)
+		}
+
+		t.Logf("✓ Caller-scope pass flipped MAIN's CALLNAT 'MYSUB' to RESOLVED (Path=%s)",
+			mergedRes.Path)
+	})
+
+	// Completeness Guard (F6a invariant): assert merged set equals a full Resolve
+	// over the mutated index state.
+	t.Run("Completeness: merged result equals full Resolve over mutated index (F6a)", func(t *testing.T) {
+		t.Helper()
+
+		fullResolveOnMutated := Resolve(mutatedIdx, &cfg)
+
+		// Extract all (filePath, source) keys from both sets for comparison.
+		mergedAll := mergedRS.All()
+		fullAll := fullResolveOnMutated.All()
+
+		if len(mergedAll) != len(fullAll) {
+			t.Errorf("merged has %d entries, full Resolve has %d entries; want equal",
+				len(mergedAll), len(fullAll))
+		}
+
+		// For each edge in the mutated index, verify the resolution outcome matches full Resolve.
+		mutatedIdx.ForEach(func(filePath string, fa model.FileAnalysis) {
+			for _, edge := range fa.Edges {
+				mergedRes, mergedExists := mergedRS.Get(filePath, edge.Source)
+				fullRes, fullExists := fullResolveOnMutated.Get(filePath, edge.Source)
+
+				if mergedExists != fullExists {
+					t.Errorf("Entry existence mismatch for %s at %v: merged=%v, full=%v",
+						filePath, edge.Source, mergedExists, fullExists)
+					return
+				}
+
+				if !mergedExists {
+					return // Both absent, OK
+				}
+
+				// Both present: verify outcomes match.
+				if mergedRes.IsResolved() != fullRes.IsResolved() {
+					t.Errorf("Resolution mismatch for %s at %v: merged.IsResolved=%v, full.IsResolved=%v",
+						filePath, edge.Source, mergedRes.IsResolved(), fullRes.IsResolved())
+				}
+
+				if mergedRes.IsUnresolved() != fullRes.IsUnresolved() {
+					t.Errorf("Unresolved mismatch for %s at %v: merged.IsUnresolved=%v, full.IsUnresolved=%v",
+						filePath, edge.Source, mergedRes.IsUnresolved(), fullRes.IsUnresolved())
+				}
+
+				if mergedRes.IsAmbiguous() != fullRes.IsAmbiguous() {
+					t.Errorf("Ambiguous mismatch for %s at %v: merged.IsAmbiguous=%v, full.IsAmbiguous=%v",
+						filePath, edge.Source, mergedRes.IsAmbiguous(), fullRes.IsAmbiguous())
+				}
+
+				if mergedRes.IsResolved() && mergedRes.Path != fullRes.Path {
+					t.Errorf("Path mismatch for %s at %v: merged=%q, full=%q",
+						filePath, edge.Source, mergedRes.Path, fullRes.Path)
+				}
+
+				if mergedRes.IsUnresolved() && mergedRes.Reason != fullRes.Reason {
+					t.Errorf("Reason mismatch for %s at %v: merged=%v, full=%v",
+						filePath, edge.Source, mergedRes.Reason, fullRes.Reason)
+				}
+			}
+		})
+	})
+}
+
 // TestResolveInto_ConcurrencyRace (Feature 10 remediation) reproduces the data race
 // that occurs when ResolveInto mutates a ResolutionSet in place while a concurrent
 // reader (via Get) tries to access its maps. This test MUST fail under -race before

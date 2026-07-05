@@ -185,8 +185,9 @@ func extractEdges(prog *Program) []model.EdgeEntry {
 
 		// The PERFORM edge's Source must span through the target name so a cursor
 		// on the target resolves to this edge (go-to-definition/references). The
-		// parser's PERFORM EndPos currently ends at the keyword, so extend the
-		// site to the target-name range when one was captured.
+		// parser's PERFORM EndPos lands at the START of the target token (or the
+		// keyword when no target), so extend the site to the target-name range when
+		// one was captured.
 		stmtEnd := perform.EndPos
 		if perform.TargetRange.Start.Line > 0 {
 			stmtEnd = perform.TargetRange.End
