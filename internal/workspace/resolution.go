@@ -642,6 +642,163 @@ func Resolve(idx *Index, cfg *config.Config) *ResolutionSet {
 	return rs
 }
 
+// ResolveInto incrementally re-resolves a scoped set of changed files and
+// merges the outcome into an existing ResolutionSet, rather than re-walking
+// the whole index with Resolve.
+//
+// Parameters:
+//   - rs: existing ResolutionSet to merge results into (may be nil)
+//   - idx: the updated Index (with changes applied)
+//   - cfg: the workspace configuration (for library mapping, etc.)
+//   - changedPaths: workspace-relative paths of files that have changed
+//
+// Behavior:
+// 1. Rebuilds the name index (targets can live anywhere)
+// 2. Re-resolves edges in the changed files + affected dependents
+// 3. Merges/re-keys `(filePath, source)` entries into rs
+// 4. Drops stale entries for edges that no longer exist in changed files
+// 5. Returns the merged ResolutionSet
+//
+// Correctness invariant (F6a): after scoped recompute for the changed state,
+// the merged set must EQUAL what a full Resolve(idx, cfg) would produce for
+// that same index state (completeness — no stale entry left claiming a removed target).
+//
+// This is the feature 10, task T13a entry point (F6a — resolution API extension).
+// Currently stubbed to return rs unchanged; implementation in tdd-green phase.
+func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths []string) *ResolutionSet {
+	// Initialize ResolutionSet if nil.
+	if rs == nil {
+		rs = &ResolutionSet{
+			entries:          make(map[resolutionKey]Resolution),
+			ambigDiagnostics: make(map[string][]model.Diagnostic),
+		}
+	}
+
+	// Handle nil or empty changedPaths: return early.
+	if len(changedPaths) == 0 {
+		return rs
+	}
+
+	// Step 1: Build a fresh name index over the current (mutated) index.
+	nameIndex := idx.buildNameIndex(cfg)
+
+	// Step 2: Determine the affected file set.
+	// Start with the changed files themselves.
+	affectedSet := make(map[string]bool)
+	for _, path := range changedPaths {
+		affectedSet[path] = true
+	}
+
+	// (b) Every file with an edge whose existing resolution in rs pointed at any changed path.
+	// Also, (c) every file whose edges' TargetName match objects that were defined-in or
+	// removed-from the changed files. For safety/correctness, re-resolve any file whose
+	// edges' TargetName set intersects the set of object names in the changed files.
+
+	// Build the set of object names in changed files.
+	changedObjectNames := make(map[string]bool)
+	for _, path := range changedPaths {
+		if _, ok := idx.Get(path); ok {
+			objName, _ := objectIdentity(path, cfg)
+			changedObjectNames[objName] = true
+		}
+	}
+
+	// Add callers whose target matches a changed object name.
+	idx.ForEach(func(filePath string, fa model.FileAnalysis) {
+		for _, edge := range fa.Edges {
+			if changedObjectNames[strings.ToUpper(edge.TargetName)] {
+				affectedSet[filePath] = true
+			}
+		}
+	})
+
+	// Step 3: For each affected file, delete existing entries and re-resolve.
+	// Delete stale entries for affected files.
+	for affectedPath := range affectedSet {
+		// Remove all entries keyed by (affectedPath, *)
+		for key := range rs.entries {
+			if key.filePath == affectedPath {
+				delete(rs.entries, key)
+			}
+		}
+		// Also clear ambiguity diagnostics for this file.
+		delete(rs.ambigDiagnostics, affectedPath)
+	}
+
+	// Re-resolve edges in affected files.
+	for affectedPath := range affectedSet {
+		if fa, ok := idx.Get(affectedPath); ok {
+			for _, edge := range fa.Edges {
+				var resolution Resolution
+
+				switch edge.Kind {
+				case model.EdgeCallsDynamic, model.EdgeNavigatesToDynamic:
+					resolution = Unresolved(ReasonDynamic)
+
+				case model.EdgePerforms:
+					if !isZeroRange(edge.Target) {
+						resolution = Resolved(affectedPath, fa.ObjectType)
+					} else {
+						resolution = resolveByName(
+							edge.TargetName,
+							model.ObjectExternalSubroutine,
+							affectedPath,
+							edge,
+							nameIndex,
+							cfg,
+							rs.ambigDiagnostics,
+						)
+					}
+
+				case model.EdgeCalls:
+					resolution = resolveByName(
+						edge.TargetName,
+						model.ObjectSubprogram,
+						affectedPath,
+						edge,
+						nameIndex,
+						cfg,
+						rs.ambigDiagnostics,
+					)
+
+				case model.EdgeNavigatesTo:
+					resolution = resolveByName(
+						edge.TargetName,
+						model.ObjectProgram,
+						affectedPath,
+						edge,
+						nameIndex,
+						cfg,
+						rs.ambigDiagnostics,
+					)
+
+				case model.EdgeIncludes:
+					resolution = resolveByName(
+						edge.TargetName,
+						model.ObjectCopycode,
+						affectedPath,
+						edge,
+						nameIndex,
+						cfg,
+						rs.ambigDiagnostics,
+					)
+
+				default:
+					continue
+				}
+
+				key := resolutionKey{
+					filePath: affectedPath,
+					source:   edge.Source,
+				}
+				rs.entries[key] = resolution
+			}
+		}
+	}
+
+	return rs
+}
+
 // formatAmbiguityMessage constructs a diagnostic message for an ambiguous
 // reference in a flat namespace. The message names the target and lists all
 // candidate locations in deterministic (sorted) order.
