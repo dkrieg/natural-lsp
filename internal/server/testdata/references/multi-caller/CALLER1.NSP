@@ -1,0 +1,11 @@
+* First caller of SHARED subprogram
+DEFINE DATA
+LOCAL
+  1 #TEXT (A20)
+END-DEFINE
+
+CALLNAT 'SHARED'
+
+DISPLAY 'Caller1'
+
+END

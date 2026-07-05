@@ -1,0 +1,10 @@
+* A simple shared subprogram called by multiple files
+DEFINE SUBROUTINE SHARED-SUB
+  DEFINE DATA
+  PARAMETER
+    1 PARM-IN (A10)
+  END-DEFINE
+
+  DISPLAY PARM-IN
+
+END-SUBROUTINE

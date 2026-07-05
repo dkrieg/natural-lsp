@@ -627,6 +627,38 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 					respResult = locationJSON
 				}
 
+			case "textDocument/references":
+				// Feature 10, T10: find-all-references handler skeleton.
+				// Gate on stateInitialized; decode ReferenceParams; call provideReferences.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.ReferenceParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid references params: %v", err))
+					return
+				}
+				// Call the provider function (T10: returns empty for now; T11: adds sweep logic).
+				locations, err := provideReferences(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: locations may be nil (empty) for a no-symbol case.
+				if locations == nil {
+					respResult = []byte(`null`)
+				} else {
+					// Marshal the location slice as JSON.
+					locationJSON, marshalErr := json.Marshal(locations)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal locations: %v", marshalErr))
+						return
+					}
+					respResult = locationJSON
+				}
+
 			default:
 				// Unknown method — send MethodNotFound per JSON-RPC 2.0 §5.1 and LSP §3.1.
 				// MethodNotFound is the spec-correct response and prevents silently swallowing
