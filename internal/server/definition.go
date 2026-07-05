@@ -9,6 +9,20 @@ import (
 	"natural-lsp/internal/model"
 )
 
+// provideDefinition handles the textDocument/definition request (feature 10, T4).
+// It is the LSP provider entry point: it decodes the cursor position from the params,
+// looks up any reference at that position, and returns an empty result.
+//
+// This is the T4 skeleton: it always returns an empty result (nil) since the real
+// resolution logic is T7. The function signature and wiring are in place; the cursor
+// lookup and resolution are added in T5–T7.
+func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) ([]protocol.Location, error) {
+	// T4: skeleton returns empty for now.
+	// T5: add cursor lookup (findCursorTarget).
+	// T7: add resolution (ResolutionSet.Get) and target Location (definitionLocation).
+	return nil, nil
+}
+
 // definitionLocation builds a protocol.Location for a resolved definition.
 //
 // Given:

@@ -17,6 +17,7 @@ import (
 
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
+	"go.lsp.dev/uri"
 	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
 	"natural-lsp/internal/workspace"
@@ -2116,5 +2117,224 @@ func TestTextDocumentDidClose(t *testing.T) {
 	}
 	if shutdownResp.Err() != nil {
 		t.Errorf("shutdown response has error: %v; server should handle didClose cleanly", shutdownResp.Err())
+	}
+}
+
+// TestTextDocumentDefinitionNoEdge pins the textDocument/definition handler skeleton (feature 10, T4).
+// It tests that a cursor position that hits NO reference returns an empty result, not a MethodNotFound error.
+//
+// This test:
+// 1. Creates a minimal single-file workspace fixture
+// 2. Drives the server through initialize → initialized
+// 3. Opens the fixture document via didOpen
+// 4. Sends a textDocument/definition request pointing to a position with no edge
+// 5. Asserts the response is a well-formed JSON-RPC result with null (not MethodNotFound error)
+//
+// Currently FAILS (RED): the dispatch switch has no case "textDocument/definition",
+// so the method returns MethodNotFound instead of empty result.
+func TestTextDocumentDefinitionNoEdge(t *testing.T) {
+	// Arrange: set up the test fixture workspace
+	tmpDir := t.TempDir()
+
+	// Write a minimal fixture file with a CALLNAT so we can point cursor to whitespace (no edge)
+	fixtureContent := `PROGRAM TEST
+DEFINE DATA
+  LOCAL
+    1 #VAR (A5)
+  END
+END
+
+CALLNAT 'SUB'
+
+END
+`
+	fixturePath := filepath.Join(tmpDir, "test.NSP")
+	if err := os.WriteFile(fixturePath, []byte(fixtureContent), 0600); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	// Arrange: set up the index capture hook to verify the index is built after initialized
+	var capturedIndex *workspace.Index
+	indexReadyHookMu.Lock()
+	oldHook := indexReadyHook
+	indexReadyHook = func(idx *workspace.Index, enc protocol.PositionEncodingKind) {
+		capturedIndex = idx
+	}
+	indexReadyHookMu.Unlock()
+	defer func() {
+		indexReadyHookMu.Lock()
+		indexReadyHook = oldHook
+		indexReadyHookMu.Unlock()
+	}()
+
+	// Arrange: build the message sequence:
+	// 1. initialize → should succeed with three providers advertised
+	// 2. initialized → triggers index build
+	// 3. didOpen → opens the fixture document
+	// 4. textDocument/definition → requests definition at a position with no edge (should return empty)
+	// 5. shutdown, exit → clean lifecycle
+	initID := jsonrpc2.NewNumberID(1)
+	initParams := jsonrpc2.RawMessage(fmt.Sprintf(`{
+		"processId": 1234,
+		"rootPath": %q,
+		"capabilities": {
+			"general": {
+				"positionEncodings": ["utf-8", "utf-16"]
+			}
+		}
+	}`, tmpDir))
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	// Construct the document URI using go.lsp.dev/uri
+	docURI := uri.File(fixturePath)
+
+	// Open the document at version 1
+	didOpenParams := fmt.Sprintf(`{
+		"textDocument": {
+			"uri": %q,
+			"languageId": "natural",
+			"version": 1,
+			"text": %q
+		}
+	}`, string(docURI), strings.ReplaceAll(fixtureContent, `"`, `\"`))
+	didOpenNotif := jsonrpc2.NewNotification("textDocument/didOpen", jsonrpc2.RawMessage(didOpenParams))
+
+	// Send a textDocument/definition request pointing to a position with no edge.
+	// Position {line: 0, character: 0} (top-left) is in the "PROGRAM" keyword with no edge.
+	defID := jsonrpc2.NewNumberID(2)
+	defParams := fmt.Sprintf(`{
+		"textDocument": {"uri": %q},
+		"position": {"line": 0, "character": 0}
+	}`, string(docURI))
+	defCall := jsonrpc2.NewCall(defID, "textDocument/definition", jsonrpc2.RawMessage(defParams))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write all messages as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{initCall, initNotif, didOpenNotif, defCall, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server with the message sequence
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		tmpDir,
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without error (clean shutdown)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Assert: the index was built after initialized (T2)
+	if capturedIndex == nil {
+		t.Errorf("indexReadyHook was called with nil index; expected a populated *workspace.Index (feature 10, T2)")
+	}
+
+	// Parse the responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Read initialize response
+	initBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse initialize response: %v", err)
+	}
+	initMsg, err := jsonrpc2.DecodeMessage(initBody)
+	if err != nil {
+		t.Fatalf("failed to decode initialize response: %v", err)
+	}
+	initResp, ok := initMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for initialize, got %T", initMsg)
+	}
+	if initResp.Err() != nil {
+		t.Errorf("initialize response has error: %v", initResp.Err())
+	}
+
+	// Verify that the three navigation providers are advertised
+	if initResp.Result() != nil {
+		var result map[string]interface{}
+		if err := json.Unmarshal(initResp.Result(), &result); err != nil {
+			t.Errorf("failed to unmarshal initialize result: %v", err)
+		} else if caps, ok := result["capabilities"].(map[string]interface{}); ok {
+			for _, provider := range []string{"definitionProvider", "referencesProvider", "workspaceSymbolProvider"} {
+				if val, exists := caps[provider]; !exists || val == nil || val == false {
+					t.Errorf("%s = %v; want true (required by feature 10, T3)", provider, val)
+				}
+			}
+		}
+	}
+
+	// Read definition response
+	defBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse definition response: %v", err)
+	}
+	defMsg, err := jsonrpc2.DecodeMessage(defBody)
+	if err != nil {
+		t.Fatalf("failed to decode definition response: %v", err)
+	}
+
+	defResp, ok := defMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for definition, got %T", defMsg)
+	}
+
+	// Assert: the response must NOT be a MethodNotFound error
+	if defResp.Err() != nil {
+		errTyped, isErr := defResp.Err().(*jsonrpc2.Error)
+		if isErr && errTyped.Code == jsonrpc2.MethodNotFound {
+			t.Errorf("textDocument/definition returned MethodNotFound; expected empty result (T4: handler skeleton not yet implemented)")
+		} else {
+			t.Errorf("definition response has unexpected error: %v (expected nil for no-edge case)", defResp.Err())
+		}
+	}
+
+	// Assert: the response must be a well-formed result (null or empty array)
+	// For "no definition found", the handler returns null
+	if defResp.Result() != nil {
+		// The result could be null (encoded as "null" in JSON) or an empty array []
+		resultStr := string(defResp.Result())
+		if resultStr != "null" && resultStr != "[]" {
+			t.Errorf("definition result = %q; want null or [] for no-edge case", resultStr)
+		}
+	}
+
+	// Read shutdown response
+	shutdownBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse shutdown response: %v", err)
+	}
+	shutdownMsg, err := jsonrpc2.DecodeMessage(shutdownBody)
+	if err != nil {
+		t.Fatalf("failed to decode shutdown response: %v", err)
+	}
+	shutdownResp, ok := shutdownMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for shutdown, got %T", shutdownMsg)
+	}
+	if shutdownResp.Err() != nil {
+		t.Errorf("shutdown response has error: %v", shutdownResp.Err())
 	}
 }

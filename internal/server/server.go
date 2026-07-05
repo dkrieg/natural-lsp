@@ -6,6 +6,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -586,6 +587,38 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				// the comment makes its purpose clear, and segregating it behind
 				// a tag would add build complexity for no meaningful safety gain.
 				panic("test panic for FR-43")
+
+			case "textDocument/definition":
+				// Feature 10, T4: go-to-definition handler skeleton.
+				// Gate on stateInitialized; decode DefinitionParams; call provideDefinition.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.DefinitionParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid definition params: %v", err))
+					return
+				}
+				// Call the provider function (T4: returns empty for now; T7: adds resolution logic).
+				locations, err := provideDefinition(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: locations may be nil (empty) for a no-edge case.
+				if locations == nil {
+					respResult = []byte(`null`)
+				} else {
+					// Marshal the location slice as JSON.
+					locationJSON, marshalErr := json.Marshal(locations)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal locations: %v", marshalErr))
+						return
+					}
+					respResult = locationJSON
+				}
 
 			default:
 				// Unknown method — send MethodNotFound per JSON-RPC 2.0 §5.1 and LSP §3.1.
