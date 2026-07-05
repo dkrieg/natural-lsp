@@ -1,0 +1,11 @@
+* Third caller of SHARED subprogram (different directory is optional)
+DEFINE DATA
+LOCAL
+  1 #COUNTER (N5)
+END-DEFINE
+
+CALLNAT 'SHARED'
+
+DISPLAY 'Caller3'
+
+END

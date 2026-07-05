@@ -1,0 +1,17 @@
+* Program to test cursor position→reference lookup
+PROGRAM CURSOR-TEST
+
+DEFINE DATA
+  LOCAL
+    1 #VIEW-NAME (A10)
+    1 #RESULT (A50)
+  END
+END
+
+CALLNAT 'SUBPROGRAM'
+
+READ TESTVIEW
+  #RESULT := 'DATA'
+END
+
+END

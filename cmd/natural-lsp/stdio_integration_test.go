@@ -211,17 +211,27 @@ func TestStdioHandshake(t *testing.T) {
 			t.Errorf("positionEncoding has unexpected type %T", caps["positionEncoding"])
 		}
 
-		// Assert: no feature providers are advertised (FR-41, NFR-11)
-		// This is a regression guard — when features 09–13 add providers, this assertion will catch the change.
-		providerFlags := []string{
+		// Assert: feature 10 (T3) navigation providers are advertised (FR-25, FR-26, FR-27)
+		// definitionProvider, referencesProvider, workspaceSymbolProvider should all be true.
+		// Other providers (hover, documentSymbol, codeLens) are not yet implemented (feature 11+).
+		navigationProviders := []string{
 			"definitionProvider",
 			"referencesProvider",
+			"workspaceSymbolProvider",
+		}
+		for _, flag := range navigationProviders {
+			if val, exists := caps[flag]; !exists || val != true {
+				t.Errorf("%s = %v, want true (feature 10, T3)", flag, val)
+			}
+		}
+
+		// These providers are not yet implemented (features 11–13)
+		unimplementedProviders := []string{
 			"hoverProvider",
 			"documentSymbolProvider",
-			"workspaceSymbolProvider",
 			"codeLensProvider",
 		}
-		for _, flag := range providerFlags {
+		for _, flag := range unimplementedProviders {
 			if val, exists := caps[flag]; exists && val != nil && val != false {
 				t.Errorf("%s = %v, want nil/false (not yet implemented)", flag, val)
 			}

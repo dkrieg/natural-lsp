@@ -183,10 +183,20 @@ func extractEdges(prog *Program) []model.EdgeEntry {
 		// If found, set Target to the definition's range; otherwise leave it as zero (model.Range{}).
 		targetRange := inlineSubs[perform.Target]
 
+		// The PERFORM edge's Source must span through the target name so a cursor
+		// on the target resolves to this edge (go-to-definition/references). The
+		// parser's PERFORM EndPos lands at the START of the target token (or the
+		// keyword when no target), so extend the site to the target-name range when
+		// one was captured.
+		stmtEnd := perform.EndPos
+		if perform.TargetRange.Start.Line > 0 {
+			stmtEnd = perform.TargetRange.End
+		}
+
 		edges = append(edges, model.EdgeEntry{
 			Kind:       model.EdgePerforms,
 			TargetName: perform.Target,
-			Source:     stmtRange(perform.StartPos, perform.EndPos),
+			Source:     stmtRange(perform.StartPos, stmtEnd),
 			Target:     targetRange,
 		})
 	}

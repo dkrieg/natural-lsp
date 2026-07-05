@@ -1,0 +1,11 @@
+* Second caller of SHARED subprogram
+DEFINE DATA
+LOCAL
+  1 #VALUE (N3)
+END-DEFINE
+
+CALLNAT 'SHARED'
+
+COMPUTE #VALUE = 42
+
+END
