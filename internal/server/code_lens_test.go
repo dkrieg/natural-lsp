@@ -427,3 +427,182 @@ func TestBuildCallCountLens(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideCodeLens pins the provideCodeLens provider entry point (feature 13, T5).
+// It tests the provider's behavior when assembled into the full LSP handler context:
+//
+//  1. If hctx.cfg.Analysis.EnableCodeLens == false, return nil, nil (no lenses).
+//  2. Resolve the document: open-document store first (live edits), else index snapshot.
+//  3. If Structure == nil or file unreadable → nil, nil (FR-43).
+//  4. Build the call-count lens (T3) and, if there are named writes, the write-summary
+//     lens (T4), using the object root SelectionRange as the anchor.
+//  5. Return the assembled []protocol.CodeLens in deterministic order (call-count then
+//     write-summary), or nil when neither applies.
+//
+// This test covers:
+//   - Enabled + object with inbound callers (SHARED.NSN from multi-caller): returns
+//     a non-nil slice whose FIRST lens is the call-count lens with correct title.
+//   - Object that also writes DDMs (write-summary.NSP): returns both lenses in order.
+//   - EnableCodeLens == false: returns nil.
+//   - A URI not in the index / with nil Structure: returns nil.
+func TestProvideCodeLens(t *testing.T) {
+	testdataDir := filepath.Join("testdata", "references", "multi-caller")
+	codelensDir := filepath.Join("testdata", "codelens")
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing all files in the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{
+		Analysis: config.AnalysisConfig{
+			EnableCodeLens: true, // enabled by default
+		},
+	}
+
+	// Add multi-caller fixture files
+	files := []struct {
+		path    string
+		relPath string
+	}{
+		{filepath.Join(testdataDir, "SHARED.NSN"), "testdata/references/multi-caller/SHARED.NSN"},
+		{filepath.Join(testdataDir, "CALLER1.NSP"), "testdata/references/multi-caller/CALLER1.NSP"},
+		{filepath.Join(testdataDir, "CALLER2.NSP"), "testdata/references/multi-caller/CALLER2.NSP"},
+		{filepath.Join(testdataDir, "CALLER3.NSP"), "testdata/references/multi-caller/CALLER3.NSP"},
+		{filepath.Join(testdataDir, "CALLER_DYN.NSP"), "testdata/references/multi-caller/CALLER_DYN.NSP"},
+		{filepath.Join(codelensDir, "write-summary.NSP"), "testdata/codelens/write-summary.NSP"},
+	}
+
+	az := natural.New(nil)
+	for _, f := range files {
+		content, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", f.path, err)
+		}
+		analysis, err := az.Analyze(f.path, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.path, err)
+		}
+		idx.Add(strings.ReplaceAll(f.relPath, "\\", "/"), analysis)
+	}
+
+	// Compute the resolution set over the index
+	resSet := workspace.Resolve(idx, &cfg)
+
+	tests := []struct {
+		name             string
+		enabled          bool // whether EnableCodeLens is true
+		uri              string
+		relPath          string
+		expectNonNil     bool
+		expectMinLen     int // minimum number of lenses expected
+		checkFirstTitle  string
+		checkSecondTitle string // optional, for multi-lens cases
+		description      string
+	}{
+		{
+			name:            "enabled_with_inbound_callers",
+			enabled:         true,
+			uri:             "file:///workspace/testdata/references/multi-caller/SHARED.NSN",
+			relPath:         "testdata/references/multi-caller/SHARED.NSN",
+			expectNonNil:    true,
+			expectMinLen:    1,
+			checkFirstTitle: "3 references", // SHARED.NSN is called by 3 callers
+			description:     "Enabled, object with 3 inbound callers should return call-count lens",
+		},
+		{
+			name:             "enabled_with_writes",
+			enabled:          true,
+			uri:              "file:///workspace/testdata/codelens/write-summary.NSP",
+			relPath:          "testdata/codelens/write-summary.NSP",
+			expectNonNil:     true,
+			expectMinLen:     2,
+			checkFirstTitle:  "0 references",             // write-summary.NSP is not called
+			checkSecondTitle: "Writes: CUSTOMER, ORDERS", // but writes to two DDMs
+			description:      "Enabled, object with writes should return both lenses",
+		},
+		{
+			name:         "disabled_returns_nil",
+			enabled:      false,
+			uri:          "file:///workspace/testdata/references/multi-caller/SHARED.NSN",
+			relPath:      "testdata/references/multi-caller/SHARED.NSN",
+			expectNonNil: false,
+			expectMinLen: 0,
+			description:  "When EnableCodeLens=false, provider should return nil",
+		},
+		{
+			name:         "uri_not_in_index",
+			enabled:      true,
+			uri:          "file:///workspace/testdata/nonexistent.NSP",
+			relPath:      "testdata/nonexistent.NSP",
+			expectNonNil: false,
+			expectMinLen: 0,
+			description:  "A file not in index should return nil",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: build the handler context with the snapshot of idx/res
+			hctx := &handlerContext{
+				cfg:         cfg,
+				idx:         idx,
+				res:         resSet,
+				root:        workspaceRoot,
+				posEncoding: protocol.PositionEncodingKindUTF8,
+				store:       nil, // no open documents for this test
+			}
+
+			// Override EnableCodeLens for the "disabled" case
+			if !tc.enabled {
+				hctx.cfg.Analysis.EnableCodeLens = false
+			}
+
+			// Construct the CodeLensParams. Build the URI from the real on-disk
+			// fixture path (workspaceRoot = os.Getwd()) so it maps to an actual
+			// file the provider can read; tc.uri is kept for documentation only.
+			params := protocol.CodeLensParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(filepath.Join(workspaceRoot, tc.relPath)),
+				},
+			}
+
+			// Act: call provideCodeLens
+			result, err := provideCodeLens(hctx, params)
+
+			// Assert: no error expected
+			if err != nil {
+				t.Errorf("provideCodeLens returned error: %v", err)
+			}
+
+			// Assert: nil vs. non-nil expectation
+			if tc.expectNonNil {
+				if result == nil {
+					t.Fatalf("expected non-nil result, got nil; %s", tc.description)
+				}
+				if len(result) < tc.expectMinLen {
+					t.Errorf("expected at least %d lenses, got %d; %s", tc.expectMinLen, len(result), tc.description)
+				}
+				// Check the first lens title
+				if tc.checkFirstTitle != "" {
+					if result[0].Command.Title != tc.checkFirstTitle {
+						t.Errorf("first lens title = %q, want %q", result[0].Command.Title, tc.checkFirstTitle)
+					}
+				}
+				// Check the second lens title if provided
+				if tc.checkSecondTitle != "" {
+					if len(result) < 2 {
+						t.Errorf("expected at least 2 lenses, got %d for check of second title", len(result))
+					} else if !strings.HasPrefix(result[1].Command.Title, strings.Split(tc.checkSecondTitle, ":")[0]) {
+						t.Errorf("second lens title = %q, want to start with %q", result[1].Command.Title, strings.Split(tc.checkSecondTitle, ":")[0])
+					}
+				}
+			} else {
+				if result != nil {
+					t.Errorf("expected nil result, got %d lenses; %s", len(result), tc.description)
+				}
+			}
+		})
+	}
+}

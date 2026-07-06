@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -182,4 +183,116 @@ func mustLSPAny(v any) jsontext.Value {
 		return jsontext.Value("null")
 	}
 	return jsontext.Value(b)
+}
+
+// provideCodeLens handles the textDocument/codeLens request (feature 13, T5).
+// It is the LSP provider entry point for code lens support.
+//
+// Behavior:
+//  1. If hctx.cfg.Analysis.EnableCodeLens == false, return nil, nil (no lenses).
+//  2. Resolve the document: open-document store first (live edits), else index snapshot.
+//  3. If Structure == nil or file unreadable → nil, nil (FR-43).
+//  4. Build the call-count lens (T3) and, if there are named writes, the write-summary
+//     lens (T4), using the object root SelectionRange as the anchor.
+//  5. Return the assembled []protocol.CodeLens in deterministic order (call-count then
+//     write-summary), or nil when neither applies.
+//
+// Concurrency (F7): For the open-document buffer, no locking is needed (store is
+// self-synchronized). For the index snapshot, idxResMu.RLock is acquired briefly,
+// released before any file I/O, and the snapshot (pointers to idx/res) is safe to use
+// afterward (Index and ResolutionSet are immutable post-snapshot; applyDocumentChange
+// swaps the pointers under write lock — build-then-publish semantics).
+func provideCodeLens(hctx *handlerContext, params protocol.CodeLensParams) ([]protocol.CodeLens, error) {
+	// Guard: hctx must be initialized
+	if hctx == nil {
+		return nil, nil
+	}
+
+	// Check if code lens is enabled in the configuration
+	if !hctx.cfg.Analysis.EnableCodeLens {
+		return nil, nil
+	}
+
+	// Snapshot idx/res under the read lock; release before any file I/O (F7).
+	// Both the open-document and index paths need these for the call-count lens.
+	hctx.idxResMu.RLock()
+	idx := hctx.idx
+	res := hctx.res
+	hctx.idxResMu.RUnlock()
+
+	// Convert LSP URI to workspace-relative path (forward-slash index key
+	// convention). This doubles as the call-count target identity.
+	absPath, relPath, err := uriToRelPath(hctx.root, params.TextDocument.URI)
+	if err != nil {
+		// URI outside workspace root
+		return nil, nil
+	}
+
+	// Resolution order 1: open-document store (current, unsaved edits — Story 2).
+	// The open buffer supplies content, but the call-count lens still needs the
+	// idx/res snapshot, so pass it through.
+	if hctx.store != nil {
+		if doc, ok := hctx.store.Get(params.TextDocument.URI); ok && doc != nil && doc.Analysis.Structure != nil {
+			return buildCodeLenses(&doc.Analysis, string(doc.Content), params.TextDocument.URI, hctx, relPath, idx, res)
+		}
+	}
+
+	// Resolution order 2: index + disk (document not open).
+	if idx == nil {
+		return nil, nil
+	}
+
+	fa, ok := idx.Get(relPath)
+	if !ok || fa.Structure == nil {
+		return nil, nil
+	}
+
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		// Can't read file — FR-43
+		return nil, nil
+	}
+
+	return buildCodeLenses(&fa, string(content), params.TextDocument.URI, hctx, relPath, idx, res)
+}
+
+// buildCodeLenses is a helper that constructs the code lenses from a FileAnalysis.
+// It takes the analysis, content, document URI, relative path, and snapshot of idx/res
+// (which may be nil for open-document buffers) and returns the assembled lenses in order
+// (call-count first, write-summary second).
+func buildCodeLenses(fa *model.FileAnalysis, content string, docURI uri.URI, hctx *handlerContext, relPath string, idx *workspace.Index, res *workspace.ResolutionSet) ([]protocol.CodeLens, error) {
+	// Guard: Structure must be present
+	if fa.Structure == nil {
+		return nil, nil
+	}
+
+	root := fa.Structure
+	var lenses []protocol.CodeLens
+
+	// Build the call-count lens (T3). This needs idx/res for counting references.
+	// If idx/res are available (from the index snapshot), use them.
+	// If idx/res are nil (open-document case without index snapshot), skip the call-count lens
+	// but still build the write-summary lens if applicable.
+	if idx != nil && res != nil && relPath != "" {
+		targetName := root.Name
+		targetType := fa.ObjectType
+
+		callCountLens := buildCallCountLens(idx, res, hctx.root, relPath, targetName, targetType, root.SelectionRange, docURI, content, hctx.posEncoding)
+		if callCountLens != nil {
+			lenses = append(lenses, *callCountLens)
+		}
+	}
+
+	// Build the write-summary lens (T4) if there are named writes.
+	writeSummaryLens := buildWriteSummaryLens(fa.DataAccess, root, docURI, content, hctx.posEncoding)
+	if writeSummaryLens != nil {
+		lenses = append(lenses, *writeSummaryLens)
+	}
+
+	// Return lenses, or nil if none were built
+	if len(lenses) == 0 {
+		return nil, nil
+	}
+
+	return lenses, nil
 }
