@@ -1,0 +1,13 @@
+* T2 fixture: Subprogram with array parameter for dimension rendering
+* Exercises bounded and unbounded array dimensions in PARAMETER section
+
+DEFINE DATA
+PARAMETER
+  1 ITEM-IDS (N5/1:10)
+  1 UNBOUNDED-LIST (A20/1:*)
+  1 MATRIX (I4/1:3,1:5)
+END DEFINE
+
+WRITE 'Processing arrays'
+
+END

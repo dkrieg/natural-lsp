@@ -55,7 +55,9 @@ Notes:
   distinct from `CALLNAT`/`PERFORM`.
 - `.NSD` (DDM) is the local-file representation of a DDM in NaturalONE, created/edited with the DDM Editor.
 - Extensions/object types are dialect-stable across recent NaturalONE versions (8.x–9.x).
-- DDM column order: `C T L Name F Length S D` (DB is optional toggle).
+- DDM report header/column order: `T L DB Name F Leng  S D Remark` (fixed-column layout). There is no
+  separate `C` column — a `C` (coupled) value lives in the `T` (type) column. See ddm-format.md for the
+  byte-exact offsets and full grammar.
 
 ## Cross-check against natls (prior-art parser-based LSP) — verified (2026-06-21)
 
@@ -85,9 +87,11 @@ referable name.) Source: natls `NaturalProjectFileIndexer.getReferableName`; see
 
 ### DDM (`.NSD`) is NOT Natural source — verified (2026-06-21)
 
-A `.NSD` file is a tabular field listing (columns `T L DB Name F Leng S D Remark`), not Natural
-statements — it needs a separate, columnar parser. natls has a dedicated DDM parser
-(`parsing/ddm/`). Do not run the statement extractor over `.NSD` files.
+A `.NSD` file is a **fixed-column** tabular field listing (header `T L DB Name F Leng  S D Remark`),
+not Natural statements — it needs a separate, columnar line-scanner. natls has a dedicated DDM parser
+(`parsing/ddm/`). Do not run the statement extractor over `.NSD` files. The exact byte offsets, header
+grammar, group/PE/MU and descriptor handling, and the `model.DataDefinition` mapping are fully verified
+in **ddm-format.md**.
 
 ## Gotchas for the analyzer
 

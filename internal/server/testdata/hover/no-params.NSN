@@ -1,0 +1,11 @@
+* T2 fixture: Subprogram with no PARAMETER section
+* Tests the "no declared parameters" rendering
+
+DEFINE DATA
+LOCAL
+  1 WORK-VAR (A10)
+END DEFINE
+
+WRITE 'No parameters'
+
+END

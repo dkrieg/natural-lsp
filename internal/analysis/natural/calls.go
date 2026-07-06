@@ -161,10 +161,16 @@ func extractEdges(prog *Program) []model.EdgeEntry {
 		if call.Target == "" {
 			continue // malformed — diagnostic already emitted by parser
 		}
+		// The CALLNAT edge's Source must span through the target name so a cursor
+		// on the target resolves to this edge (go-to-definition/references).
+		stmtEnd := call.EndPos
+		if call.TargetRange.Start.Line > 0 {
+			stmtEnd = call.TargetRange.End
+		}
 		edges = append(edges, model.EdgeEntry{
 			Kind:       edgeKind(isStaticLiteral(call.TargetIsLiteral, call.Target), model.EdgeCalls, model.EdgeCallsDynamic),
 			TargetName: call.Target,
-			Source:     stmtRange(call.StartPos, call.EndPos),
+			Source:     stmtRange(call.StartPos, stmtEnd),
 			Target:     call.TargetRange,
 		})
 	}
@@ -231,10 +237,16 @@ func extractEdges(prog *Program) []model.EdgeEntry {
 		if fetch.Target == "" {
 			continue // malformed — diagnostic already emitted by parser
 		}
+		// The FETCH edge's Source must span through the target name so a cursor
+		// on the target resolves to this edge (go-to-definition/references).
+		stmtEnd := fetch.EndPos
+		if fetch.TargetRange.Start.Line > 0 {
+			stmtEnd = fetch.TargetRange.End
+		}
 		edges = append(edges, model.EdgeEntry{
 			Kind:       edgeKind(isStaticLiteral(fetch.TargetIsLiteral, fetch.Target), model.EdgeNavigatesTo, model.EdgeNavigatesToDynamic),
 			TargetName: fetch.Target,
-			Source:     stmtRange(fetch.StartPos, fetch.EndPos),
+			Source:     stmtRange(fetch.StartPos, stmtEnd),
 			Target:     fetch.TargetRange,
 		})
 	}
@@ -250,10 +262,16 @@ func extractEdges(prog *Program) []model.EdgeEntry {
 		if run.Target == "" {
 			continue // malformed — diagnostic already emitted by parser
 		}
+		// The RUN edge's Source must span through the target name so a cursor
+		// on the target resolves to this edge (go-to-definition/references).
+		stmtEnd := run.EndPos
+		if run.TargetRange.Start.Line > 0 {
+			stmtEnd = run.TargetRange.End
+		}
 		edges = append(edges, model.EdgeEntry{
 			Kind:       edgeKind(isStaticLiteral(run.TargetIsLiteral, run.Target), model.EdgeNavigatesTo, model.EdgeNavigatesToDynamic),
 			TargetName: run.Target,
-			Source:     stmtRange(run.StartPos, run.EndPos),
+			Source:     stmtRange(run.StartPos, stmtEnd),
 			Target:     run.TargetRange,
 			Library:    run.Library,
 		})

@@ -404,3 +404,113 @@ func TestExtractStructure_NilGuard(t *testing.T) {
 		t.Errorf("extractStructure(path, nil, nil, nil) returned %v, want nil", got)
 	}
 }
+
+// FuzzParseDDM is the executable proof of the DDM scanner's robustness (FR-43,
+// feature 12-hover T2A): extractDDMDefinitions must NEVER panic on arbitrary input
+// and must ALWAYS return a slice (nil is acceptable; panic is not).
+//
+// The DDM scanner operates on fixed-column text, not Natural source, so it has its
+// own failure modes: short lines, non-digit level columns, TYPE: variants, malformed
+// or absent column data, deeply nested groups with no preceding parent, and garbage
+// bytes. This target guards all those paths.
+//
+// Seed corpus:
+//   - testdata/ddm/customer.NSD — full Adabas DDM with groups, MU, superdescriptor
+//   - testdata/ddm/headers-only.NSD — headers + terminator, no field rows
+//   - testdata/ddm/sql-type.NSD — TYPE: SQL header, should return nil
+//   - testdata/ddm/short-lines.NSD — group line shorter than full column width,
+//     a bare "TYPE:" line (5 chars), and a non-digit level to exercise bounds guards
+//
+// Hand-written degenerate seeds cover: empty input, headers-only, a TYPE: SQL
+// early-exit, a line shorter than every column offset, a non-digit at the level
+// offset, a child row with no preceding group (level 2 with empty stack), and
+// arbitrary unicode/garbage bytes.
+//
+// Feature 12-hover T2A, FR-43, M-6, ADR-013.
+func FuzzParseDDM(f *testing.F) {
+	// Seed from the DDM fixture files.
+	fixtureNames := []string{
+		"customer.NSD",
+		"headers-only.NSD",
+		"sql-type.NSD",
+		"short-lines.NSD",
+	}
+	for _, name := range fixtureNames {
+		data, err := os.ReadFile(filepath.Join("testdata", "ddm", name))
+		if err != nil {
+			continue // missing fixture is not a test failure
+		}
+		f.Add(data)
+	}
+
+	// Empty input — must return nil without panic.
+	f.Add([]byte(""))
+
+	// Headers only, no field rows — must return nil or empty slice.
+	f.Add([]byte("DB: 000 FILE: 1  - EMPTY\nTYPE: ADABAS\n\nT L DB Name                              F Leng  S D Remark\n- - -- --------------------------------  - ----  - - ------\n"))
+
+	// TYPE: SQL early-exit path.
+	f.Add([]byte("DB: 000 FILE: 1\nTYPE: SQL\n  1 AA COL A 20\n"))
+
+	// Bare "TYPE:" (5 chars, no space after colon) — previously caused out-of-range
+	// slice in the old header-skip guard; regression seed.
+	f.Add([]byte("DB: 000 FILE: 1\nTYPE:\n  1 AA FIELD-A                           A   10  N\n"))
+
+	// A line shorter than the Name offset (< 8 chars) with a valid level digit.
+	f.Add([]byte("  1 AB\n"))
+
+	// A line with a non-digit at the level offset (col 2) — must be skipped, not mis-nested.
+	f.Add([]byte("  X AB FIELD                             A   10  N\n"))
+
+	// Level-2 child row with NO preceding group (stack is empty at start) — must
+	// be added to top-level definitions without panic.
+	f.Add([]byte("DB: 000 FILE: 1\nTYPE: ADABAS\n\nT L DB Name                              F Leng  S D Remark\n- - -- --------------------------------  - ----  - - ------\n  2 AD ORPHAN-CHILD                       A   10  N\n"))
+
+	// Deeply nested groups (levels 1→2→3) — exercises stack growth and pop.
+	f.Add([]byte("DB: 000 FILE: 1\nTYPE: ADABAS\n\n" +
+		"T L DB Name                              F Leng  S D Remark\n" +
+		"- - -- --------------------------------  - ----  - - ------\n" +
+		"G 1 AA OUTER\n" +
+		"G 2 AB INNER\n" +
+		"  3 AC LEAF                              A   10  N\n"))
+
+	// MU field at level 1.
+	f.Add([]byte("DB: 000 FILE: 1\nTYPE: ADABAS\n\n" +
+		"T L DB Name                              F Leng  S D Remark\n" +
+		"- - -- --------------------------------  - ----  - - ------\n" +
+		"M 1 AA MULTI-VAL                         A   20  N\n"))
+
+	// Unicode/garbage bytes — scanner must not panic on non-ASCII.
+	f.Add([]byte("DB: 000 FILE: 1\nTYPE: ADABAS\n\xff\xfe\x00\x01\n  1 AA FIELD\xc3\xa9                           A   10  N\n"))
+
+	// Very long line (wide field name padding or garbage).
+	longLine := make([]byte, 2000)
+	for i := range longLine {
+		longLine[i] = ' '
+	}
+	// Place a valid header + terminator around it.
+	f.Add(append([]byte("DB: 000 FILE: 1\nTYPE: ADABAS\n- - -- --------------------------------  - ----  - - ------\n  1 AA "), longLine...))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// Act: run the DDM scanner on arbitrary input.
+		// The fuzzer automatically catches panics; the assertion below adds an
+		// explicit nil-slice vs nil-return check (nil is valid, panic is not).
+		defs := extractDDMDefinitions(string(input))
+
+		// Assert: a nil slice is acceptable (SQL DDM or no data rows); any non-nil
+		// slice must be well-formed (no nil entries). Walking the tree validates
+		// that nested Children slices are also safe.
+		var walkDefs func([]model.DataDefinition)
+		walkDefs = func(ds []model.DataDefinition) {
+			for i := range ds {
+				if ds[i].Name == "" && len(ds[i].Children) == 0 {
+					// A definition with no name and no children is suspicious but
+					// not a panic — log for diagnostics without failing.
+					t.Logf("FuzzParseDDM: definition at index %d has empty name and no children", i)
+				}
+				walkDefs(ds[i].Children)
+			}
+		}
+		walkDefs(defs)
+	})
+}

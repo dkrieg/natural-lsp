@@ -14,6 +14,7 @@ holds verified facts with sources. Read this index first, then the relevant topi
 | [calls-and-resolution.md](calls-and-resolution.md) | CALLNAT / PERFORM / FETCH / RUN / INCLUDE, steplib resolution | verified (2026-06-30) |
 | [embedded-sql.md](embedded-sql.md) | Native Natural SQL (SELECT/INSERT/…) + PROCESS SQL / flexible `<<…>>`, host-var colon rule (optional in native / mandatory in flexible), FROM-table→`.NSD` DDM binding, backends, error handling | verified (2026-06-30); no open items |
 | [data-definition.md](data-definition.md) | DEFINE DATA, LDA/GDA/PDA, level structure | verified (2026-06-20); array/REDEFINE grammar confirmed |
+| [ddm-format.md](ddm-format.md) | `.NSD` exported DDM file: fixed-column report layout (byte offsets), header/TYPE lines, group/PE/MU, super/sub/phonetic descriptors, `DataDefinition` mapping (no model change), line-scanner parsing notes | verified (2026-07-06) |
 | [modes-and-dialects.md](modes-and-dialects.md) | structured vs reporting mode, mainframe vs Linux/NaturalONE | verified (2026-06-23); column rules confirmed free-format |
 | [example-projects.md](example-projects.md) | public Natural source corpora & fixture candidates (licenses) | verified (2026-06-20) |
 | [natls-prior-art.md](natls-prior-art.md) | MarkusAmshove/natls: prior-art Natural LSP — scope, file types, resolution, source header, lint/parser diagnostics, LSP features | verified (2026-06-21) |
@@ -36,6 +37,27 @@ holds verified facts with sources. Read this index first, then the relevant topi
 
 ## Changelog
 
+- 2026-07-06 — ADDED topic `ddm-format.md` (for `.NSD` DDM field extraction → hover). VERIFIED the exact
+  exported DDM file format byte-for-byte against the natls DDM parser (`parsing/ddm/FieldParser.java` +
+  real `CompleteDdm.NSD` fixture, MIT) and the official Software AG DDM Editor column reference. Key
+  findings: (1) `.NSD` is a **fixed-column** "DDM report" (NOT whitespace-delimited, NOT Natural source
+  — needs a dedicated line-scanner). Exact 0-based offsets: T=0, L=2, DB=4(len2), Name=7(len32), F=41,
+  Leng=43(len4), S=49, D=51, Remark=53+. Short lines are saved without trailing spaces → pad missing
+  columns. (2) Header `DB: n FILE: n  - NAME  DEFAULT SEQUENCE:`, optional `TYPE: ADABAS|SQL`, dashed
+  separator, `*` comment/Source-Header lines, `******DDM OUTPUT TERMINATED******`. (3) T column:
+  ` `=elem, `G`=group, `P`=periodic(PE), `M`=multiple(MU); groups nest by level containment (like
+  DEFINE DATA). (4) D column: `D`=descriptor `S`=super `U`=sub/unique `P`=phonetic `H`=hyper `N`=non;
+  a superdescriptor row is followed by a `*  SOURCE FIELD(S)` block of `NAME(from-to)` refs. (5)
+  **Mapping onto `model.DataDefinition` needs NO model change and NO cache-format bump** for hover:
+  `Type`="N8"/"A50"/"P9,2", groups via `Children`+`Level`, MU/PE as an unbounded `*` `Dimensions` entry
+  (reusing existing `*`-bound support). DB short name + descriptor flags are dropped for hover (would
+  only force a model change if a *future* feature needs them). (6) SQL DDMs use a DIFFERENT column
+  layout (natls `SqlFieldParser`) — out of scope until separately verified. REPLACED the guessed
+  placeholder `internal/server/testdata/hover/customer.NSD` with a byte-correct fixture (scalars N8/A50,
+  ADDRESS group w/ children, P9,2, MU PHONE, superdescriptor + source block). Corrected the stale
+  "column order `C T L Name F Length S D`" note in file-extensions.md (the real header is
+  `T L DB Name F Leng S D Remark`; there is no `C` column — the `C`/coupled marker is a `T`-column
+  value, not a separate column).
 - 2026-06-30 (KB audit sweep) — Full re-read of INDEX.md + all 7 topic files. NO `needs-verification`
   or `unverified` markers remain anywhere; all topics are `verified`, and every remaining INDEX open
   question is a corpus/license/tooling DECISION, not an unconfirmed language fact. Rather than

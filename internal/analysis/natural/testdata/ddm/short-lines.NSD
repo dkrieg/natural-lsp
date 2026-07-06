@@ -1,0 +1,12 @@
+DB: 000 FILE: 400  - SHORT-LINES                       DEFAULT SEQUENCE:
+TYPE: ADABAS
+
+T L DB Name                              F Leng  S D Remark
+- - -- --------------------------------  - ----  - - ------------------------
+G 1 AC ADDRESS
+  2 AD STREET                            A   40  N
+  1 AG BALANCE                           P  9,2  N
+x
+
+TYPE:
+******DDM OUTPUT TERMINATED******

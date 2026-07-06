@@ -1,0 +1,14 @@
+* Caller that PERFORMs an EXTERNAL subroutine (defined in extsub.NSS),
+* not an inline DEFINE SUBROUTINE. Hover on the PERFORM target must render
+* the parameter-signature card from the resolved .NSS, not a module card.
+PROGRAM EXTCALLER
+
+DEFINE DATA
+  LOCAL
+    1 #DUMMY (A5)
+  END
+END
+
+PERFORM EXT-WORK
+
+END

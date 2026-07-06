@@ -219,16 +219,16 @@ func TestStdioHandshake(t *testing.T) {
 			"referencesProvider",
 			"workspaceSymbolProvider",
 			"documentSymbolProvider",
+			"hoverProvider",
 		}
 		for _, flag := range navigationProviders {
 			if val, exists := caps[flag]; !exists || val != true {
-				t.Errorf("%s = %v, want true (feature 10/11)", flag, val)
+				t.Errorf("%s = %v, want true (feature 10/11/12)", flag, val)
 			}
 		}
 
-		// These providers are not yet implemented (features 12–13)
+		// These providers are not yet implemented (features 13+)
 		unimplementedProviders := []string{
-			"hoverProvider",
 			"codeLensProvider",
 		}
 		for _, flag := range unimplementedProviders {
