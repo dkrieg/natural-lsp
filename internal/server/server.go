@@ -133,6 +133,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	// Intentional minimal capability set — see comment above.
 	// Feature 10, T3: advertise the three navigation providers (definition, references, workspace symbol).
 	// Feature 11, T3: advertise documentSymbolProvider.
+	// Feature 12, T6: advertise hoverProvider.
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
 			TextDocumentSync:        protocol.TextDocumentSyncKindFull,
@@ -141,6 +142,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 			ReferencesProvider:      protocol.Boolean(true),
 			WorkspaceSymbolProvider: protocol.Boolean(true),
 			DocumentSymbolProvider:  protocol.Boolean(true),
+			HoverProvider:           protocol.Boolean(true),
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",
@@ -744,6 +746,38 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						return
 					}
 					respResult = docSymbolJSON
+				}
+
+			case "textDocument/hover":
+				// Feature 12, T6: hover provider handler.
+				// Gate on stateInitialized; decode HoverParams; call provideHover.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.HoverParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid hover params: %v", err))
+					return
+				}
+				// Call the provider function.
+				hover, err := provideHover(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: hover may be nil (no hover at that position).
+				if hover == nil {
+					respResult = []byte(`null`)
+				} else {
+					// Marshal the hover object as JSON.
+					hoverJSON, marshalErr := json.Marshal(hover)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal hover: %v", marshalErr))
+						return
+					}
+					respResult = hoverJSON
 				}
 
 			default:

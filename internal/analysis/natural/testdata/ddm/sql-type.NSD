@@ -1,0 +1,7 @@
+DB: 000 FILE: 300  - SQL-TABLE                         DEFAULT SEQUENCE:
+TYPE: SQL
+
+T L DB Name                              F Leng  S D Remark
+- - -- --------------------------------  - ----  - - ------------------------
+  1 AA TABLE-COL                         A   20  N
+******DDM OUTPUT TERMINATED******

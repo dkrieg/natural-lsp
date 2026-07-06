@@ -56,6 +56,21 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 		})
 	}
 
+	// Feature 12-hover, T2A: DDM field extraction. `.NSD` files are fixed-column
+	// tabular reports, not Natural source — route through a dedicated DDM parser,
+	// not the Natural lexer/recursive-descent parser.
+	//
+	// Structure is intentionally left nil here: extractStructure requires a parsed
+	// *Program AST that DDM files do not produce, and building a DDM-specific
+	// symbol tree (SymbolObject root + SymbolDataField children) is deferred as a
+	// follow-up. The document-symbols handler (internal/server/document_symbols.go)
+	// already handles nil Structure gracefully (returns an empty outline). Hover for
+	// DDM fields reads Definitions, not Structure, so hover is unaffected.
+	if result.ObjectType == model.ObjectDDM {
+		result.Definitions = extractDDMDefinitions(string(content))
+		return result, nil
+	}
+
 	// Parse the content into an AST. Parse always returns a non-nil AST and a nil
 	// error; malformed input is surfaced through ast.Diagnostics with real token
 	// positions rather than a returned error.

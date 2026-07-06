@@ -1,0 +1,10 @@
+DB: 000 FILE: 200  - ORDERBOOK                         DEFAULT SEQUENCE:
+TYPE: ADABAS
+
+T L DB Name                              F Leng  S D Remark
+- - -- --------------------------------  - ----  - - ------------------------
+  1 AA CUSTOMER-ID                       N    8  N U
+P 1 AB ORDERS
+  2 AC ORDER-DATE                        A    8  N
+  2 AD ORDER-AMOUNT                      P  9,2  N
+******DDM OUTPUT TERMINATED******

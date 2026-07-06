@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–11 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation and document outline**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, and `textDocument/documentSymbol` (FR-27) shipped in feature 11 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy, hover) remain unwired (`hover.go` is package-doc + TODO only).
+**Features 00–12 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, and hover**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, and `textDocument/hover` (FR-28) shipped in feature 12 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy) remain unwired.
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -71,8 +71,8 @@ logger)` serves JSON-RPC 2.0 over `Content-Length`-framed stdio (`go.lsp.dev/jso
 server enforces the `initialize → initialized → shutdown → exit` lifecycle; the `initialize` response
 advertises `textDocumentSync: Full`, `positionEncoding` (UTF-8 preferred, UTF-16 default — ADR-008), and
 the `definitionProvider`, `referencesProvider`, and `workspaceSymbolProvider` capabilities (feature 10)
-plus the `documentSymbolProvider` capability (feature 11) — a deliberately locked allow-list enforced by
-`TestInitialize`. Graceful degradation (FR-43): oversized files are skipped with
+plus the `documentSymbolProvider` capability (feature 11) and the `hoverProvider` capability (feature 12)
+— a deliberately locked allow-list enforced by `TestInitialize`. Graceful degradation (FR-43): oversized files are skipped with
 `SkipTooLarge`, excluded paths with `SkipExcluded`, unrecognized extensions processed as `ObjectUnknown`,
 and analyzer panics are recovered per-file without aborting the batch — every skip/recovery is logged to
 stderr. Per-request panic recovery returns a JSON-RPC `InternalError` and keeps the loop alive. SIGTERM
@@ -125,6 +125,33 @@ shared the URI→relPath logic across providers via a `uriToRelPath` helper, and
 misplaced `internal/analysis/natural/symbols.go` package-doc stub (the `model.Symbol`→`protocol`
 conversion is LSP-facing and lives in `internal/server/`). `FuzzDocumentSymbols` guards the converter
 against panics over degenerate trees and both encodings (FR-43).
+
+Feature 12 (hover) wires the **`textDocument/hover`** provider (FR-28) and, unplanned, adds a `.NSD` **DDM
+field parser** so the DDM hover card can show real fields (an approved scope change — see `tasks.md`).
+`internal/server/hover.go` holds the provider plus pure Markdown card builders: `buildModuleHover` (module
+name + object-type label + relative path + inbound-call count via reused `referenceSites` + a single
+outbound-dependency count restricted to calls/performs/includes), `buildSubroutineHover` (parameter
+interface from the target's `SectionKind == "parameter"` `Definitions`, with array dims and group nesting),
+`buildDDMHover` (view name + field list from the indexed DDM's `Definitions`, else an honest
+"unavailable" line), and the modeled-gap builders `buildUnresolvedHover`/`buildDynamicHover`/
+`buildAmbiguousHover` (distinct, no fabricated metadata — FR-17). `provideHover` snapshots `idx`/`res` under
+`RLock` and releases before I/O (F7), maps the cursor via `findCursorTarget`, and dispatches on the
+resolution outcome: a resolved module → module card; a `PERFORM` (inline same-file or external `.NSS`) →
+subroutine signature; a data-access DDM ref → DDM card (name-matched, `NameRange` highlighted); dynamic/
+unresolved/ambiguous → the honest message; empty-`Name` record-form sites and no-target/unreadable →
+`nil` (→ JSON `null`). The DDM parser (`internal/analysis/natural/ddm.go`, wired into `Analyze` via an
+early-return for `ObjectDDM`) is a dedicated **fixed-byte-offset line-scanner** for the exported DDM report
+format (T@0/L@2/DB@4/Name@7/F@41/Leng@43; verified in `.claude/knowledge/natural/ddm-format.md`): it emits
+`model.DataDefinition` values with verbatim `Type` (`N8`/`A50`/`P9,2`), group nesting by level containment,
+and a single unbounded `*` `Dimensions` entry for MU (`T=M`) and PE (`T=P`) fields; it skips `TYPE: SQL`
+DDMs, comment/header/terminator lines, and tolerates short/malformed rows without panicking (DB
+short-name/descriptor/suppression columns are dropped — not needed for name/type hover; a DDM's `Structure`
+stays nil, a documented deferral). Feature 12 also widened the CALLNAT/FETCH/RUN edge `Source` through the
+target name (parity with feature 10's PERFORM widening) so a cursor on the target resolves to the edge.
+**No `internal/model` change and no cache-format bump** (still `0.6.0`) — `Definitions` already persists;
+DDM fields ride the existing shape. `FuzzProvideHover` and `FuzzParseDDM` guard the new entry points
+(never panic — FR-43). Fixtures live under `internal/server/testdata/hover/` and
+`internal/analysis/natural/testdata/ddm/`.
 
 `internal/document/` (feature 04) is fully implemented. `Store` is a concurrency-safe in-memory map of
 open documents keyed by LSP URI; it re-analyzes content on `Open`/`Update` via an `AnalyzeFunc`
@@ -308,7 +335,8 @@ A single binary (`cmd/natural-lsp`) runs as a stdio LSP server. The intended pac
 - `internal/workspace/` — the cross-file symbol table (`index.go`) and its on-disk cache (`cache.go`).
 - `internal/analysis/` — `analyzer.go` defines the **Analyzer interface**; `analysis/natural/` is the parser-based
   implementation (lexer, recursive-descent parser, AST, call/data/SQL extraction, program-structure extraction
-  (hierarchical symbol tree), hover builders).
+  (hierarchical symbol tree), and the `.NSD` DDM field line-scanner (`ddm.go`)). The LSP-facing hover card
+  builders live in `internal/server/hover.go`, not here (presentation side of the Analyzer seam).
 
 **The Analyzer interface is the key seam.** The parser backend sits behind it so it can evolve (e.g. to a tree-sitter
 grammar) without touching the LSP layer. Keep LSP-facing code depending only on the interface, never on parser internals.

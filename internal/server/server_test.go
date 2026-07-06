@@ -484,7 +484,7 @@ func TestInitialize(t *testing.T) {
 					t.Errorf("positionEncoding = %v, want %q", caps["positionEncoding"], tc.expectedEncoding)
 				}
 
-				// Assert: the four navigation providers are advertised (feature 10, T3; feature 11, T3).
+				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6).
 				// These are intentional additions per the locked allow-list convention:
 				// when features add providers, TestInitialize is extended to assert them explicitly.
 				requiredProviders := []string{
@@ -492,17 +492,17 @@ func TestInitialize(t *testing.T) {
 					"referencesProvider",
 					"workspaceSymbolProvider",
 					"documentSymbolProvider",
+					"hoverProvider",
 				}
 				for _, providerFlag := range requiredProviders {
 					val, exists := caps[providerFlag]
 					if !exists || val == nil || val == false {
-						t.Errorf("%s = %v; want true (required by feature 10, T3)", providerFlag, val)
+						t.Errorf("%s = %v; want true (required by feature 10, T3 + feature 12, T6)", providerFlag, val)
 					}
 				}
 
 				// Assert: other feature provider flags are not advertised (they come in future features).
 				otherProviderFlags := []string{
-					"hoverProvider",
 					"codeLensProvider",
 				}
 				for _, flag := range otherProviderFlags {
@@ -2838,5 +2838,311 @@ END
 				t.Errorf("root symbol children do not include a subroutine; children kinds: %v", children)
 			}
 		}
+	}
+}
+
+// TestTextDocumentHoverBeforeInitialized pins the behavior of textDocument/hover
+// requests sent before the server is initialized (feature 12, T6 — RED phase).
+// The server must reject requests with ServerNotInitialized error code.
+func TestTextDocumentHoverBeforeInitialized(t *testing.T) {
+	// Arrange: send a textDocument/hover request BEFORE initialized
+	hoverID := jsonrpc2.NewNumberID(1)
+	hoverParams := jsonrpc2.RawMessage(`{
+		"textDocument": {"uri": "file:///workspace/test.NSP"},
+		"position": {"line": 0, "character": 0}
+	}`)
+	hoverCall := jsonrpc2.NewCall(hoverID, "textDocument/hover", hoverParams)
+
+	// After the error response, send a proper shutdown sequence
+	initID := jsonrpc2.NewNumberID(2)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{hoverCall, initCall, initNotif, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Read hover response (should be ServerNotInitialized error)
+	hoverBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse hover response: %v", err)
+	}
+	hoverMsg, err := jsonrpc2.DecodeMessage(hoverBody)
+	if err != nil {
+		t.Fatalf("failed to decode hover response: %v", err)
+	}
+	hoverResp, ok := hoverMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for hover, got %T", hoverMsg)
+	}
+
+	// Assert: response should have ServerNotInitialized error
+	if hoverResp.ID() != hoverID {
+		t.Errorf("hover response id = %v, want %v", hoverResp.ID(), hoverID)
+	}
+	if hoverResp.Err() == nil {
+		t.Errorf("hover response has no error; want ServerNotInitialized, got result: %s", hoverResp.Result())
+	} else {
+		errTyped, ok := hoverResp.Err().(*jsonrpc2.Error)
+		if !ok {
+			t.Errorf("hover response error is %T, not *jsonrpc2.Error: %v", hoverResp.Err(), hoverResp.Err())
+		} else if errTyped.Code != jsonrpc2.ServerNotInitialized {
+			t.Errorf("hover response error code = %v, want %v (ServerNotInitialized)", errTyped.Code, jsonrpc2.ServerNotInitialized)
+		}
+	}
+}
+
+// TestTextDocumentHoverInvalidParams pins the behavior of textDocument/hover
+// requests with malformed params (feature 12, T6 — RED phase).
+// The server must reject requests with InvalidParams error code when the
+// params cannot be unmarshaled into protocol.HoverParams.
+func TestTextDocumentHoverInvalidParams(t *testing.T) {
+	// Arrange: send initialize → initialized → hover with malformed params → shutdown
+	initID := jsonrpc2.NewNumberID(1)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	// Malformed hover params: pass a bare string instead of an object
+	// This should fail to unmarshal and trigger InvalidParams error
+	hoverID := jsonrpc2.NewNumberID(2)
+	hoverParams := jsonrpc2.RawMessage(`"not an object"`)
+	hoverCall := jsonrpc2.NewCall(hoverID, "textDocument/hover", hoverParams)
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{initCall, initNotif, hoverCall, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Skip initialize response
+	_, err = parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse initialize response: %v", err)
+	}
+
+	// Read hover response (should be InvalidParams error)
+	hoverBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse hover response: %v", err)
+	}
+	hoverMsg, err := jsonrpc2.DecodeMessage(hoverBody)
+	if err != nil {
+		t.Fatalf("failed to decode hover response: %v", err)
+	}
+	hoverResp, ok := hoverMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for hover, got %T", hoverMsg)
+	}
+
+	// Assert: response should have InvalidParams error
+	if hoverResp.ID() != hoverID {
+		t.Errorf("hover response id = %v, want %v", hoverResp.ID(), hoverID)
+	}
+	if hoverResp.Err() == nil {
+		t.Errorf("hover response has no error; want InvalidParams, got result: %s", hoverResp.Result())
+	} else {
+		errTyped, ok := hoverResp.Err().(*jsonrpc2.Error)
+		if !ok {
+			t.Errorf("hover response error is %T, not *jsonrpc2.Error: %v", hoverResp.Err(), hoverResp.Err())
+		} else if errTyped.Code != jsonrpc2.InvalidParams {
+			t.Errorf("hover response error code = %v, want %v (InvalidParams)", errTyped.Code, jsonrpc2.InvalidParams)
+		}
+	}
+}
+
+// TestTextDocumentHoverAfterInitialized pins the behavior of textDocument/hover
+// requests sent after initialization (feature 12, T6 — RED phase).
+// The server must route the request to a handler and return a Hover (or null) result.
+// Currently this test FAILS because:
+// 1. textDocument/hover is not routed in the dispatch switch (returns MethodNotFound).
+// 2. There is no provideHover handler function.
+func TestTextDocumentHoverAfterInitialized(t *testing.T) {
+	testCases := []struct {
+		name          string
+		hoverParams   string
+		expectNonNull bool // whether we expect a non-null Hover result
+		description   string
+	}{
+		{
+			name: "HoverAtValidPosition",
+			hoverParams: `{
+				"textDocument": {"uri": "file:///workspace/test.NSP"},
+				"position": {"line": 0, "character": 0}
+			}`,
+			expectNonNull: false, // no edges at that position in an empty file
+			description:   "hover should return null for a no-edge position",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: send initialize → initialized → hover → shutdown
+			initID := jsonrpc2.NewNumberID(1)
+			initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+			initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+			initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+			hoverID := jsonrpc2.NewNumberID(2)
+			hoverCall := jsonrpc2.NewCall(hoverID, "textDocument/hover", jsonrpc2.RawMessage(tc.hoverParams))
+
+			shutdownID := jsonrpc2.NewNumberID(3)
+			shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+			exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+			// Write requests as Content-Length-framed messages
+			var inBuf bytes.Buffer
+			for i, msg := range []jsonrpc2.Message{initCall, initNotif, hoverCall, shutdownCall, exitNotif} {
+				if err := writeFramedMessage(&inBuf, msg); err != nil {
+					t.Fatalf("failed to write framed message %d: %v", i, err)
+				}
+			}
+
+			// Create output buffer and logger
+			var outBuf bytes.Buffer
+			logBuf := &bytes.Buffer{}
+			logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+			// Act: run the server
+			cfg := config.Defaults()
+			az := &stubAnalyzer{}
+			err := Run(
+				context.Background(),
+				&inBuf,
+				&outBuf,
+				"0.0.0-test",
+				"/workspace",
+				cfg,
+				az,
+				logger,
+			)
+
+			// Assert: Run should complete without fatal error
+			if err != nil {
+				t.Fatalf("Run failed: %v", err)
+			}
+
+			// Parse framed responses
+			responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+			// Skip initialize response
+			_, err = parseFramedResponse(responseBuf)
+			if err != nil {
+				t.Fatalf("failed to parse initialize response: %v", err)
+			}
+
+			// Read hover response
+			hoverBody, err := parseFramedResponse(responseBuf)
+			if err != nil {
+				t.Fatalf("failed to parse hover response: %v", err)
+			}
+			hoverMsg, err := jsonrpc2.DecodeMessage(hoverBody)
+			if err != nil {
+				t.Fatalf("failed to decode hover response: %v", err)
+			}
+			hoverResp, ok := hoverMsg.(*jsonrpc2.Response)
+			if !ok {
+				t.Fatalf("expected *jsonrpc2.Response for hover, got %T", hoverMsg)
+			}
+
+			// Assert: response should have no error
+			if hoverResp.ID() != hoverID {
+				t.Errorf("hover response id = %v, want %v", hoverResp.ID(), hoverID)
+			}
+			if hoverResp.Err() != nil {
+				t.Errorf("hover response has error: %v; want Hover result or null", hoverResp.Err())
+			}
+
+			// For an empty file with no cursor target, null is expected
+			// When properly implemented with real file content, this should return a Hover object
+			if hoverResp.Result() == nil || string(hoverResp.Result()) == "null" {
+				// null result is acceptable (no hover at that position)
+				// This is the expected case for an empty workspace
+			} else {
+				// non-null result means a Hover object was returned
+				// Verify it's a valid Hover object (has Contents field)
+				var hoverObj map[string]interface{}
+				if err := json.Unmarshal(hoverResp.Result(), &hoverObj); err != nil {
+					t.Errorf("hover response result is not valid JSON: %v (result: %s)", err, string(hoverResp.Result()))
+				} else if _, hasContents := hoverObj["contents"]; !hasContents {
+					t.Errorf("hover response result does not have 'contents' field; got: %v", hoverObj)
+				}
+			}
+		})
 	}
 }

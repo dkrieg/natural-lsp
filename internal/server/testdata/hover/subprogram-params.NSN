@@ -1,0 +1,14 @@
+* T2 fixture: Subprogram with DEFINE DATA PARAMETER section
+* Exercises SymbolDataSection kind = PARAMETER + hierarchical parameter fields
+
+DEFINE DATA
+PARAMETER
+  1 IN-ID (N5)
+  1 OUT-RESULT
+    2 RES-CODE (N1)
+    2 RES-MSG (A50)
+END DEFINE
+
+WRITE 'Processing parameter'
+
+END

@@ -41,8 +41,12 @@ exported to files before it can be indexed.
 > on document/watched-file changes.
 > **Document outline is now implemented** (feature 11): the `textDocument/documentSymbol` provider (FR-27)
 > renders feature 09's hierarchical symbol tree as a nested `DocumentSymbol[]`, served from the open-document
-> buffer so it tracks unsaved edits. The remaining hover/completion/signature-help/call-hierarchy
-> LSP *providers* are not yet wired — this README describes the **target** feature set. There are no published binaries. Implemented
+> buffer so it tracks unsaved edits.
+> **Hover is now implemented** (feature 12): the `textDocument/hover` provider (FR-28) shows module
+> metadata (name, location, inbound/outbound counts), subroutine parameter signatures on `PERFORM`
+> targets, and DDM field details on data-access statements — the latter backed by a new `.NSD` DDM field
+> parser. The remaining completion/signature-help/call-hierarchy LSP *providers* are not yet wired — this
+> README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
 
 ---
@@ -57,11 +61,13 @@ The capabilities below define the **target** feature set for the first stable re
 - Find all references to a subroutine, program, or DDM field across the workspace — **shipped**
 - Workspace symbol search by program name or subroutine — **shipped**
 
-**Hover**
+**Hover** *(provider shipped — feature 12)*
 
-- Program metadata: module name, location, inbound call count
-- Subroutine signatures on `PERFORM` targets
-- DDM field names, types, and file associations on data access statements
+- Program metadata: module name, location, inbound call count (+ a single outbound-dependency count) — **shipped**
+- Subroutine signatures on `PERFORM` targets (inline and external `.NSS`), from the target's `PARAMETER` section — **shipped**
+- DDM field names and types on data-access statements, parsed from the referenced `.NSD` — **shipped**
+  (physical Adabas/IMS runtime metadata remains out of scope; an un-indexed DDM shows an honest
+  "unavailable" message rather than fabricated fields)
 
 **Document outline** *(provider shipped — feature 11)*
 
@@ -84,7 +90,7 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/definition` — **shipped** (feature 10)
 - `textDocument/references` — **shipped** (feature 10)
 - `workspace/symbol` — **shipped** (feature 10)
-- `textDocument/hover`
+- `textDocument/hover` — **shipped** (feature 12)
 - `textDocument/completion` (module names, subroutine names, DDM field names)
 - `textDocument/signatureHelp` (parameter interfaces at call sites)
 - `textDocument/callHierarchy` (incoming/outgoing call panels)
@@ -405,6 +411,7 @@ edge.
 | record `UPDATE` / `DELETE`    | Write relationship at the site, **no file name** (bound from the enclosing loop — resolution deferred, OQ-4) — **shipped** |
 | `DEFINE DATA`                 | Variable declarations + parameter interfaces (level/type/dimensions/section kind, REDEFINE nesting) — **shipped** |
 | `DEFINE WORK FILE`            | Work-file definitions (number + name; dynamic names recorded verbatim) — **shipped** |
+| `.NSD` DDM files              | Field name/type/level, group nesting, MU/PE arrays — parsed from the exported DDM report into `FileAnalysis.Definitions` (fixed-column line-scanner) — **shipped** (feature 12; DB short-name/descriptor/suppression columns dropped, SQL DDMs out of scope) |
 
 Scope is Adabas-style data access against DDMs.
 
@@ -595,8 +602,10 @@ When you encounter a Natural construct that the analyzer handles incorrectly:
   workspace is treated as a single flat namespace, and modules sharing a name across libraries cannot be disambiguated.
 - **Dynamic `CALLNAT #VARIABLE`** calls cannot be statically resolved. The call site is retained so they appear in
   find-references and outline rather than disappearing silently.
-- **Adabas verbs** (`READ`, `FIND`, `GET` against Adabas files) are extracted structurally but Adabas DDM metadata is
-  not resolved. IMS segment metadata requires external configuration.
+- **Adabas verbs** (`READ`, `FIND`, `GET` against Adabas files) are extracted structurally, and DDM **field
+  definitions** are parsed from exported `.NSD` files (feature 12) so hover can show field name/type. The
+  **physical/runtime** Adabas DDM metadata (occurrence counts, storage) is still not resolved, and cross-file
+  resolution of DDM references is future work. IMS segment metadata requires external configuration.
 - **Natural preprocessor macros** and code generation constructs may not extract correctly.
 - **Column-sensitive syntax** (fixed-format Natural) is handled for common patterns; unusual legacy formatting may
   produce incomplete extraction rather than errors.
