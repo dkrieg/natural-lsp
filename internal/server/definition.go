@@ -39,16 +39,12 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 		return nil, nil
 	}
 
-	// Convert LSP URI to relative file path
-	absPath := params.TextDocument.URI.FsPath()
-	relPath, err := filepath.Rel(hctx.root, absPath)
+	// Convert LSP URI to workspace-relative path (forward-slash index key convention)
+	absPath, relPath, err := uriToRelPath(hctx.root, params.TextDocument.URI)
 	if err != nil {
 		// URI outside workspace root — no definition
 		return nil, nil
 	}
-
-	// Normalize path separators for consistency with index keys
-	relPath = strings.ReplaceAll(relPath, "\\", "/")
 
 	// Get the source file's analysis from the index
 	sourceFA, ok := idx.Get(relPath)
@@ -155,6 +151,19 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 
 	// Unresolved case (dynamic or no-target): return empty (FR-17)
 	return nil, nil
+}
+
+// uriToRelPath converts an LSP file URI to an (absPath, relPath) pair relative
+// to the workspace root. relPath uses forward slashes (index key convention).
+// Returns a non-nil error if the URI is outside the workspace root.
+func uriToRelPath(root string, fileURI uri.URI) (absPath, relPath string, err error) {
+	absPath = fileURI.FsPath()
+	relPath, err = filepath.Rel(root, absPath)
+	if err != nil {
+		return "", "", err
+	}
+	relPath = strings.ReplaceAll(relPath, "\\", "/")
+	return absPath, relPath, nil
 }
 
 // definitionLocation builds a protocol.Location for a resolved definition.

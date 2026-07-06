@@ -44,16 +44,12 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 		return nil, nil
 	}
 
-	// Convert LSP URI to relative file path
-	absPath := params.TextDocument.URI.FsPath()
-	relPath, err := filepath.Rel(hctx.root, absPath)
+	// Convert LSP URI to workspace-relative path (forward-slash index key convention)
+	absPath, relPath, err := uriToRelPath(hctx.root, params.TextDocument.URI)
 	if err != nil {
 		// URI outside workspace root — no references
 		return nil, nil
 	}
-
-	// Normalize path separators for consistency with index keys
-	relPath = strings.ReplaceAll(relPath, "\\", "/")
 
 	// Get the source file's analysis from the index
 	sourceFA, ok := idx.Get(relPath)

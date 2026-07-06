@@ -6,6 +6,7 @@ package natural
 import (
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"natural-lsp/internal/model"
 )
@@ -96,7 +97,7 @@ func extractStructure(path string, prog *Program, defs []model.DataDefinition, a
 
 		sectionSym := model.Symbol{
 			Kind: model.SymbolDataSection,
-			Name: section.Kind, // Use the section kind verbatim (e.g., "local", "parameter")
+			Name: strings.ToUpper(section.Kind), // Uppercase to match model's NAME CONVENTION (e.g., "LOCAL", "PARAMETER")
 			Range: model.Range{
 				Start: section.StartPos,
 				End:   section.EndPos,
