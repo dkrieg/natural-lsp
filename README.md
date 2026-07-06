@@ -38,7 +38,10 @@ exported to files before it can be indexed.
 > **Navigation & symbol search is now implemented** (feature 10): the first shipped LSP providers —
 > `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26).
 > The running server now builds and holds a workspace index + resolution set and updates them incrementally
-> on document/watched-file changes. The remaining outline (`documentSymbol`)/hover/completion/call-hierarchy
+> on document/watched-file changes.
+> **Document outline is now implemented** (feature 11): the `textDocument/documentSymbol` provider (FR-27)
+> renders feature 09's hierarchical symbol tree as a nested `DocumentSymbol[]`, served from the open-document
+> buffer so it tracks unsaved edits. The remaining hover/completion/signature-help/call-hierarchy
 > LSP *providers* are not yet wired — this README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
 
@@ -60,11 +63,12 @@ The capabilities below define the **target** feature set for the first stable re
 - Subroutine signatures on `PERFORM` targets
 - DDM field names, types, and file associations on data access statements
 
-**Document outline**
+**Document outline** *(provider shipped — feature 11)*
 
-- Full symbol tree: `DEFINE DATA` sections, subroutines, maps, external calls — the underlying
-  hierarchical symbol model is **shipped** (feature 09, `FileAnalysis.Structure`); the
-  `textDocument/documentSymbol` provider that renders it is not yet wired.
+- Full symbol tree: `DEFINE DATA` sections, subroutines, maps, DDM references — the underlying
+  hierarchical symbol model (feature 09, `FileAnalysis.Structure`) and the `textDocument/documentSymbol`
+  provider that renders it as a nested `DocumentSymbol[]` are both **shipped**. The outline is served from
+  the open-document buffer, so it reflects unsaved edits.
 
 **Workspace indexing** *(full implementation shipped)*
 
@@ -84,7 +88,7 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/completion` (module names, subroutine names, DDM field names)
 - `textDocument/signatureHelp` (parameter interfaces at call sites)
 - `textDocument/callHierarchy` (incoming/outgoing call panels)
-- `textDocument/documentSymbol`
+- `textDocument/documentSymbol` — **shipped** (feature 11)
 - `textDocument/codeLens` (call counts, table write summaries)
 - `window/workDoneProgress` (indexing progress on first run)
 
@@ -437,8 +441,8 @@ whole construct) and a `SelectionRange` (the name token), mirroring LSP `Documen
 Children are deterministically source-ordered; fields are grouped into their owning section by source-range
 containment (so multiple same-kind sections keep their own fields). Deferred: inline-vs-external subroutine
 distinction, type-specific members for helproutines/classes/functions, and `INCLUDE` copycode as an outline
-node. The `workspace/symbol` provider over this tree is **shipped** (feature 10); the per-file
-`textDocument/documentSymbol` (outline) provider that renders it is not yet wired.
+node. Both the `workspace/symbol` provider over this tree (feature 10) and the per-file
+`textDocument/documentSymbol` (outline) provider that renders it (feature 11) are **shipped**.
 
 ### Program structure
 
@@ -471,6 +475,7 @@ internal/
     definition.go          textDocument/definition provider
     references.go          textDocument/references provider (reverse sweep)
     workspace_symbols.go   workspace/symbol provider (Structure name search)
+    document_symbols.go    textDocument/documentSymbol provider (outline; store-first)
     degradation.go         per-file analyze + graceful-degradation helpers
     handlers.go            (stub) package doc + TODO
     progress.go            (stub) window/workDoneProgress helpers — TODO
@@ -497,7 +502,6 @@ internal/
     natural/
       analyzer.go          Parser-based extraction pipeline (hand-written
                            lexer + recursive-descent parser)
-      symbols.go           Map FileAnalysis → LSP SymbolInformation
       hover.go             Hover content builders
       calls.go             CALLNAT / FETCH / RUN / PERFORM extraction
                            (produces unresolved references; see resolution.go)
