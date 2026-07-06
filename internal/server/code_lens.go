@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -10,7 +11,72 @@ import (
 	"go.lsp.dev/uri"
 
 	"natural-lsp/internal/model"
+	"natural-lsp/internal/workspace"
 )
+
+// buildCallCountLens returns a code lens showing the number of resolved inbound
+// references to an object (feature 13, T3, Story 1).
+//
+// Parameters:
+//   - idx: the workspace index for counting references
+//   - res: the resolution set for matching resolved targets
+//   - root: the workspace root (absolute path, unused for counting)
+//   - targetPath: workspace-relative path of the target definition
+//   - targetName: the target object name
+//   - targetType: the target object type
+//   - sel: the object root's SelectionRange (zero-width point at object start)
+//   - docURI: the document URI for the command arguments
+//   - content: the file content for range conversion
+//   - enc: the negotiated PositionEncodingKind
+//
+// Returns a CodeLens with:
+//   - Range = toProtocolRange(sel, content, enc)
+//   - Command.Title = pluralized count ("0 references", "1 reference", "N references")
+//   - Command.Command = "editor.action.showReferences"
+//   - Command.Arguments = [uri, position, []Location] where []Location are the caller sites
+//
+// A zero-count target still emits a lens (not suppressed) per Story 1 AC #1.
+//
+// No I/O, no locks — a pure function that uses idx/res passed by the caller.
+func buildCallCountLens(idx *workspace.Index, res *workspace.ResolutionSet, root string, targetPath string, targetName string, targetType model.ObjectType, sel model.Range, docURI uri.URI, content string, enc protocol.PositionEncodingKind) *protocol.CodeLens {
+	// Compute caller locations using referenceSites (same sweep as provideReferences uses).
+	locations := referenceSites(idx, res, root, targetPath, targetName, targetType, false, enc)
+
+	// Count inbound references
+	count := len(locations)
+
+	// Build the code lens Range from sel (the object root's SelectionRange).
+	lensRange := toProtocolRange(sel, content, enc)
+
+	// Build the title with correct pluralization
+	var title string
+	if count == 1 {
+		title = "1 reference"
+	} else {
+		title = strings.Join([]string{fmt.Sprintf("%d", count), "references"}, " ")
+	}
+
+	// Build the showReferences command.
+	// Command.Arguments is [uri, position, locations].
+	// position is the start of the lens Range (where the code lens appears).
+	position := lensRange.Start
+
+	// Convert arguments to []protocol.LSPAny via mustLSPAny helper.
+	args := []protocol.LSPAny{
+		mustLSPAny(docURI),
+		mustLSPAny(position),
+		mustLSPAny(locations),
+	}
+
+	return &protocol.CodeLens{
+		Range: lensRange,
+		Command: protocol.Command{
+			Title:     title,
+			Command:   "editor.action.showReferences",
+			Arguments: args,
+		},
+	}
+}
 
 // buildWriteSummaryLens returns a code lens summarizing the DDMs/files an object
 // writes to (feature 13, T4, Story 2).

@@ -11,7 +11,9 @@ import (
 	"go.lsp.dev/uri"
 
 	"natural-lsp/internal/analysis/natural"
+	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
+	"natural-lsp/internal/workspace"
 )
 
 // TestBuildWriteSummaryLens_NamedWrites tests the pure builder for a write-summary
@@ -241,5 +243,187 @@ func TestBuildWriteSummaryLens_EmptyNameGapHandled(t *testing.T) {
 	// Assert: command arguments have the correct length (3 items)
 	if lens.Command.Arguments == nil || len(lens.Command.Arguments) != 3 {
 		t.Errorf("expected 3 Arguments [uri, position, []Location], got %d", len(lens.Command.Arguments))
+	}
+}
+
+// TestBuildCallCountLens tests the pure builder for a call-count code lens
+// (feature 13, T3, Story 1, AC #1–#2).
+//
+// Exercises: building a lens with a pluralized count (0 references, 1 reference,
+// N references), using the object root SelectionRange as the Range, building the
+// Command via showReferencesCommand (or equivalent) with the callers' Locations,
+// and ensuring that a zero-count target still emits a lens (not suppressed).
+func TestBuildCallCountLens(t *testing.T) {
+	testdataDir := filepath.Join("testdata", "references", "multi-caller")
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing all files in the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{} // Empty config for flat-namespace resolution
+
+	files := []string{"SHARED.NSN", "CALLER1.NSP", "CALLER2.NSP", "CALLER3.NSP", "CALLER_DYN.NSP"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdataDir, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "references", "multi-caller", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute the resolution set over the index
+	resSet := workspace.Resolve(idx, &cfg)
+
+	tests := []struct {
+		name            string
+		targetPath      string // workspace-relative path of the target definition
+		targetName      string // target object name
+		targetType      model.ObjectType
+		expectTitle     string // expected Command.Title
+		expectLocCount  int    // expected number of Locations in Arguments[2]
+		expectCommandID string // expected Command.Command
+		expectNil       bool   // whether the lens should be nil
+	}{
+		{
+			name:            "three_static_callers",
+			targetPath:      "testdata/references/multi-caller/SHARED.NSN",
+			targetName:      "SHARED-SUB",
+			targetType:      model.ObjectSubprogram,
+			expectTitle:     "3 references",
+			expectLocCount:  3,
+			expectCommandID: "editor.action.showReferences",
+			expectNil:       false,
+		},
+		{
+			name:            "one_reference_singular",
+			targetPath:      "testdata/references/multi-caller/CALLER1.NSP",
+			targetName:      "CALLER1",
+			targetType:      model.ObjectProgram,
+			expectTitle:     "1 reference",
+			expectLocCount:  1,
+			expectCommandID: "editor.action.showReferences",
+			expectNil:       false,
+		},
+		{
+			name:            "zero_references_not_suppressed",
+			targetPath:      "testdata/references/multi-caller/NONEXISTENT.NSP",
+			targetName:      "DOESNOTEXIST",
+			targetType:      model.ObjectProgram,
+			expectTitle:     "0 references",
+			expectLocCount:  0,
+			expectCommandID: "editor.action.showReferences",
+			expectNil:       false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Get the target file's analysis
+			targetFA, ok := idx.Get(tc.targetPath)
+			if !ok && tc.expectNil {
+				// Expected: if target doesn't exist and we expect nil, skip
+				t.Logf("target %s not in index (as expected for zero-reference case)", tc.targetPath)
+				return
+			}
+
+			// For valid targets, expect Structure to be present
+			if ok && targetFA.Structure == nil && !tc.expectNil {
+				t.Fatalf("target file has nil Structure")
+			}
+
+			// Get the root SelectionRange (for valid targets)
+			var root *model.Symbol
+			if ok {
+				root = targetFA.Structure
+			} else {
+				// For zero-reference case, create a synthetic root
+				root = &model.Symbol{
+					Kind: model.SymbolObject,
+					Name: tc.targetName,
+					Range: model.Range{
+						Start: model.Position{Line: 1, Column: 1},
+						End:   model.Position{Line: 10, Column: 1},
+					},
+					SelectionRange: model.Range{
+						Start: model.Position{Line: 1, Column: 1},
+						End:   model.Position{Line: 1, Column: 1},
+					},
+				}
+			}
+
+			// Read the target file content (or use a synthetic one for zero-count)
+			var fileContent []byte
+			if ok {
+				absPath := filepath.Join(workspaceRoot, tc.targetPath)
+				var err error
+				fileContent, err = os.ReadFile(absPath)
+				if err != nil {
+					t.Fatalf("failed to read target file: %v", err)
+				}
+			} else {
+				// Synthetic content for zero-reference test
+				fileContent = []byte("DEFINE PROGRAM TEST\nEND")
+			}
+
+			// Build the document URI
+			fileURI := uri.File(filepath.Join(workspaceRoot, tc.targetPath))
+
+			// Act: build the call-count lens
+			lens := buildCallCountLens(idx, resSet, workspaceRoot, tc.targetPath, tc.targetName, tc.targetType, root.SelectionRange, fileURI, string(fileContent), protocol.PositionEncodingKindUTF8)
+
+			// Assert: nil vs. non-nil expectation
+			if tc.expectNil {
+				if lens != nil {
+					t.Errorf("expected nil lens, got non-nil: %+v", lens)
+				}
+				return
+			}
+
+			if lens == nil {
+				t.Fatal("expected non-nil lens but got nil")
+			}
+
+			// Assert: lens Range matches the root SelectionRange
+			expectedRange := toProtocolRange(root.SelectionRange, string(fileContent), protocol.PositionEncodingKindUTF8)
+			if lens.Range.Start != expectedRange.Start || lens.Range.End != expectedRange.End {
+				t.Errorf("lens Range mismatch: got %+v, expected %+v", lens.Range, expectedRange)
+			}
+
+			// Assert: Command.Title has correct pluralization
+			if lens.Command.Title != tc.expectTitle {
+				t.Errorf("Command.Title mismatch: got %q, expected %q", lens.Command.Title, tc.expectTitle)
+			}
+
+			// Assert: Command.Command is "editor.action.showReferences"
+			if lens.Command.Command != tc.expectCommandID {
+				t.Errorf("Command.Command mismatch: got %q, expected %q", lens.Command.Command, tc.expectCommandID)
+			}
+
+			// Assert: Command.Arguments has exactly 3 items [uri, position, []Location]
+			if lens.Command.Arguments == nil || len(lens.Command.Arguments) != 3 {
+				t.Errorf("Command.Arguments malformed: expected exactly 3 items, got %d", len(lens.Command.Arguments))
+			}
+
+			// Assert: the argument count matches expected locations
+			// (Arguments[2] is the []Location; we can't easily unmarshal it from LSPAny,
+			// but we can verify that the list has the expected length by re-calling referenceSites)
+			actualLocs := referenceSites(idx, resSet, workspaceRoot, tc.targetPath, tc.targetName, tc.targetType, false, protocol.PositionEncodingKindUTF8)
+			if len(actualLocs) != tc.expectLocCount {
+				t.Errorf("Location count mismatch: got %d, expected %d", len(actualLocs), tc.expectLocCount)
+			}
+		})
 	}
 }
