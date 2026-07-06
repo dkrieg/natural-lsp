@@ -108,7 +108,8 @@ func buildWatchedFilesRegisterOptions(extensions []string) (protocol.LSPAny, err
 // Capabilities advertised here form a deliberately locked allow-list enforced
 // by TestInitialize. Feature 10 (T3) adds the three navigation providers:
 // definitionProvider, referencesProvider, workspaceSymbolProvider (each true).
-// When features 09, 11–13 add further providers (hover, document symbols, …),
+// Feature 11 (T3) adds documentSymbolProvider (true).
+// When features 12–13 add further providers (hover, completion, …),
 // they MUST update TestInitialize to extend the allow-list, making additions explicit.
 func handleInitialize(params protocol.InitializeParams, version string) ([]byte, protocol.PositionEncodingKind, bool, error) {
 	// Negotiate position encoding: prefer UTF-8 if offered, else fall back to UTF-16.
@@ -131,6 +132,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 
 	// Intentional minimal capability set — see comment above.
 	// Feature 10, T3: advertise the three navigation providers (definition, references, workspace symbol).
+	// Feature 11, T3: advertise documentSymbolProvider.
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
 			TextDocumentSync:        protocol.TextDocumentSyncKindFull,
@@ -138,6 +140,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 			DefinitionProvider:      protocol.Boolean(true),
 			ReferencesProvider:      protocol.Boolean(true),
 			WorkspaceSymbolProvider: protocol.Boolean(true),
+			DocumentSymbolProvider:  protocol.Boolean(true),
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",
@@ -709,6 +712,38 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						return
 					}
 					respResult = symbolJSON
+				}
+
+			case "textDocument/documentSymbol":
+				// Feature 11, T3: document outline handler.
+				// Gate on stateInitialized; decode DocumentSymbolParams; call provideDocumentSymbols.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.DocumentSymbolParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid document symbol params: %v", err))
+					return
+				}
+				// Call the provider function.
+				docSymbols, err := provideDocumentSymbols(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: docSymbols may be nil (empty) for a not-found case.
+				if docSymbols == nil {
+					respResult = []byte(`null`)
+				} else {
+					// Marshal the document symbol slice as JSON.
+					docSymbolJSON, marshalErr := json.Marshal(docSymbols)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal document symbols: %v", marshalErr))
+						return
+					}
+					respResult = docSymbolJSON
 				}
 
 			default:

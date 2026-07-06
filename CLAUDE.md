@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–10 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **Navigation & symbol search (feature 10) is the first shipped LSP provider layer**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) are wired and advertised; the running server now builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (document outline / `textDocument/documentSymbol`, completion, signature help, call hierarchy, hover) remain unwired (`hover.go`, `symbols.go` are package-doc + TODO only).
+**Features 00–11 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation and document outline**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, and `textDocument/documentSymbol` (FR-27) shipped in feature 11 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy, hover) remain unwired (`hover.go` is package-doc + TODO only).
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -70,8 +70,9 @@ retains the edges it could extract (FR-43). Fixtures live under `testdata/calls/
 logger)` serves JSON-RPC 2.0 over `Content-Length`-framed stdio (`go.lsp.dev/jsonrpc2` v1.0.0). The
 server enforces the `initialize → initialized → shutdown → exit` lifecycle; the `initialize` response
 advertises `textDocumentSync: Full`, `positionEncoding` (UTF-8 preferred, UTF-16 default — ADR-008), and
-(feature 10) the `definitionProvider`, `referencesProvider`, and `workspaceSymbolProvider` capabilities —
-a deliberately locked allow-list enforced by `TestInitialize`. Graceful degradation (FR-43): oversized files are skipped with
+the `definitionProvider`, `referencesProvider`, and `workspaceSymbolProvider` capabilities (feature 10)
+plus the `documentSymbolProvider` capability (feature 11) — a deliberately locked allow-list enforced by
+`TestInitialize`. Graceful degradation (FR-43): oversized files are skipped with
 `SkipTooLarge`, excluded paths with `SkipExcluded`, unrecognized extensions processed as `ObjectUnknown`,
 and analyzer panics are recovered per-file without aborting the batch — every skip/recovery is logged to
 stderr. Per-request panic recovery returns a JSON-RPC `InternalError` and keeps the loop alive. SIGTERM
@@ -105,6 +106,25 @@ returning object roots and subroutines as `SymbolInformation`). This feature mad
 change and no cache-format bump** (still `0.6.0`) — server capabilities/wiring only. The feature-06 `PERFORM`
 edge `Source` was widened to span through the target name so a cursor on the target resolves to the edge.
 `FuzzPositionConversion`, `FuzzCursorLookup`, and `FuzzProvideDefinition` guard the primitives (FR-43).
+
+Feature 11 (document outline) adds the **`textDocument/documentSymbol`** provider (FR-27) — provider
+wiring only, rendering feature 09's `FileAnalysis.Structure *model.Symbol` tree as a hierarchical LSP
+`DocumentSymbol[]`. `internal/server/document_symbols.go` holds a pure recursive converter
+(`symbolToDocumentSymbol`): it maps each `model.SymbolKind` to a `protocol.SymbolKind`
+(`SymbolObject→Module`, `SymbolSubroutine→Function`, `SymbolMap→Object`, `SymbolDataSection→Namespace`,
+`SymbolDataField→Field`, `SymbolDDMReference→Struct`, unknown→`Object` — never drops a node, FR-43),
+converts `Range`/`SelectionRange` via `toProtocolRange` (ADR-008), and recurses into `Children` in the
+tree's source order. The `provideDocumentSymbols` handler serves the **open-document buffer first**
+(`document.Store.Get` → the current, possibly-unsaved `Analysis.Structure`, so the outline tracks live
+edits — Story 2), falling back to the on-disk index (`idx` snapshot under `RLock`, released before
+`os.ReadFile` — F7) only when the document is not open; a missing/nil/unreadable target returns
+`nil, nil` (empty outline, no error). This feature made **no `internal/model` change and no cache-format
+bump** (still `0.6.0`) — server capabilities/wiring only. It also relocated data-section symbol-name
+uppercasing into `structure.go` (aligning section names with the model's uppercase name convention),
+shared the URI→relPath logic across providers via a `uriToRelPath` helper, and deleted the stale,
+misplaced `internal/analysis/natural/symbols.go` package-doc stub (the `model.Symbol`→`protocol`
+conversion is LSP-facing and lives in `internal/server/`). `FuzzDocumentSymbols` guards the converter
+against panics over degenerate trees and both encodings (FR-43).
 
 `internal/document/` (feature 04) is fully implemented. `Store` is a concurrency-safe in-memory map of
 open documents keyed by LSP URI; it re-analyzes content on `Open`/`Update` via an `AnalyzeFunc`

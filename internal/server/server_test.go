@@ -484,13 +484,14 @@ func TestInitialize(t *testing.T) {
 					t.Errorf("positionEncoding = %v, want %q", caps["positionEncoding"], tc.expectedEncoding)
 				}
 
-				// Assert: the three navigation providers are advertised (feature 10, T3).
+				// Assert: the four navigation providers are advertised (feature 10, T3; feature 11, T3).
 				// These are intentional additions per the locked allow-list convention:
 				// when features add providers, TestInitialize is extended to assert them explicitly.
 				requiredProviders := []string{
 					"definitionProvider",
 					"referencesProvider",
 					"workspaceSymbolProvider",
+					"documentSymbolProvider",
 				}
 				for _, providerFlag := range requiredProviders {
 					val, exists := caps[providerFlag]
@@ -502,7 +503,6 @@ func TestInitialize(t *testing.T) {
 				// Assert: other feature provider flags are not advertised (they come in future features).
 				otherProviderFlags := []string{
 					"hoverProvider",
-					"documentSymbolProvider",
 					"codeLensProvider",
 				}
 				for _, flag := range otherProviderFlags {
@@ -2605,5 +2605,238 @@ END
 	// Verify that the change is reflected: either the count changed, or the location changed
 	if locsAfter > 0 || (locsBefore == 0 && locsAfter > 0) {
 		t.Logf("✓ Incremental update flipped definition: BEFORE=%d locs, AFTER=%d locs", locsBefore, locsAfter)
+	}
+}
+
+// TestDocumentSymbolEndToEnd tests the textDocument/documentSymbol request handler (feature 11, T3).
+// The server advertises documentSymbolProvider and routes textDocument/documentSymbol requests to a
+// handler that returns a hierarchical DocumentSymbol[] reflecting the file's structure (data sections,
+// subroutines, maps, DDM references).
+//
+// The test:
+//  1. Sends initialize → initialized (like TestFramedTransport)
+//  2. Opens a fixture file with DEFINE DATA (sections and fields) + DEFINE SUBROUTINE
+//  3. Sends textDocument/documentSymbol for that file
+//  4. Asserts the response is a non-empty DocumentSymbol[] with hierarchical nesting
+//     (object root with children: data sections with field children, subroutines, etc.)
+func TestDocumentSymbolEndToEnd(t *testing.T) {
+	// Arrange: build the initialize request
+	initID := jsonrpc2.NewNumberID(1)
+	initParamsJSON := `{
+		"processId": 1234,
+		"rootPath": "/workspace",
+		"capabilities": {}
+	}`
+	initCall := jsonrpc2.NewCall(initID, "initialize", jsonrpc2.RawMessage(initParamsJSON))
+
+	// Build the initialized notification
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	// Build the didOpen notification with a fixture that has data sections and subroutines
+	// (mirrors the feature-09 structure fixture 01-program-full.NSP)
+	openedContent := `* T3 fixture: Program with data section and subroutine for document outline
+DEFINE DATA
+LOCAL
+  1 EMPLOYEE-REC
+    2 EMP-ID (N5)
+    2 EMP-NAME (A40)
+  1 EMP-ID-ALT REDEFINE EMP-ID (A5)
+END DEFINE
+
+DEFINE SUBROUTINE PROCESS-EMP
+  WRITE 'Processing employee'
+END-SUBROUTINE
+
+END
+`
+	didOpenParams := map[string]interface{}{
+		"textDocument": map[string]interface{}{
+			"uri":        "file:///workspace/TestProg.NSP",
+			"languageId": "natural",
+			"version":    1,
+			"text":       openedContent,
+		},
+	}
+	didOpenParamsJSON, err := json.Marshal(didOpenParams)
+	if err != nil {
+		t.Fatalf("failed to marshal didOpen params: %v", err)
+	}
+	didOpenNotif := jsonrpc2.NewNotification("textDocument/didOpen", jsonrpc2.RawMessage(didOpenParamsJSON))
+
+	// Build the documentSymbol request for the opened file
+	docSymbolID := jsonrpc2.NewNumberID(2)
+	docSymbolParams := map[string]interface{}{
+		"textDocument": map[string]interface{}{
+			"uri": "file:///workspace/TestProg.NSP",
+		},
+	}
+	docSymbolParamsJSON, err := json.Marshal(docSymbolParams)
+	if err != nil {
+		t.Fatalf("failed to marshal documentSymbol params: %v", err)
+	}
+	docSymbolCall := jsonrpc2.NewCall(docSymbolID, "textDocument/documentSymbol", jsonrpc2.RawMessage(docSymbolParamsJSON))
+
+	// Build the shutdown request
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	// Build the exit notification
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write all messages as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{
+		initCall,
+		initNotif,
+		didOpenNotif,
+		docSymbolCall,
+		shutdownCall,
+		exitNotif,
+	} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server with the message sequence
+	cfg := config.Defaults()
+	az := natural.New(nil)
+	err = Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse responses: initialize, documentSymbol, shutdown
+	output := outBuf.String()
+	responseBuf := bytes.NewBuffer([]byte(output))
+
+	// Extract the initialize response (first framed message)
+	initRespBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse initialize response: %v", err)
+	}
+	initRespMsg, err := jsonrpc2.DecodeMessage(initRespBody)
+	if err != nil {
+		t.Fatalf("failed to decode initialize response: %v", err)
+	}
+	initResp, ok := initRespMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for initialize, got %T", initRespMsg)
+	}
+	if initResp.Err() != nil {
+		t.Fatalf("initialize response has error: %v", initResp.Err())
+	}
+
+	// Verify initialize response includes documentSymbolProvider capability (feature 11, T3 assertion)
+	var initResult map[string]interface{}
+	if err := json.Unmarshal(initResp.Result(), &initResult); err != nil {
+		t.Fatalf("failed to unmarshal initialize result: %v", err)
+	}
+	caps, ok := initResult["capabilities"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("capabilities missing or wrong type in initialize result")
+	}
+
+	// ASSERTION 1: documentSymbolProvider must be advertised (T3 requirement)
+	if val, exists := caps["documentSymbolProvider"]; !exists || val == nil || val == false {
+		t.Errorf("documentSymbolProvider = %v; want true (feature 11, T3)", val)
+	}
+
+	// Extract the documentSymbol response (second framed message after didOpen notification)
+	docSymbolRespBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse documentSymbol response: %v", err)
+	}
+	docSymbolRespMsg, err := jsonrpc2.DecodeMessage(docSymbolRespBody)
+	if err != nil {
+		t.Fatalf("failed to decode documentSymbol response: %v (body: %q)", err, docSymbolRespBody)
+	}
+	docSymbolResp, ok := docSymbolRespMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for documentSymbol, got %T", docSymbolRespMsg)
+	}
+	if docSymbolResp.Err() != nil {
+		t.Fatalf("documentSymbol response has error: %v", docSymbolResp.Err())
+	}
+
+	// ASSERTION 2: documentSymbol result must be a non-empty array of DocumentSymbol
+	// The response must be a hierarchical DocumentSymbol[] where the first element
+	// is the object root (name = "TestProg", kind = "Module" or equiv) with Children
+	// that include the data section and subroutine.
+	if docSymbolResp.Result() == nil {
+		t.Fatalf("documentSymbol response has no result")
+	}
+
+	var docSymbols []map[string]interface{}
+	if err := json.Unmarshal(docSymbolResp.Result(), &docSymbols); err != nil {
+		t.Fatalf("failed to unmarshal documentSymbol result: %v (result: %q)", err, string(docSymbolResp.Result()))
+	}
+
+	if len(docSymbols) == 0 {
+		t.Errorf("documentSymbol returned empty array; expected at least 1 element (object root with children)")
+	}
+
+	if len(docSymbols) > 0 {
+		rootSym := docSymbols[0]
+		rootName, ok := rootSym["name"].(string)
+		if !ok {
+			t.Errorf("root symbol name missing or not string: %v", rootSym["name"])
+		} else if rootName != "TestProg" {
+			t.Errorf("root symbol name = %q; want 'TestProg'", rootName)
+		}
+
+		// ASSERTION 3: root must have Children (data section + subroutine)
+		children, ok := rootSym["children"].([]interface{})
+		if !ok || len(children) == 0 {
+			t.Errorf("root symbol has no children or children not array: %v", rootSym["children"])
+		} else {
+			// Verify that at least one child is a data section and one is a subroutine
+			// We expect: SymbolDataSection (kind=protocol.SymbolKindNamespace=3) with SymbolDataField children,
+			// and SymbolSubroutine (kind=protocol.SymbolKindFunction=12).
+			// LSP DocumentSymbol.Kind is numeric (protocol.SymbolKind), marshaled as float64 in JSON.
+			hasDataSection := false
+			hasSubroutine := false
+			for _, child := range children {
+				childMap, ok := child.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				// kind is a float64 (protocol.SymbolKind numeric value)
+				kind, ok := childMap["kind"].(float64)
+				if !ok {
+					continue
+				}
+				// protocol.SymbolKindNamespace = 3 (data section)
+				if kind == float64(protocol.SymbolKindNamespace) {
+					hasDataSection = true
+				}
+				// protocol.SymbolKindFunction = 12 (subroutine)
+				if kind == float64(protocol.SymbolKindFunction) {
+					hasSubroutine = true
+				}
+			}
+			if !hasDataSection {
+				t.Errorf("root symbol children do not include a data-section; children kinds: %v", children)
+			}
+			if !hasSubroutine {
+				t.Errorf("root symbol children do not include a subroutine; children kinds: %v", children)
+			}
+		}
 	}
 }

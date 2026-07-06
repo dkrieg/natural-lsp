@@ -211,24 +211,24 @@ func TestStdioHandshake(t *testing.T) {
 			t.Errorf("positionEncoding has unexpected type %T", caps["positionEncoding"])
 		}
 
-		// Assert: feature 10 (T3) navigation providers are advertised (FR-25, FR-26, FR-27)
-		// definitionProvider, referencesProvider, workspaceSymbolProvider should all be true.
-		// Other providers (hover, documentSymbol, codeLens) are not yet implemented (feature 11+).
+		// Assert: navigation providers (feature 10, FR-24/25/26) and the document
+		// outline provider (feature 11, FR-27) are advertised — all should be true.
+		// Other providers (hover, codeLens) are not yet implemented (feature 12+).
 		navigationProviders := []string{
 			"definitionProvider",
 			"referencesProvider",
 			"workspaceSymbolProvider",
+			"documentSymbolProvider",
 		}
 		for _, flag := range navigationProviders {
 			if val, exists := caps[flag]; !exists || val != true {
-				t.Errorf("%s = %v, want true (feature 10, T3)", flag, val)
+				t.Errorf("%s = %v, want true (feature 10/11)", flag, val)
 			}
 		}
 
-		// These providers are not yet implemented (features 11–13)
+		// These providers are not yet implemented (features 12–13)
 		unimplementedProviders := []string{
 			"hoverProvider",
-			"documentSymbolProvider",
 			"codeLensProvider",
 		}
 		for _, flag := range unimplementedProviders {
