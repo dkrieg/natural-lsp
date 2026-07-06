@@ -76,7 +76,7 @@ type CacheConfig struct {
 
 // AnalysisConfig configures extraction behavior. TOML table: [analysis]. It
 // holds the two CR-4 controls over how dynamic CALLNAT/PERFORM/FETCH targets
-// are modeled.
+// are modeled, plus the code lens feature toggle.
 type AnalysisConfig struct {
 	// FlagDynamicCalls controls whether a dynamic call (e.g. CALLNAT
 	// #VARIABLE) is treated as a modeled dependency rather than discarded:
@@ -91,6 +91,12 @@ type AnalysisConfig struct {
 	// value is rejected by [Validate] in favor of the default. TOML key:
 	// dynamic_call_min_length. Default: 6.
 	DynamicCallMinLength int `toml:"dynamic_call_min_length"`
+
+	// EnableCodeLens controls whether code lens providers are advertised and
+	// served. When true, the server advertises textDocument/codeLens capability
+	// and serves the call-count and write-summary lenses. TOML key:
+	// enable_code_lens. Default: true.
+	EnableCodeLens bool `toml:"enable_code_lens"`
 }
 
 // ResolutionConfig holds the library map and steplib search order. TOML table:
@@ -265,6 +271,7 @@ func Defaults() Config {
 		Analysis: AnalysisConfig{
 			FlagDynamicCalls:     true,
 			DynamicCallMinLength: 6,
+			EnableCodeLens:       true,
 		},
 		Resolution: ResolutionConfig{
 			Libraries: []Library{},
@@ -426,6 +433,8 @@ func Sample() string {
 	fmt.Fprintf(&b, "flag_dynamic_calls = %t\n", d.Analysis.FlagDynamicCalls)
 	b.WriteString("# Minimum identifier length for a token to be a credible dynamic-call candidate.\n")
 	fmt.Fprintf(&b, "dynamic_call_min_length = %d\n", d.Analysis.DynamicCallMinLength)
+	b.WriteString("# When true, the server advertises and serves code lens providers.\n")
+	fmt.Fprintf(&b, "enable_code_lens = %t\n", d.Analysis.EnableCodeLens)
 	b.WriteString("\n")
 
 	// Resolution: the library map defaults to empty, so emit it as a fully

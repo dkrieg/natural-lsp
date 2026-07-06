@@ -91,6 +91,12 @@ func TestDefaults(t *testing.T) {
 		}
 	})
 
+	t.Run("analysis enable code lens", func(t *testing.T) {
+		if !cfg.Analysis.EnableCodeLens {
+			t.Errorf("Analysis.EnableCodeLens = %t, want true", cfg.Analysis.EnableCodeLens)
+		}
+	})
+
 	t.Run("resolution library map is non-nil and empty", func(t *testing.T) {
 		if cfg.Resolution.Libraries == nil {
 			t.Errorf("Resolution.Libraries = nil, want non-nil empty slice")
@@ -293,14 +299,14 @@ func TestDegenerateExtensions(t *testing.T) {
 }
 
 // TestLoadAnalysis verifies the [analysis] table parses, defaults, and
-// validates: flag_dynamic_calls (bool, default true) and
-// dynamic_call_min_length (int, default 6) load from the file, and a
-// non-positive dynamic_call_min_length falls back to the default and surfaces
-// as a single Problem keyed "analysis.dynamic_call_min_length" — a reported
-// degradation, not a failure (CR-6). The flag_dynamic_calls default of true is
-// the CR-4 "dependency vs error" control: a dynamic CALLNAT is a modeled
-// dependency (CALLS_DYNAMIC), not an error. Feature
-// 01-workspace-and-configuration, T7, CR-4 / CR-6.
+// validates: flag_dynamic_calls (bool, default true),
+// dynamic_call_min_length (int, default 6), and enable_code_lens (bool,
+// default true) load from the file. A non-positive dynamic_call_min_length
+// falls back to the default and surfaces as a single Problem keyed
+// "analysis.dynamic_call_min_length" — a reported degradation, not a failure
+// (CR-6). The flag_dynamic_calls default of true is the CR-4 "dependency vs
+// error" control: a dynamic CALLNAT is a modeled dependency (CALLS_DYNAMIC),
+// not an error. Feature 01-workspace-and-configuration, T7, CR-4 / CR-6.
 //
 // Fixtures live under testdata/config/ relative to this package directory.
 func TestLoadAnalysis(t *testing.T) {
@@ -346,6 +352,77 @@ func TestLoadAnalysis(t *testing.T) {
 				}
 				if want := "analysis.dynamic_call_min_length"; problems[0].Key != want {
 					t.Errorf("problems[0].Key = %q, want %q", problems[0].Key, want)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, problems, err := config.Load(tc.fixture)
+			if err != nil {
+				t.Fatalf("Load(%q) error = %v, want nil", tc.fixture, err)
+			}
+			tc.check(t, cfg, problems)
+		})
+	}
+}
+
+// TestLoadAnalysisEnableCodeLens verifies the enable_code_lens bool field in
+// [analysis] loads, defaults, and validates: when omitted it defaults to true
+// (decode-onto-defaults semantics), when explicitly set to false it parses as
+// false, and when set to true it parses as true. No Problem is ever generated
+// (bool zero value is meaningful). Feature 13-code-lens, T1, Story 3 AC #1.
+//
+// Fixtures live under testdata/config/ relative to this package directory.
+func TestLoadAnalysisEnableCodeLens(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string // path relative to the package dir
+		// check inspects the loaded config and the reported problems.
+		check func(t *testing.T, cfg config.Config, problems []config.Problem)
+	}{
+		{
+			// T1: empty file applies all defaults, including EnableCodeLens = true.
+			name:    "empty file defaults enable_code_lens to true",
+			fixture: "testdata/config/empty.toml",
+			check: func(t *testing.T, cfg config.Config, problems []config.Problem) {
+				if !cfg.Analysis.EnableCodeLens {
+					t.Errorf("Analysis.EnableCodeLens = %t, want true (default)", cfg.Analysis.EnableCodeLens)
+				}
+				if len(problems) != 0 {
+					t.Errorf("problems = %#v, want none", problems)
+				}
+			},
+		},
+		{
+			// T1: explicit enable_code_lens = false parses as false with no Problem.
+			name:    "explicit enable_code_lens = false loads as false",
+			fixture: "testdata/config/codelens-off.toml",
+			check: func(t *testing.T, cfg config.Config, problems []config.Problem) {
+				if cfg.Analysis.EnableCodeLens {
+					t.Errorf("Analysis.EnableCodeLens = %t, want false", cfg.Analysis.EnableCodeLens)
+				}
+				if len(problems) != 0 {
+					t.Errorf("problems = %#v, want none", problems)
+				}
+			},
+		},
+		{
+			// T1: omitting the key in [analysis] yields true (decode-onto-defaults).
+			// Only flag_dynamic_calls is set; everything else keeps defaults.
+			name:    "enable_code_lens omitted defaults to true",
+			fixture: "testdata/config/codelens-omitted.toml",
+			check: func(t *testing.T, cfg config.Config, problems []config.Problem) {
+				if !cfg.Analysis.EnableCodeLens {
+					t.Errorf("Analysis.EnableCodeLens = %t, want true (default when omitted)", cfg.Analysis.EnableCodeLens)
+				}
+				// Verify other analysis fields still load correctly.
+				if cfg.Analysis.FlagDynamicCalls {
+					t.Errorf("Analysis.FlagDynamicCalls = %t, want false (from fixture)", cfg.Analysis.FlagDynamicCalls)
+				}
+				if len(problems) != 0 {
+					t.Errorf("problems = %#v, want none", problems)
 				}
 			},
 		},

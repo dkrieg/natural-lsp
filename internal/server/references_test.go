@@ -557,3 +557,83 @@ func TestProvideReferencesCompleteness_DDMFieldCrossFile(t *testing.T) {
 		t.Errorf("referenceSites returned DDM reference locations in non-deterministic order")
 	}
 }
+
+// TestInboundCallCount tests the inboundCallCount count-only primitive (feature 13, T2).
+// This test asserts that inboundCallCount returns the number of resolved reference sites
+// for a target object, matching the semantics of referenceSites but without materializing
+// Location values or reading file content.
+//
+// FR-ID: FR-29 (code lens), T2 requirement: "returns the NUMBER of resolved reference sites;
+// dynamic/unresolved/ambiguous callers are NEVER counted".
+func TestInboundCallCount(t *testing.T) {
+	testdata := filepath.Join("testdata", "references", "multi-caller")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing all files in the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{} // Empty config for flat-namespace resolution
+
+	files := []string{"SHARED.NSN", "CALLER1.NSP", "CALLER2.NSP", "CALLER3.NSP", "CALLER_DYN.NSP"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "references", "multi-caller", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute the resolution set over the index
+	resSet := workspace.Resolve(idx, &cfg)
+
+	testCases := []struct {
+		name          string
+		targetPath    string
+		targetName    string
+		targetType    model.ObjectType
+		expectedCount int
+		description   string
+	}{
+		{
+			name:          "multi-caller-3-resolved",
+			targetPath:    "testdata/references/multi-caller/SHARED.NSN",
+			targetName:    "SHARED",
+			targetType:    model.ObjectSubprogram,
+			expectedCount: 3,
+			description:   "SHARED subprogram called from 3 static sites (CALLER1, CALLER2, CALLER3); dynamic CALLER_DYN not counted",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Act: call inboundCallCount to get the count
+			count := inboundCallCount(idx, resSet, root, tc.targetPath, tc.targetName, tc.targetType)
+
+			// Assert: count matches expected
+			if count != tc.expectedCount {
+				t.Errorf("inboundCallCount returned %d, want %d (%s)", count, tc.expectedCount, tc.description)
+			}
+
+			// Cross-check: verify that count matches len(referenceSites(..., includeDeclaration=false))
+			// for the same target (this is the equality assertion required by T2)
+			locationsCount := len(referenceSites(idx, resSet, root, tc.targetPath, tc.targetName, tc.targetType, false, protocol.PositionEncodingKindUTF8))
+			if count != locationsCount {
+				t.Errorf("inboundCallCount=%d does not equal len(referenceSites(...))=%d; must match for the same target",
+					count, locationsCount)
+			}
+		})
+	}
+}

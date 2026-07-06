@@ -154,40 +154,18 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 			return
 		}
 
-		// Scan edges: for each edge, check if its resolution matches the target
+		// Scan edges: for each edge, check if its resolution matches the target.
+		// The matching predicate is shared with inboundCallCount via edgeMatchesTarget.
 		for _, edge := range fa.Edges {
-			// Look up the resolution for this edge
 			resolution, ok := res.Get(filePath, edge.Source)
 			if !ok {
-				// Edge not in resolution set; skip
 				continue
 			}
-
-			// Check if the resolved target matches the target symbol
-			// A match requires: resolution is resolved AND path matches AND target type matches
-			if !resolution.IsResolved() {
-				// Unresolved or ambiguous; skip (FR-17: don't falsely link)
+			if !edgeMatchesTarget(resolution, targetPath, targetType) {
 				continue
 			}
-
-			// Normalize paths for comparison (use forward slashes)
-			normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
-			normalizedTargetPath := strings.ReplaceAll(targetPath, "\\", "/")
-
-			if normalizedResPath != normalizedTargetPath {
-				// Resolved target is not the target we're looking for
-				continue
-			}
-
-			// Type check: if targetType is specified (non-empty), verify it matches
-			if targetType != "" && resolution.Type != targetType {
-				continue
-			}
-
-			// This edge resolves to the target; record the reference site
 			fileURI := uri.File(absPath)
 			protocolRng := toProtocolRange(edge.Source, string(fileContent), enc)
-
 			locations = append(locations, protocol.Location{
 				URI:   fileURI,
 				Range: protocolRng,
@@ -248,4 +226,66 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 	})
 
 	return locations
+}
+
+// edgeMatchesTarget reports whether a resolution outcome matches the target symbol.
+// An edge matches when the resolution is Resolved and its Path (normalized to
+// forward slashes) and Type match the target. Dynamic/unresolved/ambiguous
+// resolutions never match (FR-17). Shared by referenceSites and inboundCallCount.
+func edgeMatchesTarget(resolution workspace.Resolution, targetPath string, targetType model.ObjectType) bool {
+	if !resolution.IsResolved() {
+		return false
+	}
+	normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+	normalizedTargetPath := strings.ReplaceAll(targetPath, "\\", "/")
+	if normalizedResPath != normalizedTargetPath {
+		return false
+	}
+	if targetType != "" && resolution.Type != targetType {
+		return false
+	}
+	return true
+}
+
+// inboundCallCount returns the number of resolved reference sites for a target
+// object without materializing Locations or reading file content (feature 13, T2).
+//
+// It is a count-only sibling of referenceSites: it mirrors the matching semantics
+// (resolved-only, path+type match via edgeMatchesTarget, plus case-insensitive DDM
+// name match) but skips os.ReadFile and range conversion, so the call-count lens
+// need not pay the full sweep's per-file I/O cost. Dynamic/unresolved/ambiguous
+// references are never counted (FR-17).
+//
+// The root parameter is unused for counting (no I/O); it is kept for signature
+// parity with the count-only test's call site.
+func inboundCallCount(idx *workspace.Index, res *workspace.ResolutionSet, root string, targetPath string, targetName string, targetType model.ObjectType) int {
+	if idx == nil || res == nil {
+		return 0
+	}
+
+	count := 0
+	idx.ForEach(func(filePath string, fa model.FileAnalysis) {
+		for _, edge := range fa.Edges {
+			resolution, ok := res.Get(filePath, edge.Source)
+			if !ok {
+				continue
+			}
+			if edgeMatchesTarget(resolution, targetPath, targetType) {
+				count++
+			}
+		}
+
+		// DDM references match by name only (DDM resolution is future work),
+		// mirroring referenceSites' ObjectDDM branch so the count equals
+		// len(referenceSites(...)) for a DDM target too.
+		if targetType == model.ObjectDDM {
+			for _, dataAccess := range fa.DataAccess {
+				if strings.EqualFold(dataAccess.Name, targetName) {
+					count++
+				}
+			}
+		}
+	})
+
+	return count
 }
