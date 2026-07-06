@@ -134,6 +134,8 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	// Feature 10, T3: advertise the three navigation providers (definition, references, workspace symbol).
 	// Feature 11, T3: advertise documentSymbolProvider.
 	// Feature 12, T6: advertise hoverProvider.
+	// Feature 13, T6: advertise codeLensProvider.
+	falseVal := false
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
 			TextDocumentSync:        protocol.TextDocumentSyncKindFull,
@@ -143,6 +145,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 			WorkspaceSymbolProvider: protocol.Boolean(true),
 			DocumentSymbolProvider:  protocol.Boolean(true),
 			HoverProvider:           protocol.Boolean(true),
+			CodeLensProvider:        &protocol.CodeLensOptions{ResolveProvider: &falseVal},
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",
@@ -778,6 +781,38 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						return
 					}
 					respResult = hoverJSON
+				}
+
+			case "textDocument/codeLens":
+				// Feature 13, T6: code lens provider handler.
+				// Gate on stateInitialized; decode CodeLensParams; call provideCodeLens.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.CodeLensParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid code lens params: %v", err))
+					return
+				}
+				// Call the provider function.
+				lenses, err := provideCodeLens(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: lenses may be nil (empty) for a no-match case.
+				if lenses == nil {
+					respResult = []byte(`null`)
+				} else {
+					// Marshal the code lens slice as JSON.
+					lensesJSON, marshalErr := json.Marshal(lenses)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal code lenses: %v", marshalErr))
+						return
+					}
+					respResult = lensesJSON
 				}
 
 			default:
