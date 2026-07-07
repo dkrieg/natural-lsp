@@ -27,6 +27,8 @@ path = ".natural-lsp-cache"
 flag_dynamic_calls = true
 # Minimum identifier length for a token to be a credible dynamic-call candidate.
 dynamic_call_min_length = 6
+# When true, the server advertises and serves code lens providers.
+enable_code_lens = true
 
 # Library map: map workspace directories to named Natural libraries and declare
 # each library's ordered steplib search chain. Empty by default — with no

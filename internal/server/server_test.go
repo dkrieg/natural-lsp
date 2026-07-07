@@ -493,21 +493,12 @@ func TestInitialize(t *testing.T) {
 					"workspaceSymbolProvider",
 					"documentSymbolProvider",
 					"hoverProvider",
+					"codeLensProvider",
 				}
 				for _, providerFlag := range requiredProviders {
 					val, exists := caps[providerFlag]
 					if !exists || val == nil || val == false {
 						t.Errorf("%s = %v; want true (required by feature 10, T3 + feature 12, T6)", providerFlag, val)
-					}
-				}
-
-				// Assert: other feature provider flags are not advertised (they come in future features).
-				otherProviderFlags := []string{
-					"codeLensProvider",
-				}
-				for _, flag := range otherProviderFlags {
-					if val, exists := caps[flag]; exists && val != nil && val != false {
-						t.Errorf("%s is advertised (%v); want nil/false (not yet implemented)", flag, val)
 					}
 				}
 			}

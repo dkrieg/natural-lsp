@@ -1,0 +1,22 @@
+* Feature 13, T4: Record-form only fixture (no named writes)
+* This object only writes via record-form UPDATE/DELETE (empty Name gap),
+* so it should produce no write-summary lens.
+*
+* Expected DataAccessEntry output:
+*   - Kind=EdgeWrites, Name="", NameRange on empty (record-form UPDATE)
+*   - Kind=EdgeWrites, Name="", NameRange on empty (record-form DELETE)
+
+DEFINE DATA
+LOCAL
+  1 ISN (P9.9)
+END DEFINE
+
+READ EMPLOYEES
+  UPDATE
+END
+
+READ VEHICLES
+  DELETE
+END
+
+END

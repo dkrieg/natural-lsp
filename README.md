@@ -45,8 +45,12 @@ exported to files before it can be indexed.
 > **Hover is now implemented** (feature 12): the `textDocument/hover` provider (FR-28) shows module
 > metadata (name, location, inbound/outbound counts), subroutine parameter signatures on `PERFORM`
 > targets, and DDM field details on data-access statements — the latter backed by a new `.NSD` DDM field
-> parser. The remaining completion/signature-help/call-hierarchy LSP *providers* are not yet wired — this
-> README describes the **target** feature set. There are no published binaries. Implemented
+> parser.
+> **Code lens is now implemented** (feature 13): the `textDocument/codeLens` provider (FR-29) renders an
+> inbound call-count lens and a table-write-summary lens above each object, both activating
+> find-references to reveal the call/write sites; enabled by default and disableable via
+> `enable_code_lens`. The remaining completion/signature-help/call-hierarchy LSP *providers* are not yet
+> wired — this README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
 
 ---
@@ -95,7 +99,7 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/signatureHelp` (parameter interfaces at call sites)
 - `textDocument/callHierarchy` (incoming/outgoing call panels)
 - `textDocument/documentSymbol` — **shipped** (feature 11)
-- `textDocument/codeLens` (call counts, table write summaries)
+- `textDocument/codeLens` (call counts, table write summaries) — **shipped** (feature 13)
 - `window/workDoneProgress` (indexing progress on first run)
 
 ---
@@ -337,6 +341,10 @@ flag_dynamic_calls = true
 # Minimum token length to consider a string literal a potential
 # module name in dynamic CALLNAT resolution heuristics
 dynamic_call_min_length = 6
+
+# When true, the server advertises and serves code lens providers
+# (inbound call counts, table write summaries). Default: true
+enable_code_lens = true
 
 [resolution]
 # Natural resolves CALLNAT / PERFORM / FETCH targets by walking a steplib

@@ -4,7 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–12 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, and hover**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, and `textDocument/hover` (FR-28) shipped in feature 12 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy) remain unwired.
+**Features 00–13 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, and code lens**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, and `textDocument/codeLens` (FR-29) shipped in feature 13 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy) remain unwired.
+
+Feature 13 (code lens) wires the **`textDocument/codeLens`** provider (FR-29) — server-side wiring only,
+**no `internal/model` change and no cache-format bump** (stays `0.6.0`). `internal/server/code_lens.go`
+holds the provider `provideCodeLens` plus pure builders: `buildCallCountLens` (an inbound-reference
+count via `referenceSites`, pluralized `"N references"` title, rendered even at zero) and
+`buildWriteSummaryLens` (distinct named `EdgeWrites` DDM/view targets, deduped/sorted, **skipping the
+empty-`Name` record-form gap** — FR-17, never fabricates a table name; returns nil when there are no
+named writes). Both anchor at the object root `Structure.SelectionRange` (single line) and carry a
+`Command` with id `editor.action.showReferences` and arguments `[uri, position, []Location]` (the VS
+Code / gopls convention — a documented client dependency) so activating a lens reveals the call/write
+sites (find-references behavior). Command arguments are marshaled to `protocol.LSPAny`/`jsontext.Value`
+via the shared `mustLSPAny` helper. `provideCodeLens` gates on the config toggle
+(`Analysis.EnableCodeLens`, default **on**; disable via `enable_code_lens = false`), serves the
+open-document buffer first (live edits) then the index, snapshots `idx`/`res` under `RLock` released
+before I/O (F7), and returns `nil` on missing/unreadable/no-`Structure` targets (FR-43). The count
+tracks incremental re-analysis via the feature-10 `applyDocumentChange`/`ResolveInto` path. Resolution
+is **eager** (`CodeLensProvider{resolveProvider:false}` — no `codeLens/resolve` handler). `FuzzProvideCodeLens`
+guards the provider (never panics — FR-43). Fixtures live under `internal/server/testdata/codelens/`.
 
 `internal/config` is fully implemented (feature 01): workspace-root discovery (`.natural-lsp.toml`
 sentinel walk-up), config loading with decode-onto-defaults semantics, per-field validation with CR-6
@@ -71,7 +89,8 @@ logger)` serves JSON-RPC 2.0 over `Content-Length`-framed stdio (`go.lsp.dev/jso
 server enforces the `initialize → initialized → shutdown → exit` lifecycle; the `initialize` response
 advertises `textDocumentSync: Full`, `positionEncoding` (UTF-8 preferred, UTF-16 default — ADR-008), and
 the `definitionProvider`, `referencesProvider`, and `workspaceSymbolProvider` capabilities (feature 10)
-plus the `documentSymbolProvider` capability (feature 11) and the `hoverProvider` capability (feature 12)
+plus the `documentSymbolProvider` capability (feature 11), the `hoverProvider` capability (feature 12),
+and the `codeLensProvider` capability (feature 13, `resolveProvider: false`)
 — a deliberately locked allow-list enforced by `TestInitialize`. Graceful degradation (FR-43): oversized files are skipped with
 `SkipTooLarge`, excluded paths with `SkipExcluded`, unrecognized extensions processed as `ObjectUnknown`,
 and analyzer panics are recovered per-file without aborting the batch — every skip/recovery is logged to

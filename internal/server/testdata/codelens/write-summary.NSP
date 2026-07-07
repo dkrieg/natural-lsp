@@ -1,0 +1,23 @@
+* Feature 13, T4: Write-summary lens fixture
+* Writes two distinct DDMs (CUSTOMER, ORDERS) via STORE.
+* Also includes a record-form UPDATE (empty Name gap) to verify the gap is skipped.
+*
+* Expected DataAccessEntry output:
+*   - Kind=EdgeWrites, Name="CUSTOMER", NameRange on "CUSTOMER" token
+*   - Kind=EdgeWrites, Name="ORDERS", NameRange on "ORDERS" token
+*   - Kind=EdgeWrites, Name="", NameRange on empty (record-form UPDATE)
+
+DEFINE DATA
+LOCAL
+  1 ISN (P9.9)
+END DEFINE
+
+READ CUSTOMER
+  UPDATE
+END
+
+STORE CUSTOMER
+
+STORE ORDERS
+
+END

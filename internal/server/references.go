@@ -154,40 +154,18 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 			return
 		}
 
-		// Scan edges: for each edge, check if its resolution matches the target
+		// Scan edges: for each edge, check if its resolution matches the target.
+		// The matching predicate is factored into edgeMatchesTarget.
 		for _, edge := range fa.Edges {
-			// Look up the resolution for this edge
 			resolution, ok := res.Get(filePath, edge.Source)
 			if !ok {
-				// Edge not in resolution set; skip
 				continue
 			}
-
-			// Check if the resolved target matches the target symbol
-			// A match requires: resolution is resolved AND path matches AND target type matches
-			if !resolution.IsResolved() {
-				// Unresolved or ambiguous; skip (FR-17: don't falsely link)
+			if !edgeMatchesTarget(resolution, targetPath, targetType) {
 				continue
 			}
-
-			// Normalize paths for comparison (use forward slashes)
-			normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
-			normalizedTargetPath := strings.ReplaceAll(targetPath, "\\", "/")
-
-			if normalizedResPath != normalizedTargetPath {
-				// Resolved target is not the target we're looking for
-				continue
-			}
-
-			// Type check: if targetType is specified (non-empty), verify it matches
-			if targetType != "" && resolution.Type != targetType {
-				continue
-			}
-
-			// This edge resolves to the target; record the reference site
 			fileURI := uri.File(absPath)
 			protocolRng := toProtocolRange(edge.Source, string(fileContent), enc)
-
 			locations = append(locations, protocol.Location{
 				URI:   fileURI,
 				Range: protocolRng,
@@ -248,4 +226,23 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 	})
 
 	return locations
+}
+
+// edgeMatchesTarget reports whether a resolution outcome matches the target symbol.
+// An edge matches when the resolution is Resolved and its Path (normalized to
+// forward slashes) and Type match the target. Dynamic/unresolved/ambiguous
+// resolutions never match (FR-17). Used by referenceSites to invert resolution.
+func edgeMatchesTarget(resolution workspace.Resolution, targetPath string, targetType model.ObjectType) bool {
+	if !resolution.IsResolved() {
+		return false
+	}
+	normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+	normalizedTargetPath := strings.ReplaceAll(targetPath, "\\", "/")
+	if normalizedResPath != normalizedTargetPath {
+		return false
+	}
+	if targetType != "" && resolution.Type != targetType {
+		return false
+	}
+	return true
 }

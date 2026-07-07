@@ -1,0 +1,2 @@
+[analysis]
+flag_dynamic_calls = false
