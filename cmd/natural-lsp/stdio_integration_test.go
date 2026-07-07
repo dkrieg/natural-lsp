@@ -211,9 +211,9 @@ func TestStdioHandshake(t *testing.T) {
 			t.Errorf("positionEncoding has unexpected type %T", caps["positionEncoding"])
 		}
 
-		// Assert: navigation providers (feature 10, FR-24/25/26) and the document
-		// outline provider (feature 11, FR-27) are advertised — all should be true.
-		// Other providers (hover, codeLens) are not yet implemented (feature 12+).
+		// Assert: navigation providers (feature 10, FR-24/25/26), the document
+		// outline provider (feature 11, FR-27), and the hover provider (feature 12,
+		// FR-28) are advertised as bare booleans — all should be true.
 		navigationProviders := []string{
 			"definitionProvider",
 			"referencesProvider",
@@ -227,14 +227,11 @@ func TestStdioHandshake(t *testing.T) {
 			}
 		}
 
-		// These providers are not yet implemented (features 13+)
-		unimplementedProviders := []string{
-			"codeLensProvider",
-		}
-		for _, flag := range unimplementedProviders {
-			if val, exists := caps[flag]; exists && val != nil && val != false {
-				t.Errorf("%s = %v, want nil/false (not yet implemented)", flag, val)
-			}
+		// Assert: the code lens provider (feature 13, FR-29) is advertised as an
+		// OBJECT ({resolveProvider:false}), not a bare true — so assert it is present
+		// and non-nil rather than == true.
+		if val, exists := caps["codeLensProvider"]; !exists || val == nil || val == false {
+			t.Errorf("codeLensProvider = %v, want an object (feature 13, FR-29)", val)
 		}
 	}
 
