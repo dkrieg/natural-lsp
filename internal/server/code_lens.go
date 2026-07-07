@@ -197,11 +197,14 @@ func mustLSPAny(v any) jsontext.Value {
 //  5. Return the assembled []protocol.CodeLens in deterministic order (call-count then
 //     write-summary), or nil when neither applies.
 //
-// Concurrency (F7): For the open-document buffer, no locking is needed (store is
-// self-synchronized). For the index snapshot, idxResMu.RLock is acquired briefly,
-// released before any file I/O, and the snapshot (pointers to idx/res) is safe to use
-// afterward (Index and ResolutionSet are immutable post-snapshot; applyDocumentChange
-// swaps the pointers under write lock — build-then-publish semantics).
+// Concurrency (F7): idxResMu.RLock is acquired briefly to snapshot the idx/res
+// pointers, then released before any file I/O. Safety after the snapshot rests on
+// the Index's own internal mutex (applyDocumentChange mutates the Index in place
+// under idx.mu, and ForEach/Get read under it) and on ResolutionSet immutability
+// (ResolveInto builds a fresh set and swaps the pointer — build-then-publish), so a
+// reader never sees a torn (idx, res) pair. The open-document buffer needs no lock
+// (the store is self-synchronized) but still uses the same idx/res snapshot for the
+// call-count lens.
 func provideCodeLens(hctx *handlerContext, params protocol.CodeLensParams) ([]protocol.CodeLens, error) {
 	// Guard: hctx must be initialized
 	if hctx == nil {

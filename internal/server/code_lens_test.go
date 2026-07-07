@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	gojson "github.com/go-json-experiment/json"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
@@ -115,13 +116,19 @@ func TestBuildWriteSummaryLens_NamedWrites(t *testing.T) {
 
 			// Assert: Command.Arguments has the right shape [uri, position, []Location]
 			if lens.Command.Arguments == nil || len(lens.Command.Arguments) != 3 {
-				t.Errorf("Command.Arguments malformed: expected exactly 3 items [uri, position, []Location], got %d items", len(lens.Command.Arguments))
+				t.Fatalf("Command.Arguments malformed: expected exactly 3 items [uri, position, []Location], got %d items", len(lens.Command.Arguments))
 			}
 
-			// For this test, we verify that the lens was built with proper structure.
-			// The Arguments will contain uri, position, and a slice of Locations when
-			// the lens is properly built. We'll defer detailed Location validation
-			// to when we test the actual builder implementation.
+			// Assert: the third argument decodes to the write-site []Location (the
+			// payload that actually delivers "activating reveals the write sites",
+			// Story 2 AC #2). Decode it and check the site count matches the named writes.
+			var sites []protocol.Location
+			if err := gojson.Unmarshal([]byte(lens.Command.Arguments[2]), &sites); err != nil {
+				t.Fatalf("Command.Arguments[2] is not a valid []Location: %v", err)
+			}
+			if len(sites) != tc.expectLocCount {
+				t.Errorf("write-site Location count = %d, want %d", len(sites), tc.expectLocCount)
+			}
 
 			// Assert: title targets are sorted and deduplicated
 			// Extract the "Writes: ..." part and verify it's deterministic

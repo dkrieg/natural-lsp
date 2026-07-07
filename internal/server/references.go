@@ -155,7 +155,7 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 		}
 
 		// Scan edges: for each edge, check if its resolution matches the target.
-		// The matching predicate is shared with inboundCallCount via edgeMatchesTarget.
+		// The matching predicate is factored into edgeMatchesTarget.
 		for _, edge := range fa.Edges {
 			resolution, ok := res.Get(filePath, edge.Source)
 			if !ok {
@@ -231,7 +231,7 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 // edgeMatchesTarget reports whether a resolution outcome matches the target symbol.
 // An edge matches when the resolution is Resolved and its Path (normalized to
 // forward slashes) and Type match the target. Dynamic/unresolved/ambiguous
-// resolutions never match (FR-17). Shared by referenceSites and inboundCallCount.
+// resolutions never match (FR-17). Used by referenceSites to invert resolution.
 func edgeMatchesTarget(resolution workspace.Resolution, targetPath string, targetType model.ObjectType) bool {
 	if !resolution.IsResolved() {
 		return false
@@ -245,47 +245,4 @@ func edgeMatchesTarget(resolution workspace.Resolution, targetPath string, targe
 		return false
 	}
 	return true
-}
-
-// inboundCallCount returns the number of resolved reference sites for a target
-// object without materializing Locations or reading file content (feature 13, T2).
-//
-// It is a count-only sibling of referenceSites: it mirrors the matching semantics
-// (resolved-only, path+type match via edgeMatchesTarget, plus case-insensitive DDM
-// name match) but skips os.ReadFile and range conversion, so the call-count lens
-// need not pay the full sweep's per-file I/O cost. Dynamic/unresolved/ambiguous
-// references are never counted (FR-17).
-//
-// The root parameter is unused for counting (no I/O); it is kept for signature
-// parity with the count-only test's call site.
-func inboundCallCount(idx *workspace.Index, res *workspace.ResolutionSet, root string, targetPath string, targetName string, targetType model.ObjectType) int {
-	if idx == nil || res == nil {
-		return 0
-	}
-
-	count := 0
-	idx.ForEach(func(filePath string, fa model.FileAnalysis) {
-		for _, edge := range fa.Edges {
-			resolution, ok := res.Get(filePath, edge.Source)
-			if !ok {
-				continue
-			}
-			if edgeMatchesTarget(resolution, targetPath, targetType) {
-				count++
-			}
-		}
-
-		// DDM references match by name only (DDM resolution is future work),
-		// mirroring referenceSites' ObjectDDM branch so the count equals
-		// len(referenceSites(...)) for a DDM target too.
-		if targetType == model.ObjectDDM {
-			for _, dataAccess := range fa.DataAccess {
-				if strings.EqualFold(dataAccess.Name, targetName) {
-					count++
-				}
-			}
-		}
-	})
-
-	return count
 }
