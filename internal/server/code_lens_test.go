@@ -606,3 +606,136 @@ func TestProvideCodeLens(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideCodeLens_IncrementalFreshness verifies that after a didChange that
+// adds/removes a caller, a subsequent textDocument/codeLens reflects the updated
+// inbound count (feature 13, T7, Story 1 AC #3).
+//
+// This test exercises the incremental freshness path: it uses the same mechanism
+// as applyDocumentChange (idx.Add + ResolveInto) to simulate a document change
+// and verifies that the code lens count is updated accordingly.
+//
+// Scenario:
+// 1. Build an index with SHARED.NSN (called by 3 callers: CALLER1, CALLER2, CALLER3)
+// 2. Call provideCodeLens for SHARED.NSN and assert "3 references"
+// 3. Remove CALLNAT 'SHARED' from CALLER3, re-analyze, and apply the change via idx.Add + ResolveInto
+// 4. Call provideCodeLens again and assert "2 references" (count decreased)
+func TestProvideCodeLens_IncrementalFreshness(t *testing.T) {
+	testdataDir := filepath.Join("testdata", "references", "multi-caller")
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Arrange: Build the initial index with all multi-caller fixture files
+	idx := &workspace.Index{}
+	cfg := config.Config{
+		Analysis: config.AnalysisConfig{
+			EnableCodeLens: true,
+		},
+	}
+
+	files := []struct {
+		path    string
+		relPath string
+	}{
+		{filepath.Join(testdataDir, "SHARED.NSN"), "testdata/references/multi-caller/SHARED.NSN"},
+		{filepath.Join(testdataDir, "CALLER1.NSP"), "testdata/references/multi-caller/CALLER1.NSP"},
+		{filepath.Join(testdataDir, "CALLER2.NSP"), "testdata/references/multi-caller/CALLER2.NSP"},
+		{filepath.Join(testdataDir, "CALLER3.NSP"), "testdata/references/multi-caller/CALLER3.NSP"},
+		{filepath.Join(testdataDir, "CALLER_DYN.NSP"), "testdata/references/multi-caller/CALLER_DYN.NSP"},
+	}
+
+	az := natural.New(nil)
+	for _, f := range files {
+		content, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", f.path, err)
+		}
+		analysis, err := az.Analyze(f.path, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.path, err)
+		}
+		idx.Add(strings.ReplaceAll(f.relPath, "\\", "/"), analysis)
+	}
+
+	// Compute the initial resolution set
+	res := workspace.Resolve(idx, &cfg)
+
+	// Arrange: Create the initial handler context
+	hctx := &handlerContext{
+		cfg:         cfg,
+		idx:         idx,
+		res:         res,
+		root:        workspaceRoot,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		store:       nil,
+	}
+
+	// First provideCodeLens call: SHARED.NSN should have 3 references
+	sharedURI := uri.File(filepath.Join(workspaceRoot, "testdata/references/multi-caller/SHARED.NSN"))
+	params := protocol.CodeLensParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: sharedURI,
+		},
+	}
+
+	// Act: Get the initial lenses for SHARED.NSN
+	initialResult, err := provideCodeLens(hctx, params)
+	if err != nil {
+		t.Fatalf("initial provideCodeLens failed: %v", err)
+	}
+
+	// Assert: Initial lens should have "3 references"
+	if initialResult == nil || len(initialResult) == 0 {
+		t.Fatal("expected non-nil initial result with at least 1 lens")
+	}
+	initialTitle := initialResult[0].Command.Title
+	if initialTitle != "3 references" {
+		t.Errorf("initial lens title = %q, want %q", initialTitle, "3 references")
+	}
+
+	// Simulate a document change: remove the CALLNAT 'SHARED' from CALLER3.NSP
+	// Read CALLER3 original content
+	caller3Path := filepath.Join(testdataDir, "CALLER3.NSP")
+	caller3Content, err := os.ReadFile(caller3Path)
+	if err != nil {
+		t.Fatalf("failed to read CALLER3.NSP: %v", err)
+	}
+
+	// Remove the CALLNAT 'SHARED' line from CALLER3
+	modifiedContent := strings.ReplaceAll(string(caller3Content), "CALLNAT 'SHARED'\n", "")
+	if string(caller3Content) == modifiedContent {
+		t.Fatal("failed to remove CALLNAT 'SHARED' from CALLER3.NSP content")
+	}
+
+	// Re-analyze the modified CALLER3 content
+	caller3RelPath := "testdata/references/multi-caller/CALLER3.NSP"
+	modifiedAnalysis, err := az.Analyze(caller3Path, []byte(modifiedContent))
+	if err != nil {
+		t.Fatalf("failed to analyze modified CALLER3.NSP: %v", err)
+	}
+
+	// Simulate applyDocumentChange: update the index and recompute resolution
+	// This mimics the server's applyDocumentChange function behavior
+	idx.Add(caller3RelPath, modifiedAnalysis)
+	res = workspace.ResolveInto(res, idx, &cfg, []string{caller3RelPath})
+
+	// Update the handler context with the new resolution set
+	hctx.res = res
+
+	// Act: Get the updated lenses for SHARED.NSN after the change
+	updatedResult, err := provideCodeLens(hctx, params)
+	if err != nil {
+		t.Fatalf("updated provideCodeLens failed: %v", err)
+	}
+
+	// Assert: Updated lens should have "2 references" (CALLER1 and CALLER2 now)
+	if updatedResult == nil || len(updatedResult) == 0 {
+		t.Fatal("expected non-nil updated result with at least 1 lens")
+	}
+	updatedTitle := updatedResult[0].Command.Title
+	if updatedTitle != "2 references" {
+		t.Errorf("updated lens title = %q, want %q", updatedTitle, "2 references")
+	}
+}
