@@ -275,6 +275,24 @@ const (
 	DiagnosticError   DiagnosticSeverity = "error"
 )
 
+// DiagnosticCode categorizes the type of diagnostic, distinguishing syntax errors
+// from reference-resolution issues (e.g., ambiguity in a flat namespace). A machine-readable
+// category used for filtering and grouping diagnostics by kind.
+//
+// String values are stable and machine-readable. Never change an existing value;
+// add a new constant instead. An empty string represents an uncategorized diagnostic.
+type DiagnosticCode string
+
+const (
+	// DiagnosticCodeSyntax indicates a parse error or syntactic issue in the source.
+	DiagnosticCodeSyntax DiagnosticCode = "syntax"
+
+	// DiagnosticCodeAmbiguity indicates an unresolved reference due to multiple
+	// candidates in a flat namespace (e.g., two modules with the same name, no
+	// library chain configured).
+	DiagnosticCodeAmbiguity DiagnosticCode = "ambiguity"
+)
+
 // Diagnostic is the analyzer-side signal for an extraction or analysis issue
 // found in a Natural source file (e.g., unrecognized syntax, unresolvable
 // reference). The feature-03 indexer reads Diagnostics from FileAnalysis to
@@ -286,6 +304,10 @@ type Diagnostic struct {
 
 	// Severity classifies how serious the issue is (info, warning, error).
 	Severity DiagnosticSeverity
+
+	// Code categorizes the type of diagnostic (syntax error, ambiguous reference, etc.).
+	// An empty string represents an uncategorized diagnostic for back-compat.
+	Code DiagnosticCode
 
 	// Range is the source span where the issue was detected.
 	// Task 7 of feature 00-parser-foundation wires real token positions here;

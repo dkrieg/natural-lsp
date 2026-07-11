@@ -1,0 +1,18 @@
+* Program with modeled gaps (dynamic calls, unresolved targets)
+* These are NOT syntax errors and should yield ZERO diagnostics
+PROGRAM GAPS-PROG
+
+DEFINE DATA
+  LOCAL
+    1 #DYNAMIC-TARGET (A20)
+    1 #NOSUCHPGM (A20) VALUE 'NONEXISTENT'
+  END
+END
+
+* Dynamic call (unresolvable, but no syntax error)
+CALLNAT #DYNAMIC-TARGET
+
+* Literal target with no such object (unresolvable, but no syntax error)
+CALLNAT 'NONEXISTENT'
+
+END

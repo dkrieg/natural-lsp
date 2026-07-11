@@ -4,7 +4,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–13 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, and code lens**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, and `textDocument/codeLens` (FR-29) shipped in feature 13 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy) remain unwired.
+**Features 00–14 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, and diagnostics**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, and `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy) remain unwired.
+
+Feature 14 (diagnostics) wires **`textDocument/publishDiagnostics`** (FR-30 parse-error diagnostics,
+FR-31 ambiguous-resolution diagnostics) — the server's first outbound-notification provider. It is
+**push-based** with **no server capability** (publishDiagnostics is a unilateral server→client
+notification; the `initialize` allow-list and its `TestInitialize` lock are unchanged). Both diagnostic
+*producers* already existed: the parser's ranged `Program.Diagnostics` copied into
+`FileAnalysis.Diagnostics`, and the resolver's flat-namespace ambiguity warnings via
+`ResolutionSet.DiagnosticsFor(path)`; feature 14 is the aggregation + publishing layer that consumes
+them. `internal/server/diagnostics.go` holds the pure pipeline: `severityToProtocol`
+(`info`/`warning`/`error` → protocol 1/2/3, unknown → Information), `toProtocolDiagnostic` (encoding-aware
+via the shared `toProtocolRange`, `Message` verbatim, `Source="natural-lsp"`, `Code` mapped to
+`protocol.String`), `aggregateDiagnostics` (merges both channels into a **fresh** slice — never aliasing
+the store/index-owned `FileAnalysis.Diagnostics` backing array — stable-sorted by `Range.Start`, dedups
+the `(Message,Severity,Code,Range)` tuple, returns nil when empty), the `publishDiagnostics` notification
+writer (empty/nil diagnostics marshal to `"diagnostics":[]` — a **full replace**, so clearing is
+publishing an empty array, never a delta; threads the open-doc `Version` when store-served), and the
+`publishFileDiagnostics` orchestrator (F7: snapshots `idx`/`res`/`posEncoding`/`root` once under `RLock`,
+releases before all I/O; **store-first** then index/disk; missing/unreadable/out-of-root → publish `[]`
+to clear; nil-`res`/nil-`store` safe). The four lifecycle handlers in `server.go` publish via a
+`publishDiag` closure: `didOpen`/`didChange` (after `applyDocumentChange`, so the publish reflects the
+post-change `(idx,res)` snapshot) republish the URI; `didClose` and watched-file **Deleted** events
+publish `[]` (clear on close/delete — an approval-checkpoint decision); watched **Changed/Created**
+events republish. **Modeled gaps stay off the diagnostic channel (FR-17):** dynamic/no-target references
+are `Unresolved` outcomes, never diagnostics — only the parser and ambiguity channels are read.
+`FuzzDiagnosticConversion` guards the converter (never panics — FR-43). This feature added one
+**additive** `internal/model` member — `Diagnostic.Code` (a `model.DiagnosticCode` category, constants
+`DiagnosticCodeSyntax`/`DiagnosticCodeAmbiguity`) stamped at both producers to make ambiguity diagnostics
+machine-distinguishable from syntax ones (Story 2 AC3) — with **no cache-format bump** (still `0.6.0`:
+`Diagnostics` is not persisted in the cache, so the field rides an in-memory-only slice). Fixtures live
+under `internal/server/testdata/diagnostics/`.
 
 Feature 13 (code lens) wires the **`textDocument/codeLens`** provider (FR-29) — server-side wiring only,
 **no `internal/model` change and no cache-format bump** (stays `0.6.0`). `internal/server/code_lens.go`
@@ -33,7 +63,8 @@ generator for `--init`. Default indexed set: all 15 Natural extensions (10 core 
 
 `internal/model` and `internal/analysis/natural` have object-type recognition (feature 02):
 `model.ObjectType` (16 constants with stable string values), `model.Diagnostic`
-(`Message`, `Severity`, and a positional `Range` — added in feature 00), and
+(`Message`, `Severity`, a positional `Range` — added in feature 00 — and a `Code` category
+distinguishing `syntax` from `ambiguity` diagnostics, added in feature 14), and
 `model.FileAnalysis.ObjectType`/`Diagnostics`/`AST` fields. The `analysis/natural` backend classifies
 every file by extension (case-insensitive, custom-mapping-aware) via `Analyze(path, content)`.
 Regression fixtures for all 15 types live under `testdata/objecttype/`.
@@ -91,7 +122,9 @@ advertises `textDocumentSync: Full`, `positionEncoding` (UTF-8 preferred, UTF-16
 the `definitionProvider`, `referencesProvider`, and `workspaceSymbolProvider` capabilities (feature 10)
 plus the `documentSymbolProvider` capability (feature 11), the `hoverProvider` capability (feature 12),
 and the `codeLensProvider` capability (feature 13, `resolveProvider: false`)
-— a deliberately locked allow-list enforced by `TestInitialize`. Graceful degradation (FR-43): oversized files are skipped with
+— a deliberately locked allow-list enforced by `TestInitialize`. (Feature 14's `textDocument/publishDiagnostics`
+adds **no** capability — it is a unilateral server→client notification, so the allow-list is unchanged.)
+Graceful degradation (FR-43): oversized files are skipped with
 `SkipTooLarge`, excluded paths with `SkipExcluded`, unrecognized extensions processed as `ObjectUnknown`,
 and analyzer panics are recovered per-file without aborting the batch — every skip/recovery is logged to
 stderr. Per-request panic recovery returns a JSON-RPC `InternalError` and keeps the loop alive. SIGTERM
