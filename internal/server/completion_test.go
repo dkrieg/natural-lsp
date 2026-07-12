@@ -1,9 +1,18 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"go.lsp.dev/protocol"
+	"go.lsp.dev/uri"
+
+	"natural-lsp/internal/analysis/natural"
+	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
+	"natural-lsp/internal/workspace"
 )
 
 // TestDetectCompletionContext tests the pure function that classifies the
@@ -409,4 +418,201 @@ func isPrefixDynamic(prefix string) bool {
 	}
 	first := prefix[0]
 	return first == '#' || first == '&' || first == '+'
+}
+
+// TestProvideCompletion_ModuleContextCallnat tests module-name completion for CALLNAT
+// (feature 16, T4, Story 1, AC #1 and AC #4).
+//
+// Exercises:
+// - Completion for CALLNAT context expects ObjectSubprogram targets
+// - Offers matching subprograms by name prefix
+// - Completion items include Label, Kind (Module), and Detail (object-type label)
+// - Type filtering: excludes programs and copycodes from CALLNAT context
+//
+// FR-24/FR-47: module-name completion from workspace index.
+func TestProvideCompletion_ModuleContextCallnat(t *testing.T) {
+	testdataDir := "testdata/completion/module"
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Arrange: build the index by analyzing all files in the module fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	files := []struct {
+		path    string
+		relPath string
+	}{
+		{filepath.Join(testdataDir, "CALLER.NSP"), "testdata/completion/module/CALLER.NSP"},
+		{filepath.Join(testdataDir, "MYSUB.NSN"), "testdata/completion/module/MYSUB.NSN"},
+		{filepath.Join(testdataDir, "MYPROG.NSP"), "testdata/completion/module/MYPROG.NSP"},
+		{filepath.Join(testdataDir, "SHARED.NSC"), "testdata/completion/module/SHARED.NSC"},
+	}
+
+	az := natural.New(nil)
+	for _, f := range files {
+		content, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", f.path, err)
+		}
+
+		analysis, err := az.Analyze(f.path, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.path, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set over the index
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Create additional fixture files for FETCH and INCLUDE test cases
+	// (we'll reference them from CALLER but they need to exist in the index)
+
+	tests := []struct {
+		name              string
+		callerPath        string
+		callerRelPath     string
+		cursorLine        int                      // 0-based
+		cursorCol         int                      // byte column in the line
+		expectLabel       string                   // expected CompletionItem.Label
+		expectKind        protocol.CompletionItemKind // expected CompletionItemKind
+		expectDetail      string                   // expected Detail substring
+		expectFound       bool                     // whether the item should be present
+		expectNotIncluded string                   // object name that should NOT be in the result (wrong type)
+	}{
+		{
+			name:           "CALLNAT MYSU offers MYSUB (subprogram)",
+			callerPath:     filepath.Join(testdataDir, "CALLER.NSP"),
+			callerRelPath:  "testdata/completion/module/CALLER.NSP",
+			cursorLine:     4,    // Line with "  CALLNAT MYSU"
+			cursorCol:      14,   // at end of "MYSU"
+			expectLabel:    "MYSUB",
+			expectKind:     protocol.CompletionItemKindModule, // subprogram → Module
+			expectDetail:   "subprogram",
+			expectFound:    true,
+			expectNotIncluded: "", // no exclusion expected in this case
+		},
+		{
+			name:           "FETCH MYP offers MYPROG (program)",
+			callerPath:     filepath.Join(testdataDir, "CALLER.NSP"),
+			callerRelPath:  "testdata/completion/module/CALLER.NSP",
+			cursorLine:     5,    // Line with "  FETCH MYP"
+			cursorCol:      11,   // cursor at end of "MYP"
+			expectLabel:    "MYPROG",
+			expectKind:     protocol.CompletionItemKindFile, // program → File
+			expectDetail:   "program",
+			expectFound:    true,
+			expectNotIncluded: "MYSUB", // subprogram should NOT appear in FETCH context
+		},
+		{
+			name:           "INCLUDE SHAR offers SHARED (copycode)",
+			callerPath:     filepath.Join(testdataDir, "CALLER.NSP"),
+			callerRelPath:  "testdata/completion/module/CALLER.NSP",
+			cursorLine:     6,    // Line with "  INCLUDE SHAR"
+			cursorCol:      14,   // cursor at end of "SHAR"
+			expectLabel:    "SHARED",
+			expectKind:     protocol.CompletionItemKindReference, // copycode → Reference
+			expectDetail:   "copycode",
+			expectFound:    true,
+			expectNotIncluded: "MYPROG", // program should NOT appear in INCLUDE context
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Read the caller file to construct the completion context
+			content, err := os.ReadFile(tc.callerPath)
+			if err != nil {
+				t.Fatalf("failed to read caller file: %v", err)
+			}
+
+			// Derive the line text and cursor position
+			line := lineAt(string(content), tc.cursorLine)
+			_ = line // unused for now, just for completeness
+
+			// Act: create handler context and call provideCompletion
+			hctx := &handlerContext{
+				cfg:         cfg,
+				idx:         idx,
+				res:         resSet,
+				root:        workspaceRoot,
+				posEncoding: protocol.PositionEncodingKindUTF8,
+				store:       nil,
+			}
+
+			// Construct CompletionParams: cursor position with protocol encoding
+			params := protocol.CompletionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(filepath.Join(workspaceRoot, tc.callerRelPath)),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine),
+						Character: uint32(tc.cursorCol),
+					},
+				},
+			}
+
+			result, err := provideCompletion(hctx, params)
+
+			// Assert: no error expected
+			if err != nil {
+				t.Errorf("provideCompletion returned error: %v", err)
+			}
+
+			// Assert: result should be a list (possibly empty during RED)
+			if result == nil {
+				result = []protocol.CompletionItem{}
+			}
+
+			// Assert: find the expected completion item
+			var found *protocol.CompletionItem
+			for i := range result {
+				if result[i].Label == tc.expectLabel {
+					found = &result[i]
+					break
+				}
+			}
+
+			if tc.expectFound {
+				if found == nil {
+					t.Errorf("expected completion item with label %q not found in result of %d items", tc.expectLabel, len(result))
+					for i, item := range result {
+						t.Logf("  [%d] %q (kind=%v)", i, item.Label, item.Kind)
+					}
+					return
+				}
+
+				// Assert: Kind matches expected
+				if found.Kind != tc.expectKind {
+					t.Errorf("Kind mismatch: got %v, want %v (Module=%v, File=%v, Reference=%v)", found.Kind, tc.expectKind, protocol.CompletionItemKindModule, protocol.CompletionItemKindFile, protocol.CompletionItemKindReference)
+				}
+
+				// Assert: Detail contains expected object-type label
+				detail, ok := found.Detail.Get()
+				if !ok {
+					t.Errorf("Detail is not set on completion item")
+				} else if !strings.Contains(detail, tc.expectDetail) {
+					t.Errorf("Detail missing expected substring: got %q, expected to contain %q", detail, tc.expectDetail)
+				}
+			} else {
+				if found != nil {
+					t.Errorf("did not expect to find completion item with label %q", tc.expectLabel)
+				}
+			}
+
+			// Assert: type filtering (if expectNotIncluded is set, that object should NOT be in the result)
+			if tc.expectNotIncluded != "" {
+				for _, item := range result {
+					if item.Label == tc.expectNotIncluded {
+						t.Errorf("type filtering failed: unexpected %q (wrong object type) in result", tc.expectNotIncluded)
+					}
+				}
+			}
+		})
+	}
 }

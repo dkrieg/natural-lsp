@@ -1,12 +1,16 @@
 package server
 
 import (
+	"os"
+	"path"
 	"strings"
 	"unicode"
 
 	"go.lsp.dev/protocol"
 
+	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
+	"natural-lsp/internal/workspace"
 )
 
 // completionKind classifies the context in which completion is triggered.
@@ -200,19 +204,166 @@ func isDataAccessVerb(keyword string) bool {
 	return false
 }
 
-// provideCompletion is the stub provider for the textDocument/completion request (feature 16, T3).
-// During the RED phase, it returns an empty list.
-// In T4–T8, this function will be expanded to compute real completions based on context.
+// objectTypeToCompletionKind maps model.ObjectType to protocol.CompletionItemKind.
+// Used to distinguish completion items by the object they represent.
+// Mapping for module contexts (T4):
+//   - ObjectSubprogram → CompletionItemKindModule
+//   - ObjectProgram → CompletionItemKindFile
+//   - ObjectCopycode → CompletionItemKindReference
+func objectTypeToCompletionKind(ot model.ObjectType) protocol.CompletionItemKind {
+	switch ot {
+	case model.ObjectSubprogram:
+		return protocol.CompletionItemKindModule
+	case model.ObjectProgram:
+		return protocol.CompletionItemKindFile
+	case model.ObjectCopycode:
+		return protocol.CompletionItemKindReference
+	case model.ObjectExternalSubroutine:
+		return protocol.CompletionItemKindFunction
+	case model.ObjectDDM:
+		return protocol.CompletionItemKindStruct
+	default:
+		return protocol.CompletionItemKindText
+	}
+}
+
+// provideCompletion handles the textDocument/completion request (feature 16, T4).
+// It is the LSP provider entry point for completion support.
 //
-// Parameters:
-//   - hctx: handler context (will be used in T4+ for index/store access)
-//   - params: the CompletionParams from the client
+// Behavior (T4 — module contexts only):
+// - Snapshot idx/posEncoding under RLock, release before I/O (F7).
+// - Read the open buffer first (store-first pattern) for the partial line.
+// - Derive (line, cursorByteCol) from params.Position using fromProtocolPosition + lineAt.
+// - Call detectCompletionContext(line, cursorByteCol) to classify the context.
+// - For module contexts (CALLNAT, FETCH, RUN, INCLUDE):
+//   - Map the context's expected object type.
+//   - Query idx.NamesWithPrefix(prefix, objType, relPath, &cfg).
+//   - Build CompletionItem per candidate with Label, Kind, and Detail.
 //
-// Returns:
-//   - []protocol.CompletionItem: completion items (empty list for RED phase stub)
-//   - error: nil for success, error message otherwise
+// - For PERFORM/DDM-field contexts and ctxNone, return an empty (non-nil) list for now.
+// - Never panics; unreadable/missing/out-of-root/no-context → empty list, nil error.
+//
+// Concurrency (F7): snapshots idx/posEncoding under RLock and releases before any I/O.
 func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) ([]protocol.CompletionItem, error) {
-	// Feature 16, T3 RED phase: stub returns empty list.
-	// T4–T8 will implement real completion logic.
-	return []protocol.CompletionItem{}, nil
+	// Guard: hctx must be initialized
+	if hctx == nil {
+		return []protocol.CompletionItem{}, nil
+	}
+
+	// Snapshot idx/posEncoding under the read lock; release before any file I/O (F7).
+	hctx.idxResMu.RLock()
+	idx := hctx.idx
+	posEncoding := hctx.posEncoding
+	hctx.idxResMu.RUnlock()
+
+	// Convert LSP URI to workspace-relative path
+	absPath, relPath, err := uriToRelPath(hctx.root, params.TextDocument.URI)
+	if err != nil {
+		// URI outside workspace root
+		return []protocol.CompletionItem{}, nil
+	}
+
+	// Resolve the document: open buffer first (store-first pattern — required because
+	// completion fires while typing), else index snapshot.
+	var content string
+	if hctx.store != nil {
+		if doc, ok := hctx.store.Get(params.TextDocument.URI); ok && doc != nil {
+			content = string(doc.Content)
+		}
+	}
+
+	// Fallback to reading from disk if not open
+	if content == "" {
+		if idx == nil {
+			return []protocol.CompletionItem{}, nil
+		}
+		b, err := os.ReadFile(absPath)
+		if err != nil {
+			return []protocol.CompletionItem{}, nil
+		}
+		content = string(b)
+	}
+
+	// Derive the cursor position in model coordinates (1-based line, byte column)
+	modelPos := fromProtocolPosition(params.Position, content, posEncoding)
+	line := lineAt(content, modelPos.Line-1) // lineAt takes 0-based line index
+	cursorByteCol := modelPos.Column - 1     // Convert 1-based column to 0-based byte offset
+
+	// Clamp cursor to line bounds
+	if cursorByteCol < 0 {
+		cursorByteCol = 0
+	}
+	if cursorByteCol > len(line) {
+		cursorByteCol = len(line)
+	}
+
+	// Detect the completion context
+	kind, prefix := detectCompletionContext(line, cursorByteCol)
+
+	// T4: Handle module contexts (CALLNAT, FETCH, RUN, INCLUDE)
+	// For other contexts, return empty list (T6/T7 will implement them)
+	switch kind.kind {
+	case ctxSubroutineType:
+		// T4 handles only CALLNAT/module-subprogram contexts.
+		// PERFORM (external subroutine, ObjectExternalSubroutine) is T6.
+		if kind.objType == model.ObjectSubprogram {
+			return provideModuleCompletion(idx, &hctx.cfg, relPath, prefix, kind.objType)
+		}
+		// PERFORM deferred to T6; return empty for now
+		return []protocol.CompletionItem{}, nil
+
+	case ctxProgramType:
+		// FETCH / RUN contexts
+		return provideModuleCompletion(idx, &hctx.cfg, relPath, prefix, kind.objType)
+
+	case ctxCopycodeType:
+		// INCLUDE context
+		return provideModuleCompletion(idx, &hctx.cfg, relPath, prefix, kind.objType)
+
+	default:
+		// ctxNone, ctxDDMFieldType: deferred to T7/T8
+		return []protocol.CompletionItem{}, nil
+	}
+}
+
+// provideModuleCompletion handles the module-context cases (CALLNAT, FETCH, RUN, INCLUDE).
+// It queries the index for candidates matching the prefix and expected object type,
+// and builds CompletionItem entries for each.
+func provideModuleCompletion(idx *workspace.Index, cfg *config.Config, relPath, prefix string, objType model.ObjectType) ([]protocol.CompletionItem, error) {
+	if idx == nil {
+		return []protocol.CompletionItem{}, nil
+	}
+
+	// Query the index for reachable candidates matching the prefix and type
+	candidates := idx.NamesWithPrefix(prefix, objType, relPath, cfg)
+
+	// Build CompletionItem for each candidate
+	var items []protocol.CompletionItem
+	for _, cand := range candidates {
+		// Extract object name from the candidate's path (mirroring objectIdentity logic)
+		objName := extractObjectName(cand.Path)
+
+		item := protocol.CompletionItem{
+			Label:  objName,
+			Kind:   objectTypeToCompletionKind(cand.Type),
+			Detail: protocol.NewOptional[string](objectTypeLabel(cand.Type)),
+		}
+		items = append(items, item)
+	}
+
+	// Return non-nil even if empty (never nil)
+	if items == nil {
+		items = []protocol.CompletionItem{}
+	}
+	return items, nil
+}
+
+// extractObjectName derives the object name from a workspace-relative path.
+// It mirrors the logic of objectIdentity (internal/workspace/resolution.go) but
+// takes only the path, not the config (we don't need library info for the name).
+// path.Base / path.Ext operate on slash-separated keys, not OS file paths.
+func extractObjectName(relPath string) string {
+	base := path.Base(relPath)
+	ext := path.Ext(base)
+	return strings.ToUpper(strings.TrimSuffix(base, ext))
 }
