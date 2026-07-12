@@ -1,0 +1,14 @@
+* Test program for DDM field-name completion (feature 16, T7, Story 3, AC1/AC2)
+DEFINE DATA
+LOCAL
+  1 #CUSTOMER-ID     (N8)
+  1 #NAME            (A50)
+  1 #EMAIL           (A60)
+END-DEFINE
+
+PROCEDURE DIVISION.
+  READ CUSTOMER CUSTOMER-ID
+    MOVE CUSTOMER-ID TO #CUSTOMER-ID
+  END-READ
+  STOP.
+END PROCEDURE.

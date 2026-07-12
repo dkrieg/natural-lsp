@@ -1,0 +1,14 @@
+DB: 000 FILE: 100  - CUSTOMER                          DEFAULT SEQUENCE:
+TYPE: ADABAS
+
+T L DB Name                              F Leng  S D Remark
+- - -- --------------------------------  - ----  - - ------------------------
+  1 AA CUSTOMER-ID                       N    8  N U
+  1 AB CUSTOMER-NAME                     A   50  N D
+  1 AC EMAIL                             A   60  N
+  1 AD PHONE                             A   20  N
+  1 AE BALANCE                           P  9,2  N
+*      -------- SOURCE FIELD(S) -------
+*      CUSTOMER-NAME (1-50)
+*      EMAIL         (1-60)
+******DDM OUTPUT TERMINATED******

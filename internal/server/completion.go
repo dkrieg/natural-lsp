@@ -267,16 +267,11 @@ func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) (
 	posEncoding := hctx.posEncoding
 	hctx.idxResMu.RUnlock()
 
-	// Convert LSP URI to workspace-relative path
-	absPath, relPath, err := uriToRelPath(hctx.root, params.TextDocument.URI)
-	if err != nil {
-		// URI outside workspace root
-		return []protocol.CompletionItem{}, nil
-	}
-
 	// Resolve the document: open buffer first (store-first pattern — required because
 	// completion fires while typing), else index snapshot.
 	var content string
+	var absPath string
+	var err error
 	if hctx.store != nil {
 		if doc, ok := hctx.store.Get(params.TextDocument.URI); ok && doc != nil {
 			content = string(doc.Content)
@@ -286,6 +281,11 @@ func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) (
 	// Fallback to reading from disk if not open
 	if content == "" {
 		if idx == nil {
+			return []protocol.CompletionItem{}, nil
+		}
+		absPath, _, err = uriToRelPath(hctx.root, params.TextDocument.URI)
+		if err != nil {
+			// URI outside workspace root
 			return []protocol.CompletionItem{}, nil
 		}
 		b, err := os.ReadFile(absPath)
@@ -311,9 +311,21 @@ func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) (
 	// Detect the completion context
 	kind, prefix := detectCompletionContext(line, cursorByteCol)
 
+	// For contexts that need the relative path, try to get it now
+	var relPath string
+	switch kind.kind {
+	case ctxSubroutineType, ctxProgramType, ctxCopycodeType:
+		// These module contexts need the relative path for index lookup
+		_, relPath, err = uriToRelPath(hctx.root, params.TextDocument.URI)
+		if err != nil {
+			// URI outside workspace root; return empty for module contexts
+			return []protocol.CompletionItem{}, nil
+		}
+	}
+
 	// T4: Handle module contexts (CALLNAT, FETCH, RUN, INCLUDE)
 	// T6: Handle PERFORM subroutine context
-	// For other contexts, return empty list (T7/T8 will implement them)
+	// T7: Handle DDM field-name context
 	switch kind.kind {
 	case ctxSubroutineType:
 		if kind.objType == model.ObjectSubprogram {
@@ -385,8 +397,13 @@ func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) (
 		// INCLUDE context
 		return provideModuleCompletion(idx, &hctx.cfg, relPath, prefix, kind.objType)
 
+	case ctxDDMFieldType:
+		// T7: DDM field-name completion at data-access statements
+		// No relPath needed; LookupByName searches by object name, not path
+		return provideDDMFieldCompletion(idx, &hctx.cfg, kind.DDMName(), prefix)
+
 	default:
-		// ctxNone, ctxDDMFieldType: deferred to T7/T8
+		// ctxNone: unrecognized context
 		return []protocol.CompletionItem{}, nil
 	}
 }
@@ -431,4 +448,73 @@ func extractObjectName(relPath string) string {
 	base := path.Base(relPath)
 	ext := path.Ext(base)
 	return strings.ToUpper(strings.TrimSuffix(base, ext))
+}
+
+// provideDDMFieldCompletion handles DDM field-name completion at data-access statements
+// (feature 16, T7, Story 3, AC1/AC2/AC3).
+//
+// Behavior:
+//   - Resolve the DDM name to a .NSD in the index via LookupByName (exact match).
+//   - On a unique resolved DDM, read its FileAnalysis.Definitions and emit CompletionItem
+//     per field matching the prefix (case-insensitive).
+//   - Unresolved/unindexed/ambiguous/nil-Definitions → empty list, no error (AC3, FR-17).
+//
+// Never panics; always returns a non-nil (possibly empty) list.
+func provideDDMFieldCompletion(idx *workspace.Index, cfg *config.Config, ddmName, fieldPrefix string) ([]protocol.CompletionItem, error) {
+	if idx == nil || ddmName == "" {
+		return []protocol.CompletionItem{}, nil
+	}
+
+	// Resolve the DDM name to a .NSD in the index (exact match)
+	candidates := idx.LookupByName(ddmName, model.ObjectDDM, cfg)
+
+	// Unresolved, ambiguous, or multiple matches → return empty (AC3, FR-17)
+	if len(candidates) != 1 {
+		return []protocol.CompletionItem{}, nil
+	}
+
+	// Get the resolved DDM's FileAnalysis from the index
+	ddmEntry, ok := idx.Get(candidates[0].Path)
+	if !ok || len(ddmEntry.Definitions) == 0 {
+		// DDM found but has no Definitions (empty or nil) → return empty (AC3)
+		return []protocol.CompletionItem{}, nil
+	}
+
+	// Build completion items from the DDM's field definitions
+	var items []protocol.CompletionItem
+	fieldPrefixUpper := strings.ToUpper(fieldPrefix)
+
+	// Recurse into Definitions to collect all fields (including nested group/REDEFINE fields)
+	collectFieldCompletions(ddmEntry.Definitions, fieldPrefixUpper, &items)
+
+	// Return non-nil even if empty
+	if items == nil {
+		items = []protocol.CompletionItem{}
+	}
+	return items, nil
+}
+
+// collectFieldCompletions recursively collects field definitions matching a prefix
+// into the completion items slice. It handles nested fields in groups and REDEFINEs.
+// For DDM field completion, we use substring matching to handle cases where the user
+// types a partial field name that doesn't match the prefix (e.g., "NAM" in "CUSTOMER-NAME").
+func collectFieldCompletions(defs []model.DataDefinition, fieldPrefixUpper string, items *[]protocol.CompletionItem) {
+	for i := range defs {
+		def := &defs[i]
+		defNameUpper := strings.ToUpper(def.Name)
+		// Match if prefix is empty (all fields) or if field name contains the prefix as substring (case-insensitive)
+		if fieldPrefixUpper == "" || strings.Contains(defNameUpper, fieldPrefixUpper) {
+			item := protocol.CompletionItem{
+				Label:  def.Name,
+				Kind:   protocol.CompletionItemKindField,
+				Detail: protocol.NewOptional[string](def.Type),
+			}
+			*items = append(*items, item)
+		}
+
+		// Recurse into nested Children (groups, REDEFINE subfields)
+		if len(def.Children) > 0 {
+			collectFieldCompletions(def.Children, fieldPrefixUpper, items)
+		}
+	}
 }
