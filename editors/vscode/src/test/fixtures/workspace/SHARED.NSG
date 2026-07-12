@@ -1,0 +1,5 @@
+* SHARED — sample global data area.
+DEFINE DATA GLOBAL
+1 #GVAR (A10)
+END-DEFINE
+END

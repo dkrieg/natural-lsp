@@ -1,0 +1,2 @@
+# Sample workspace sentinel for the natural-lsp VS Code extension integration tests.
+# Its presence marks the workspace root (the server walks up for this file).

@@ -1,0 +1,8 @@
+* GREET — sample subprogram (CALLNAT target).
+DEFINE DATA
+PARAMETER
+1 #NAME (A20)
+END-DEFINE
+*
+WRITE 'HELLO' #NAME
+END

@@ -1,0 +1,4 @@
+* CALC — sample function.
+DEFINE FUNCTION CALC
+END-FUNCTION
+END

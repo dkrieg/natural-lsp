@@ -4,7 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–14 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, and diagnostics**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, and `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy) remain unwired.
+**Features 00–15 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, and diagnostics**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, and `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy) remain unwired.
+
+Feature 15 (editor clients & distribution) gets the server in front of users in their editors — the
+first feature with **no Go, `internal/model`, or cache-format change** (the server's existing `--stdio`
+/ `--version` / `--init` CLI and the `just release` pipeline already sufficed; this feature adds clients,
+docs, and a CI job around them). Covers FR-44/FR-45/FR-46 and NFR-10/NFR-12/NFR-13. The **VS Code
+extension** lives in-repo at `editors/vscode/` (TypeScript, `vscode-languageclient`): on opening any
+Natural file it launches `natural-lsp --stdio` over stdio, **zero-config when the binary is on `PATH`**,
+overridable via the `naturalLsp.serverPath` setting (pure, host-free resolver in `src/serverPath.ts`);
+a missing binary surfaces an actionable notification rather than crashing activation. It contributes the
+`natural` language for **all 15** `.NSx` extensions (both an `extensions` list and case-insensitive
+`filenamePatterns`, since mainframe exports are upper-case) plus a **basic TextMate grammar**
+(`syntaxes/natural.tmLanguage.json`: keywords, `*`/`**` and `/*` comments, string/numeric literals,
+aligned to the lexer). It is validated by a **full test harness** — pure Mocha unit tests
+(`resolveServerPath`, grammar scopes via `vscode-textmate`) plus `@vscode/test-electron` integration
+tests (activation, 15-type association, live server launch reaching `Running`) — and **packaged to a
+`.vsix` via `vsce`** (`publisher: dkrieg`, version tracks the server release line; **no Marketplace
+publish**). A **separate `vscode-extension` Node job** in `.github/workflows/ci.yml` runs the harness in
+CI (builds the server, `npm ci`/compile/lint/unit, then the electron suite under `xvfb-run`); **`just
+verify` stays Go-only**. **JetBrains** support is a reproducible LSP4IJ path (works in Community
+editions) documented in `editors/jetbrains/README.md` with an importable server template
+(`editors/jetbrains/lsp4ij-template/template.json`) covering all 15 file types. **Neovim/Zed/Helix** are
+documented in the root README (Neovim gained the previously-missing `.NSx`→`natural` filetype
+association; Zed honestly notes a full binding needs a Zed language extension). A **distribution smoke
+check** (`scripts/smoke.sh`) verifies `--version` + an `initialize→…→exit` stdio round-trip against a
+fresh binary; NFR-12's package-manager channel (Homebrew/Scoop) is documented as **future work**. A
+sample workspace lives under `docs/plans/features/15-editor-clients/sample-workspace/`.
 
 Feature 14 (diagnostics) wires **`textDocument/publishDiagnostics`** (FR-30 parse-error diagnostics,
 FR-31 ambiguous-resolution diagnostics) — the server's first outbound-notification provider. It is

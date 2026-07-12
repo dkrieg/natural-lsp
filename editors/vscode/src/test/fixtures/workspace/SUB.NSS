@@ -1,0 +1,5 @@
+* SUB — sample external subroutine.
+DEFINE SUBROUTINE SUB
+  IGNORE
+END-SUBROUTINE
+END

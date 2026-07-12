@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Natural",
+  "scopeName": "source.natural",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.asterisk.natural",
+          "comment": "Full-line comment: * or ** at the start of a line (leading whitespace allowed, matching the lexer's line-start rule).",
+          "match": "^\\s*\\*.*$"
+        },
+        {
+          "name": "comment.line.double-slash.natural",
+          "comment": "Rest-of-line comment introduced by /* anywhere on the line; runs to end of line, no closing */.",
+          "match": "/\\*.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.single.natural",
+      "comment": "Single-quoted string literal.",
+      "begin": "'",
+      "end": "'"
+    },
+    "numbers": {
+      "name": "constant.numeric.natural",
+      "comment": "Integer, decimal, and scientific-notation numeric literals.",
+      "match": "\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.natural",
+          "comment": "Recognized Natural statement keywords (case-insensitive). Deliberately basic.",
+          "match": "(?i)\\b(CALLNAT|CALLDBPROC|PERFORM|INCLUDE|FETCH|RUN|READ|FIND|GET|STORE|UPDATE|DELETE|INSERT|SELECT|MERGE|COMMIT|ROLLBACK|PROCESS|DEFINE|REDEFINE|END-DEFINE|SUBROUTINE|END-SUBROUTINE|MAP|END-MAP|END-SELECT|END-RESULT|IF|THEN|ELSE|ENDIF|FOR|WHILE|REPEAT|LOOP|UNTIL|ESCAPE|DECIDE|WHEN|MOVE|COMPUTE|RESET|WRITE|DISPLAY|INPUT|ESCAPE)\\b"
+        },
+        {
+          "name": "keyword.other.natural",
+          "comment": "Declaration/section and clause words that read as modifiers rather than statement heads.",
+          "match": "(?i)\\b(DATA|LOCAL|PARAMETER|GLOBAL|LINKAGE|INDEPENDENT|CONTEXT|OBJECT|WORK|FILE|USING|SINGLE|INTO|FROM|WHERE|VALUES|SET|GROUP|HAVING|ORDER|BY|RESULT|RECORD|SAME|TO)\\b"
+        }
+      ]
+    }
+  }
+}

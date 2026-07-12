@@ -1,0 +1,17 @@
+* HELLO.NSP - sample program for editor-client verification.
+* Demonstrates two navigable references:
+*   CALLNAT 'CALLGREET' -> subprogram CALLGREET.NSN
+*   PERFORM SAYHELLO    -> external subroutine SAYHELLO.NSS
+DEFINE DATA LOCAL
+1 #NAME (A20)
+END-DEFINE
+*
+MOVE 'WORLD' TO #NAME
+*
+* Go to definition on CALLGREET should open CALLGREET.NSN.
+CALLNAT 'CALLGREET' #NAME
+*
+* Go to definition on SAYHELLO should open SAYHELLO.NSS.
+PERFORM SAYHELLO
+*
+END

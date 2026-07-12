@@ -1,0 +1,5 @@
+* GLOBALS — sample local data area.
+DEFINE DATA LOCAL
+1 #FLAG (L)
+END-DEFINE
+END

@@ -1,0 +1,124 @@
+{
+  "name": "natural-lsp-vscode",
+  "displayName": "Natural LSP",
+  "description": "Language support for Software AG Natural, backed by the natural-lsp language server.",
+  "version": "0.1.0",
+  "publisher": "dkrieg",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dkrieg/natural-lsp.git"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "natural",
+    "software ag",
+    "mainframe",
+    "4gl",
+    "lsp"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:natural"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "natural",
+        "aliases": [
+          "Natural",
+          "natural"
+        ],
+        "extensions": [
+          ".nsp",
+          ".nsn",
+          ".nss",
+          ".nsc",
+          ".nsm",
+          ".nsl",
+          ".nsg",
+          ".nsa",
+          ".nsh",
+          ".nsd",
+          ".ns4",
+          ".ns7",
+          ".ns3",
+          ".ns8",
+          ".nst"
+        ],
+        "filenamePatterns": [
+          "**/*.[nN][sS][pP]",
+          "**/*.[nN][sS][nN]",
+          "**/*.[nN][sS][sS]",
+          "**/*.[nN][sS][cC]",
+          "**/*.[nN][sS][mM]",
+          "**/*.[nN][sS][lL]",
+          "**/*.[nN][sS][gG]",
+          "**/*.[nN][sS][aA]",
+          "**/*.[nN][sS][hH]",
+          "**/*.[nN][sS][dD]",
+          "**/*.[nN][sS]4",
+          "**/*.[nN][sS]7",
+          "**/*.[nN][sS]3",
+          "**/*.[nN][sS]8",
+          "**/*.[nN][sS][tT]"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "natural",
+        "scopeName": "source.natural",
+        "path": "./syntaxes/natural.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Natural LSP",
+      "properties": {
+        "naturalLsp.serverPath": {
+          "type": "string",
+          "default": "natural-lsp",
+          "description": "Path to the natural-lsp server binary; defaults to looking it up on PATH."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "naturalLsp.restart",
+        "title": "Natural LSP: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "pretest": "npm run compile && npm run lint",
+    "test": "node ./out/test/runTest.js",
+    "test:unit": "npm run compile && mocha \"out/test/unit/**/*.test.js\"",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.1",
+    "eslint": "^8.57.0",
+    "glob": "^10.4.5",
+    "mocha": "^10.7.3",
+    "typescript": "^5.5.4",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}
