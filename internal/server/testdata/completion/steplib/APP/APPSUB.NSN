@@ -1,0 +1,6 @@
+*> Subprogram in APP library (reachable)
+DEFINE DATA
+END-DEFINE
+
+PROCEDURE DIVISION.
+END PROCEDURE.

@@ -1,0 +1,13 @@
+*> APP caller with CALLNAT referencing subprograms in APP and COMMON
+*> Feature 16, T5: steplib-filtered vs flat-namespace module candidates
+DEFINE DATA
+LOCAL
+  1 X (N5)
+END-DEFINE
+
+PROCEDURE DIVISION.
+  CALLNAT APPSUB
+  CALLNAT NEWSUB
+  CALLNAT COMSUB
+  CALLNAT OTHSUB
+END PROCEDURE.

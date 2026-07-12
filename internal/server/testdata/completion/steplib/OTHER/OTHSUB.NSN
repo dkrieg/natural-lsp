@@ -1,0 +1,6 @@
+*> Subprogram in OTHER library (NOT reachable - not in APP's steplib chain)
+DEFINE DATA
+END-DEFINE
+
+PROCEDURE DIVISION.
+END PROCEDURE.
