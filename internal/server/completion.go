@@ -227,6 +227,17 @@ func objectTypeToCompletionKind(ot model.ObjectType) protocol.CompletionItemKind
 	}
 }
 
+// isDynamicPrefix checks if a prefix starts with a sigil (#, &, or +),
+// indicating a dynamic (variable) operand.
+// Dynamic operands are unresolvable and excluded from completion (FR-17/FR-18).
+func isDynamicPrefix(prefix string) bool {
+	if len(prefix) == 0 {
+		return false
+	}
+	first := prefix[0]
+	return first == '#' || first == '&' || first == '+'
+}
+
 // provideCompletion handles the textDocument/completion request (feature 16, T4).
 // It is the LSP provider entry point for completion support.
 //
@@ -301,15 +312,69 @@ func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) (
 	kind, prefix := detectCompletionContext(line, cursorByteCol)
 
 	// T4: Handle module contexts (CALLNAT, FETCH, RUN, INCLUDE)
-	// For other contexts, return empty list (T6/T7 will implement them)
+	// T6: Handle PERFORM subroutine context
+	// For other contexts, return empty list (T7/T8 will implement them)
 	switch kind.kind {
 	case ctxSubroutineType:
-		// T4 handles only CALLNAT/module-subprogram contexts.
-		// PERFORM (external subroutine, ObjectExternalSubroutine) is T6.
 		if kind.objType == model.ObjectSubprogram {
+			// T4: CALLNAT context (ObjectSubprogram)
 			return provideModuleCompletion(idx, &hctx.cfg, relPath, prefix, kind.objType)
 		}
-		// PERFORM deferred to T6; return empty for now
+		// T6: PERFORM context (ObjectExternalSubroutine)
+		if kind.objType == model.ObjectExternalSubroutine {
+			// Dynamic guard (AC3, FR-17/FR-18): if prefix is dynamic, return empty (no error, no diagnostic)
+			if isDynamicPrefix(prefix) {
+				return []protocol.CompletionItem{}, nil
+			}
+			// Get the open buffer's analysis for inline subroutines (store-first)
+			var callerAnalysis *model.FileAnalysis
+			if hctx.store != nil {
+				if doc, ok := hctx.store.Get(params.TextDocument.URI); ok && doc != nil {
+					callerAnalysis = &doc.Analysis
+				}
+			}
+			// Fall back to index snapshot if store miss or store is nil
+			if callerAnalysis == nil && idx != nil {
+				if entry, ok := idx.Get(relPath); ok {
+					callerAnalysis = &entry
+				}
+			}
+			// Collect inline subroutines from the caller's structure (AC1)
+			var items []protocol.CompletionItem
+			if callerAnalysis != nil && callerAnalysis.Structure != nil {
+				for _, child := range callerAnalysis.Structure.Children {
+					if child.Kind == model.SymbolSubroutine {
+						// Case-insensitive prefix match
+						childNameUpper := strings.ToUpper(child.Name)
+						prefixUpper := strings.ToUpper(prefix)
+						if strings.HasPrefix(childNameUpper, prefixUpper) {
+							item := protocol.CompletionItem{
+								Label: child.Name,
+								Kind:  protocol.CompletionItemKindFunction,
+							}
+							items = append(items, item)
+						}
+					}
+				}
+			}
+			// Append external subroutines (AC2)
+			externalItems, err := provideModuleCompletion(idx, &hctx.cfg, relPath, prefix, model.ObjectExternalSubroutine)
+			if err != nil {
+				// Non-nil error means serious problem; return what we have (inline candidates at minimum)
+				if len(items) == 0 {
+					return []protocol.CompletionItem{}, nil
+				}
+				return items, nil
+			}
+			// Append external items after inline items (ensures inline-before-external ordering, AC1/AC2)
+			items = append(items, externalItems...)
+			// Return non-nil even if empty
+			if items == nil {
+				items = []protocol.CompletionItem{}
+			}
+			return items, nil
+		}
+		// Should not reach here, but return empty for any other ObjectType
 		return []protocol.CompletionItem{}, nil
 
 	case ctxProgramType:

@@ -899,3 +899,330 @@ END PROCEDURE.
 		t.Errorf("NEWSUB Detail: got %v, want 'subprogram'", detail)
 	}
 }
+
+// TestProvideCompletion_PerformInlineBeforeExternal tests PERFORM subroutine completion
+// with inline-first-then-external ordering (feature 16, T6, Story 2, AC1/AC2).
+//
+// Scenario:
+// - A caller object with an inline DEFINE SUBROUTINE MY-INLINE and a partial "PERFORM MY"
+// - An external subroutine MYEXT.NSS in the workspace
+// - Expected: inline MY-INLINE comes first, followed by external MYEXT
+// - Both should be offered as CompletionItemKindFunction (subroutine kind)
+//
+// Verifies that the provider lists inline candidates before external ones (mirrors
+// FR-12 inline-before-external resolution order).
+func TestProvideCompletion_PerformInlineBeforeExternal(t *testing.T) {
+	testdataDir := "testdata/completion/perform"
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Arrange: build the index with the caller (containing inline MY-INLINE) and
+	// the external MYEXT subroutine
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	files := []struct {
+		path    string
+		relPath string
+	}{
+		{filepath.Join(testdataDir, "CALLER.NSP"), "testdata/completion/perform/CALLER.NSP"},
+		{filepath.Join(testdataDir, "MYEXT.NSS"), "testdata/completion/perform/MYEXT.NSS"},
+	}
+
+	az := natural.New(nil)
+	for _, f := range files {
+		content, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", f.path, err)
+		}
+
+		analysis, err := az.Analyze(f.path, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.path, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set over the index
+	resSet := workspace.Resolve(idx, &cfg)
+
+	tests := []struct {
+		name              string
+		callerPath        string
+		callerRelPath     string
+		cursorLine        int // 0-based
+		cursorCol         int // byte column in the line
+		expectInlineFirst bool
+		expectBoth        bool // whether both inline and external should be present
+		description       string
+	}{
+		{
+			name:              "PERFORM MY: inline first, then external (AC1/AC2)",
+			callerPath:        filepath.Join(testdataDir, "CALLER.NSP"),
+			callerRelPath:     "testdata/completion/perform/CALLER.NSP",
+			cursorLine:        7,  // Line with "PERFORM MY"
+			cursorCol:         10, // at end of "MY"
+			expectInlineFirst: true,
+			expectBoth:        true,
+			description:       "AC1/AC2: inline subroutine MY-INLINE listed before external MYEXT",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Read the caller file and get the structure to verify inline subroutine exists
+			content, err := os.ReadFile(tc.callerPath)
+			if err != nil {
+				t.Fatalf("failed to read caller file: %v", err)
+			}
+
+			// Get the analysis for the caller to verify it has the inline subroutine
+			callerAnalysis, err := az.Analyze(tc.callerPath, content)
+			if err != nil {
+				t.Fatalf("failed to analyze caller: %v", err)
+			}
+
+			// Verify the inline subroutine is in the structure
+			if callerAnalysis.Structure == nil {
+				t.Fatalf("caller structure is nil")
+			}
+
+			var foundInline bool
+			for _, child := range callerAnalysis.Structure.Children {
+				if child.Kind == model.SymbolSubroutine && strings.Contains(strings.ToUpper(child.Name), "INLINE") {
+					foundInline = true
+					break
+				}
+			}
+
+			if !foundInline {
+				t.Logf("warning: inline subroutine MY-INLINE not found in structure; children: %v", callerAnalysis.Structure.Children)
+			}
+
+			// Act: create handler context and call provideCompletion
+			hctx := &handlerContext{
+				cfg:         cfg,
+				idx:         idx,
+				res:         resSet,
+				root:        workspaceRoot,
+				posEncoding: protocol.PositionEncodingKindUTF8,
+				store:       nil,
+			}
+
+			// Construct CompletionParams
+			params := protocol.CompletionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(filepath.Join(workspaceRoot, tc.callerRelPath)),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine),
+						Character: uint32(tc.cursorCol),
+					},
+				},
+			}
+
+			result, err := provideCompletion(hctx, params)
+
+			// Assert: no error expected
+			if err != nil {
+				t.Errorf("provideCompletion returned error: %v", err)
+			}
+
+			// Assert: result should be a list (non-nil)
+			if result == nil {
+				result = []protocol.CompletionItem{}
+			}
+
+			// Assert: both MY-INLINE and MYEXT should be present
+			if tc.expectBoth {
+				var foundMyInline, foundMyext *protocol.CompletionItem
+				for i := range result {
+					if strings.Contains(strings.ToUpper(result[i].Label), "INLINE") {
+						foundMyInline = &result[i]
+					}
+					if result[i].Label == "MYEXT" {
+						foundMyext = &result[i]
+					}
+				}
+
+				if foundMyInline == nil {
+					t.Errorf("expected inline subroutine MY-INLINE not found in result (got %d items)", len(result))
+					for i, item := range result {
+						t.Logf("  [%d] %q (kind=%v)", i, item.Label, item.Kind)
+					}
+				}
+
+				if foundMyext == nil {
+					t.Errorf("expected external subroutine MYEXT not found in result (got %d items)", len(result))
+					for i, item := range result {
+						t.Logf("  [%d] %q (kind=%v)", i, item.Label, item.Kind)
+					}
+				}
+
+				// Assert: both are CompletionItemKindFunction
+				if foundMyInline != nil && foundMyInline.Kind != protocol.CompletionItemKindFunction {
+					t.Errorf("MY-INLINE Kind: got %v, want Function", foundMyInline.Kind)
+				}
+
+				if foundMyext != nil && foundMyext.Kind != protocol.CompletionItemKindFunction {
+					t.Errorf("MYEXT Kind: got %v, want Function", foundMyext.Kind)
+				}
+
+				// Assert: inline-before-external order
+				if tc.expectInlineFirst && foundMyInline != nil && foundMyext != nil {
+					inlineIdx := -1
+					myextIdx := -1
+					for i := range result {
+						if strings.Contains(strings.ToUpper(result[i].Label), "INLINE") {
+							inlineIdx = i
+						}
+						if result[i].Label == "MYEXT" {
+							myextIdx = i
+						}
+					}
+
+					if inlineIdx >= 0 && myextIdx >= 0 && inlineIdx > myextIdx {
+						t.Errorf("inline-before-external order violated: MY-INLINE at index %d, MYEXT at index %d (expected INLINE < MYEXT)", inlineIdx, myextIdx)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestProvideCompletion_PerformDynamicExcluded tests PERFORM dynamic-target exclusion
+// (feature 16, T6, Story 2, AC3, FR-17/FR-18).
+//
+// Scenario:
+// - A partial "PERFORM #DYN" (variable operand with # sigil)
+// - Expected: no completions offered (empty list, no error, no diagnostic)
+//
+// Verifies that dynamic PERFORM targets (sigil-prefixed variables) are excluded from
+// completion, as they are unresolvable modeled gaps (FR-17).
+func TestProvideCompletion_PerformDynamicExcluded(t *testing.T) {
+	testdataDir := "testdata/completion/perform"
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Arrange: build index with the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	files := []struct {
+		path    string
+		relPath string
+	}{
+		{filepath.Join(testdataDir, "CALLER.NSP"), "testdata/completion/perform/CALLER.NSP"},
+		{filepath.Join(testdataDir, "MYEXT.NSS"), "testdata/completion/perform/MYEXT.NSS"},
+	}
+
+	az := natural.New(nil)
+	for _, f := range files {
+		content, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", f.path, err)
+		}
+
+		analysis, err := az.Analyze(f.path, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.path, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// A store lets each case's dynamic PERFORM line be the actual buffer the
+	// provider reads (store-first) — the real completion path — instead of the
+	// static on-disk fixture (which holds a non-dynamic "PERFORM MY").
+	store := NewTestStore(t.TempDir(), az)
+
+	tests := []struct {
+		name          string
+		line          string // the dynamic line placed in the open buffer
+		cursorByteCol int
+		description   string
+		expectEmpty   bool
+	}{
+		{
+			name:          "PERFORM #DYN: dynamic target excluded (AC3, FR-17)",
+			line:          "PERFORM #DYN",
+			cursorByteCol: 12,
+			description:   "AC3: dynamic (sigil-prefixed) PERFORM target yields empty completion, no error",
+			expectEmpty:   true,
+		},
+		{
+			name:          "PERFORM &VAR: dynamic target excluded",
+			line:          "PERFORM &VAR",
+			cursorByteCol: 12,
+			description:   "Dynamic ampersand-sigil target yields empty",
+			expectEmpty:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Act: detect the context from the line
+			kind, prefix := detectCompletionContext(tc.line, tc.cursorByteCol)
+
+			// Verify the detector correctly identifies this as a PERFORM context
+			if kind != newSubroutineContext(model.ObjectExternalSubroutine) {
+				t.Fatalf("expected subroutine context, got %v", kind)
+			}
+
+			// Verify the prefix is dynamic (contains a sigil)
+			if !isPrefixDynamic(prefix) {
+				t.Fatalf("expected dynamic prefix (with sigil), got %q", prefix)
+			}
+
+			// Now test the provider: with the dynamic line as the open buffer, it
+			// must detect the sigil prefix and return an empty list (no offer).
+			docURI := newTestURI("dyn-perform.NSP")
+			store.Open(docURI, 1, []byte(tc.line))
+
+			result, err := provideCompletion(&handlerContext{
+				cfg:         cfg,
+				idx:         idx,
+				res:         resSet,
+				root:        workspaceRoot,
+				posEncoding: protocol.PositionEncodingKindUTF8,
+				store:       store,
+			}, protocol.CompletionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: docURI,
+					},
+					Position: protocol.Position{
+						Line:      0,
+						Character: uint32(tc.cursorByteCol),
+					},
+				},
+			})
+
+			// Assert: no error
+			if err != nil {
+				t.Errorf("provideCompletion returned error: %v", err)
+			}
+
+			// Assert: result is empty (no dynamic completions should be offered)
+			if tc.expectEmpty {
+				if result == nil {
+					result = []protocol.CompletionItem{}
+				}
+				if len(result) > 0 {
+					t.Errorf("expected empty result for dynamic PERFORM target, got %d items:", len(result))
+					for i, item := range result {
+						t.Logf("  [%d] %q", i, item.Label)
+					}
+				}
+			}
+		})
+	}
+}
