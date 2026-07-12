@@ -50,6 +50,7 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 	if result.ObjectType == model.ObjectUnknown {
 		// Range is a placeholder; the extension diagnostic has no meaningful source span.
 		result.Diagnostics = append(result.Diagnostics, model.Diagnostic{
+			Code:     model.DiagnosticCodeSyntax,
 			Severity: model.DiagnosticInfo,
 			Message:  fmt.Sprintf("unrecognized extension %q", normalizeExt(path)),
 			Range:    model.Range{Start: model.Position{Line: 1, Column: 1}, End: model.Position{Line: 1, Column: 1}},
@@ -79,9 +80,13 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 	ast, _ := parser.Parse()
 	result.AST = ast
 
-	// Transfer parser diagnostics (syntax errors with real ranges) to the result.
+	// Transfer parser diagnostics (syntax errors with real ranges) to the result,
+	// stamping each with Code = DiagnosticCodeSyntax (Feature 14, T0).
 	if ast != nil && len(ast.Diagnostics) > 0 {
-		result.Diagnostics = append(result.Diagnostics, ast.Diagnostics...)
+		for _, diag := range ast.Diagnostics {
+			diag.Code = model.DiagnosticCodeSyntax
+			result.Diagnostics = append(result.Diagnostics, diag)
+		}
 	}
 
 	// Extract edges from the parsed AST. The extractor runs over whatever the

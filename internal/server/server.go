@@ -300,6 +300,14 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 		}
 	}
 
+	// publishDiag publishes diagnostics for a file URI (T7, Feature 14).
+	// Errors are logged (FR-43) but don't crash the dispatch loop.
+	publishDiag := func(uriStr string) {
+		if err := hctx.publishFileDiagnostics(ctx, stream, uriStr); err != nil {
+			logger.Warn("failed to publish diagnostics", "uri", uriStr, "err", err)
+		}
+	}
+
 	for {
 		// Read one JSON-RPC message from the framed stream. When the context is
 		// cancelled, the context-watcher goroutine above closes the stream, which
@@ -448,6 +456,8 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						} else {
 							u := params.TextDocument.URI
 							hctx.store.Open(u, int(params.TextDocument.Version), []byte(params.TextDocument.Text))
+							// T7: publish diagnostics after opening (S3-AC1)
+							publishDiag(string(u))
 						}
 					}
 				case "textDocument/didChange":
@@ -478,6 +488,8 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 
 									// Apply the change to the index and resolution
 									hctx.applyDocumentChange(relPath, []byte(whole.Text))
+									// T7: publish diagnostics after change (S3-AC1)
+									publishDiag(string(u))
 								} else if _, ok := change.(*protocol.TextDocumentContentChangePartial); ok {
 									// Partial (range) edit under Full-sync policy: log and skip
 									logger.Error("received partial change under full-sync policy; skipping", "uri", u)
@@ -494,7 +506,13 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						if err := params.UnmarshalJSONFrom(dec); err != nil {
 							logger.Error("invalid textDocument/didClose params", "err", err)
 						} else {
-							hctx.store.Close(params.TextDocument.URI)
+							u := params.TextDocument.URI
+							hctx.store.Close(u)
+							// T7: publish empty diagnostics to clear stale issues on close (OQ-3).
+							// Publish directly with empty array (no version since file is no longer open).
+							if err := publishDiagnostics(ctx, stream, string(u), nil, nil); err != nil {
+								logger.Warn("failed to publish diagnostics on close", "uri", string(u), "err", err)
+							}
 						}
 					}
 				case "workspace/didChangeWatchedFiles":
@@ -525,6 +543,11 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 									analyzeOne(cfg, az, relPath, nil, logger)
 									// Feature 10, T14: update index/resolution for deletion
 									hctx.applyDocumentChange(relPath, nil)
+									// T7: publish empty diagnostics to clear on delete (S3-AC1).
+									// Publish directly with empty array.
+									if err := publishDiagnostics(ctx, stream, string(event.URI), nil, nil); err != nil {
+										logger.Warn("failed to publish diagnostics on delete", "uri", string(event.URI), "err", err)
+									}
 									continue
 								}
 								// For create/change events: read and analyze the file
@@ -536,6 +559,8 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 								analyzeOne(cfg, az, relPath, content, logger)
 								// Feature 10, T14: update index/resolution
 								hctx.applyDocumentChange(relPath, content)
+								// T7: publish diagnostics after change (S3-AC1)
+								publishDiag(string(event.URI))
 							}
 						}
 					}

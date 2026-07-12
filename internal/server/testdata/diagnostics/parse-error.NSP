@@ -1,0 +1,5 @@
+* Program with a parse error
+PROGRAM TEST-PROG
+
+CALLNAT
+INVALID

@@ -8,11 +8,14 @@ LOCAL
 CALLNAT
 THIS IS MALFORMED
 
-IF X = Y
-* Missing THEN
+PERFORM
+* Missing subroutine
 
 FETCH
 * Missing target
+
+STORE
+* Missing key/record
 
 CALLNAT 'PROG'
 

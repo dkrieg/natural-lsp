@@ -1,0 +1,12 @@
+* A clean program with no errors
+PROGRAM CLEAN-PROG
+
+DEFINE DATA
+  LOCAL
+    1 #VAR (A5)
+  END
+END
+
+WRITE 'Hello'
+
+END

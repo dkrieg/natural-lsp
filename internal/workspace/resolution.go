@@ -497,6 +497,7 @@ func resolveByName(
 		sort.Strings(paths)
 
 		ambigDiagnostics[filePath] = append(ambigDiagnostics[filePath], model.Diagnostic{
+			Code:     model.DiagnosticCodeAmbiguity,
 			Message:  formatAmbiguityMessage(targetName, paths),
 			Severity: model.DiagnosticWarning,
 			Range:    edge.Source,

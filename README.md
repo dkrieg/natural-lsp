@@ -49,7 +49,13 @@ exported to files before it can be indexed.
 > **Code lens is now implemented** (feature 13): the `textDocument/codeLens` provider (FR-29) renders an
 > inbound call-count lens and a table-write-summary lens above each object, both activating
 > find-references to reveal the call/write sites; enabled by default and disableable via
-> `enable_code_lens`. The remaining completion/signature-help/call-hierarchy LSP *providers* are not yet
+> `enable_code_lens`.
+> **Diagnostics are now published** (feature 14): the server pushes `textDocument/publishDiagnostics`
+> (FR-30 parse errors, FR-31 ambiguous resolution), aggregating the parser's ranged syntax diagnostics
+> with the resolver's flat-namespace ambiguity warnings and tracking edits across
+> didOpen/didChange/didClose/watched-file changes (clearing via an empty array on fix, close, or delete).
+> Modeled gaps (dynamic/unresolved references) are never diagnostics (FR-17). The remaining
+> completion/signature-help/call-hierarchy LSP *providers* are not yet
 > wired — this README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
 
@@ -80,6 +86,17 @@ The capabilities below define the **target** feature set for the first stable re
   provider that renders it as a nested `DocumentSymbol[]` are both **shipped**. The outline is served from
   the open-document buffer, so it reflects unsaved edits.
 
+**Diagnostics** *(provider shipped — feature 14)*
+
+- Parse errors surfaced as diagnostics at the offending position, with a message identifying the
+  construct — **shipped** (FR-30); blank lines and comments produce none
+- Ambiguous resolution (a name matching objects in more than one library with no library map) reported
+  as a distinct **warning**-severity diagnostic naming the candidates — **shipped** (FR-31); declaring a
+  disambiguating library map removes it
+- Diagnostics track edits and config (open-document `didChange` and external watched-file changes),
+  clearing when the cause is fixed — **shipped**; modeled outcomes (dynamic/unresolved references) are
+  **never** diagnostics — **shipped** (FR-17)
+
 **Workspace indexing** *(full implementation shipped)*
 
 - Open-document tracking via in-memory store (`textDocument/didOpen|didChange|didClose`) — **shipped**
@@ -100,6 +117,7 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/callHierarchy` (incoming/outgoing call panels)
 - `textDocument/documentSymbol` — **shipped** (feature 11)
 - `textDocument/codeLens` (call counts, table write summaries) — **shipped** (feature 13)
+- `textDocument/publishDiagnostics` (parse errors, ambiguous resolution) — **shipped** (feature 14)
 - `window/workDoneProgress` (indexing progress on first run)
 
 ---

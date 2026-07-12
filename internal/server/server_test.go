@@ -180,46 +180,84 @@ func writeFramedMessage(w io.Writer, msg jsonrpc2.Message) error {
 	return err
 }
 
-// parseFramedResponse extracts one framed JSON-RPC response from buf and returns the body bytes.
-// It assumes buf starts with a valid Content-Length header and returns the JSON body.
-// After calling this, buf is advanced past the response (including header).
-func parseFramedResponse(buf *bytes.Buffer) ([]byte, error) {
-	output := buf.String()
+// parseFramedMessage extracts one framed JSON-RPC message from output and returns
+// the body bytes, the message type (Response or Notification), and any error.
+// It is a helper for parseFramedResponse that needs to skip notifications.
+func parseFramedMessage(output string) ([]byte, string, int, error) {
 	// Find the blank line that separates header from body
 	idx := strings.Index(output, "\r\n\r\n")
 	if idx == -1 {
-		return nil, fmt.Errorf("no blank line separating header and body")
+		return nil, "", 0, fmt.Errorf("no blank line separating header and body")
 	}
 	headerEnd := idx + 4 // account for "\r\n\r\n"
 
 	// Parse Content-Length from the header
 	headerLines := strings.Split(output[:idx], "\r\n")
 	if len(headerLines) == 0 {
-		return nil, fmt.Errorf("empty header")
+		return nil, "", 0, fmt.Errorf("empty header")
 	}
 	contentLengthLine := headerLines[0]
 	if !strings.HasPrefix(contentLengthLine, "Content-Length: ") {
-		return nil, fmt.Errorf("first line is not Content-Length header")
+		return nil, "", 0, fmt.Errorf("first line is not Content-Length header")
 	}
 	lengthStr := strings.TrimPrefix(contentLengthLine, "Content-Length: ")
 	contentLen, err := strconv.Atoi(lengthStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid Content-Length: %v", err)
+		return nil, "", 0, fmt.Errorf("invalid Content-Length: %v", err)
 	}
 
 	// Extract the body
 	bodyEnd := headerEnd + contentLen
 	if bodyEnd > len(output) {
-		return nil, fmt.Errorf("response too short; declared %d bytes but only %d available", contentLen, len(output)-headerEnd)
+		return nil, "", 0, fmt.Errorf("response too short; declared %d bytes but only %d available", contentLen, len(output)-headerEnd)
 	}
 	body := output[headerEnd:bodyEnd]
 
-	// Advance buf to remove this response
-	remaining := output[bodyEnd:]
-	buf.Reset()
-	buf.WriteString(remaining)
+	// Decode to determine message type (Response vs Notification)
+	msg, err := jsonrpc2.DecodeMessage([]byte(body))
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("failed to decode message: %v", err)
+	}
 
-	return []byte(body), nil
+	msgType := ""
+	if _, ok := msg.(*jsonrpc2.Response); ok {
+		msgType = "Response"
+	} else if _, ok := msg.(*jsonrpc2.Notification); ok {
+		msgType = "Notification"
+	} else {
+		msgType = "Other"
+	}
+
+	return []byte(body), msgType, bodyEnd, nil
+}
+
+// parseFramedResponse extracts one framed JSON-RPC response from buf and returns the body bytes.
+// It skips any notifications (e.g., textDocument/publishDiagnostics) that appear before the response.
+// It assumes buf starts with a valid Content-Length header and returns the JSON body.
+// After calling this, buf is advanced past the response (and any skipped notifications).
+func parseFramedResponse(buf *bytes.Buffer) ([]byte, error) {
+	for {
+		output := buf.String()
+		if output == "" {
+			return nil, fmt.Errorf("no more messages in buffer")
+		}
+
+		body, msgType, bodyEnd, err := parseFramedMessage(output)
+		if err != nil {
+			return nil, err
+		}
+
+		// Advance buf to remove this message
+		remaining := output[bodyEnd:]
+		buf.Reset()
+		buf.WriteString(remaining)
+
+		// If it's a Response, return it
+		if msgType == "Response" {
+			return body, nil
+		}
+		// Otherwise it's a Notification; skip it and try the next message
+	}
 }
 
 // TestServerRunReadsRequestAndWritesResponse tests that the Server type can read
