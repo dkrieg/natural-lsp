@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 
+	"go.lsp.dev/protocol"
+
 	"natural-lsp/internal/model"
 )
 
@@ -196,4 +198,21 @@ func isDataAccessVerb(keyword string) bool {
 		return true
 	}
 	return false
+}
+
+// provideCompletion is the stub provider for the textDocument/completion request (feature 16, T3).
+// During the RED phase, it returns an empty list.
+// In T4–T8, this function will be expanded to compute real completions based on context.
+//
+// Parameters:
+//   - hctx: handler context (will be used in T4+ for index/store access)
+//   - params: the CompletionParams from the client
+//
+// Returns:
+//   - []protocol.CompletionItem: completion items (empty list for RED phase stub)
+//   - error: nil for success, error message otherwise
+func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) ([]protocol.CompletionItem, error) {
+	// Feature 16, T3 RED phase: stub returns empty list.
+	// T4–T8 will implement real completion logic.
+	return []protocol.CompletionItem{}, nil
 }
