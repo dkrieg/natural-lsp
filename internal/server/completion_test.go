@@ -1226,3 +1226,122 @@ func TestProvideCompletion_PerformDynamicExcluded(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideCompletion_ContextNone tests the unrecognized-context path (Story 4, AC1).
+// When the cursor is on a non-triggering statement (COMPUTE, MOVE, comment, blank line),
+// provideCompletion returns an empty list (non-nil, no error).
+//
+// This verifies that ctxNone contexts gracefully return empty results without
+// attempting to offer completions, and without raising an error or diagnostic.
+func TestProvideCompletion_ContextNone(t *testing.T) {
+	testdataDir := "testdata/completion/none"
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Arrange: build the index by analyzing the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	files := []struct {
+		path    string
+		relPath string
+	}{
+		{filepath.Join(testdataDir, "CALLER.NSP"), "testdata/completion/none/CALLER.NSP"},
+	}
+
+	az := natural.New(nil)
+	for _, f := range files {
+		content, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", f.path, err)
+		}
+
+		analysis, err := az.Analyze(f.path, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.path, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	tests := []struct {
+		name          string
+		callerPath    string
+		callerRelPath string
+		cursorLine    int // 0-based
+		cursorCol     int // byte column
+		description   string
+	}{
+		{
+			name:          "COMPUTE statement: completion returns empty (AC1)",
+			callerPath:    filepath.Join(testdataDir, "CALLER.NSP"),
+			callerRelPath: "testdata/completion/none/CALLER.NSP",
+			cursorLine:    15, // line with "  COMPUTE #X = 1 + 2"
+			cursorCol:     15,
+			description:   "AC1: unrecognized context (COMPUTE) returns empty list, no error",
+		},
+		{
+			name:          "MOVE statement: completion returns empty (AC1)",
+			callerPath:    filepath.Join(testdataDir, "CALLER.NSP"),
+			callerRelPath: "testdata/completion/none/CALLER.NSP",
+			cursorLine:    16, // line with "  MOVE 'HELLO' TO #Y"
+			cursorCol:     15,
+			description:   "AC1: unrecognized context (MOVE) returns empty list",
+		},
+		{
+			name:          "Comment line: completion returns empty (AC1)",
+			callerPath:    filepath.Join(testdataDir, "CALLER.NSP"),
+			callerRelPath: "testdata/completion/none/CALLER.NSP",
+			cursorLine:    17, // line with "*> This is a comment"
+			cursorCol:     15,
+			description:   "AC1: comment line returns empty list",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hctx := &handlerContext{
+				cfg:         cfg,
+				idx:         idx,
+				res:         resSet,
+				root:        workspaceRoot,
+				posEncoding: protocol.PositionEncodingKindUTF8,
+				store:       nil,
+			}
+
+			params := protocol.CompletionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(filepath.Join(workspaceRoot, tc.callerRelPath)),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine),
+						Character: uint32(tc.cursorCol),
+					},
+				},
+			}
+
+			// Act
+			result, err := provideCompletion(hctx, params)
+
+			// Assert: no error expected
+			if err != nil {
+				t.Errorf("provideCompletion returned error: %v", err)
+			}
+
+			// Assert: result must be non-nil (even if empty) and empty
+			if result == nil {
+				t.Errorf("result is nil; expected non-nil empty list for ctxNone")
+			} else if len(result) > 0 {
+				t.Errorf("expected empty result for unrecognized context, got %d items:", len(result))
+				for i, item := range result {
+					t.Logf("  [%d] %q", i, item.Label)
+				}
+			}
+		})
+	}
+}
