@@ -48,6 +48,10 @@ jobs:
   vscode-extension:
     name: VS Code Extension
     runs-on: ubuntu-latest
+    # Bound any hang: the integration step downloads a full VS Code build from
+    # the update CDN at runtime, so a flaky/slow download must not run to the
+    # 6-hour GitHub default.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
