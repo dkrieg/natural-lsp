@@ -1,0 +1,8 @@
+* CALLGREET.NSN - sample subprogram, the CALLNAT target from HELLO.NSP.
+DEFINE DATA PARAMETER
+1 #NAME (A20)
+END-DEFINE
+*
+WRITE 'HELLO' #NAME
+*
+END

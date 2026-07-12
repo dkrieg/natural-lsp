@@ -182,6 +182,82 @@ expensive computations (e.g. cross-file data-flow analysis) or profiling shows e
 degrades responsiveness on large workspaces. **Source:** LSP 3.17 spec (CodeLensOptions), PRD FR-29
 (CodeLens summaries), project scope (v1 minimal implementation).
 
+## ADR-017 — Editor-client integration strategy (feature 15) (2026-07-12)
+**Decision:** For non-VS-Code editors the client is **configuration + docs**, not bespoke plugins,
+launching the single stdio entry point `natural-lsp --stdio` and relying on the server's own
+`.natural-lsp.toml` sentinel walk-up for workspace-root detection. Per-editor specifics recorded
+here because they are real, easy-to-get-wrong integration facts (not Go craft):
+- **Neovim** requires an explicit **filetype association** (`vim.filetype.add` glob
+  `.*%.[nN][sS].` → `natural`, or a `BufRead/BufNewFile *.NS*` autocmd) because Neovim has no
+  built-in `.NSx` detection; the LSP client (`vim.lsp.config`/`vim.lsp.enable` on 0.11+, or
+  `nvim-lspconfig`) only attaches on the `natural` filetype, so without the association nothing
+  starts. Native `vim.lsp.config` is the current recommendation (Neovim 0.11+); nvim-lspconfig
+  remains a supported alternative (needs 0.11.3+).
+- **Zed** **cannot** bind a custom LSP to a brand-new language via `settings.json` alone —
+  `file_types` only maps extensions to *existing* languages, and defining a new language + server
+  binding requires a **Zed language extension**. Documented honestly: a Natural Zed extension is
+  future work; `settings.json` `file_types`/`lsp`/`languages` blocks are provided as forward-ready
+  scaffolding, with the stdio smoke as the automatable lower bound.
+- **Helix** works fully via `languages.toml` (registers the `natural` language + all 15 file-types
+  + the `natural-lsp` server); no explicit root markers needed since the server does the sentinel
+  walk-up.
+- **JetBrains** (incl. Community editions) via **LSP4IJ** (Red Hat), not the paid native LSP API.
+  LSP4IJ maps files by **file-name pattern** (case-sensitive; e.g. `*.NSP`) with a `languageId`,
+  and supports an **importable user-defined-server template** (a directory with `template.json`
+  holding `serverName`/`command`/`mappings[{fileNamePatterns,languageId}]`, optional `README.md`).
+  Committed at `editors/jetbrains/lsp4ij-template/` so setup is reproducible by import.
+**Verification ceiling:** Full editor-GUI verification (filetype recognized + go-to-definition
+navigates) is a documented **human** step and cannot be automated in this repo's CI. The
+**automatable lower bound** for every editor is the server-side stdio smoke — `scripts/smoke.sh`
+runs `--version` plus a minimal `initialize → initialized → shutdown → exit` Content-Length round
+trip and asserts a `capabilities` result and clean exit. **Distribution (NFR-10/12/13):** the 5
+cross-built artifacts (`natural-lsp-{linux,darwin}-{amd64,arm64}`, `natural-lsp-windows-amd64.exe`)
++ `checksums.txt` from `just release` already satisfy NFR-10; NFR-12 "package-style install" is met
+by `go install` + pre-built binary, with a native package-manager channel (Homebrew/Scoop) noted as
+future work — deliberately not built. **Source:** feature-15 `plan.md`/`tasks.md` (Stories 2–4,
+FR-45/46, NFR-10/12/13); LSP4IJ `UserDefinedLanguageServer.md`
+(https://github.com/redhat-developer/lsp4ij); Zed `configuring-languages.md`
+(https://github.com/zed-industries/zed); Neovim 0.11 LSP docs (https://neovim.io/doc/user/lsp/).
+
+## ADR-018 — VS Code extension: file-association casing, test tiering, engine baseline (feature 15, VS Code client)
+**Status:** verified (2026-07-12) — implemented and all gates green (`npm run compile`/`lint`/`test:unit`
+plus the `@vscode/test-electron` suite ran headless on macOS: 16 integration tests passing, incl. all 15
+upper-case extensions and a live server launch).
+**Context:** The first-party VS Code extension (`editors/vscode/`, TypeScript) launches the existing server
+as `natural-lsp --stdio` over stdio — no server change, no bespoke transport. Three client-side decisions
+were non-obvious:
+- **File-extension casing (was OQ #5).** Mainframe/NaturalONE exports are conventionally UPPER-case
+  (`.NSP`), but VS Code's language-detection path is effectively case-sensitive on
+  `contributes.languages.extensions` (documented ambiguity + open VS Code issues). **Decision:** declare
+  BOTH the lower-case `extensions` list AND `filenamePatterns` character-class globs matching each
+  extension case-insensitively (e.g. `**/*.[nN][sS][pP]`). Verified by opening upper-case fixtures for all
+  15 types in the electron suite and asserting `languageId === 'natural'`. Alternative (extensions-only)
+  rejected: it silently fails to associate the exact upper-case files users actually have.
+- **Test tiering.** TWO tiers: pure Mocha **unit** tests (`src/test/unit/**`, no VS Code host — cover
+  `resolveServerPath` and TextMate grammar scopes via `vscode-textmate` + `vscode-oniguruma`) run
+  everywhere including this sandbox; **integration** tests (`src/test/suite/**`, `@vscode/test-electron`,
+  pinned VS Code `1.85.0`) cover association + a live launch and run in CI (Linux + xvfb) and here.
+  Rationale: keep a fast, host-free gate that always runs; isolate the heavyweight electron download. Unit
+  tests run against **compiled JS** (`tsc` → `out/`, then mocha), not ts-node — Node 25 loads bare `.ts`
+  via ESM `import()` (`__dirname` undefined), which the CJS `ts-node/register` hook does not intercept;
+  compile-first sidesteps the whole ESM/CJS interop question.
+- **Server-binary discovery for the launch test.** The launch test reads `NATURAL_LSP_SERVER_PATH`
+  (a freshly `go build`-ed binary), points `naturalLsp.serverPath` at it, and asserts the client reaches
+  `State.Running`. If the var is unset/missing the test **skips** (not fails) so association tests still
+  run — CI builds the Go binary and sets the var.
+- **Engine baseline `^1.85.0`** (Nov 2023) — recent enough for `vscode-languageclient` v9, old enough for
+  broad compatibility; the `@vscode/test-electron` download is pinned to `1.85.0` for reproducibility.
+- **Graceful degradation (client-side FR-43 analogue).** A missing/unstartable server surfaces an
+  actionable `showErrorMessage` (naming `naturalLsp.serverPath` + PATH) and clears the client — activation
+  never throws/crashes. A `naturalLsp.restart` command is provided.
+- **Packaging.** `@vscode/vsce` produces `natural-lsp-vscode-<version>.vsix` (publisher `dkrieg`,
+  version tracks the server release line); `.vscodeignore` keeps the artifact lean (only `out/extension.js`,
+  `out/serverPath.js`, grammar, manifest, README, LICENSE — no `src/`, tests, or node artifacts). NO
+  Marketplace publish / no `VSCE_PAT`. `*.vsix`/`out/`/`node_modules/`/`.vscode-test*` are gitignored.
+**Source:** feature-15 `tasks.md` T1–T4/T9; VS Code language-identifiers docs
+(https://code.visualstudio.com/docs/languages/identifiers) and contribution-points reference
+(https://code.visualstudio.com/api/references/contribution-points#contributes.languages), verified 2026-07-12.
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.

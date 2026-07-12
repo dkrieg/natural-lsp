@@ -1,0 +1,5 @@
+* PARMS — sample parameter data area.
+DEFINE DATA PARAMETER
+1 #P (N4)
+END-DEFINE
+END

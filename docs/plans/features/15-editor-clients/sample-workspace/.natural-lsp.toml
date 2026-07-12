@@ -1,0 +1,14 @@
+# Sample workspace sentinel for natural-lsp editor-client verification.
+#
+# The server locates the workspace root by walking up from an opened file
+# looking for this .natural-lsp.toml sentinel, so pointing any editor at this
+# directory (or opening a file within it) is enough for root detection.
+#
+# A single flat namespace is fine for this tiny demo: with only one object per
+# name there is nothing to disambiguate, so no [[resolution.library]] map is
+# needed for "go to definition" to resolve CALLGREET / SAYHELLO.
+
+[workspace]
+# Defaults index all 15 Natural extensions; listing the three used here keeps
+# the demo self-documenting.
+extensions = [".NSP", ".NSN", ".NSS"]

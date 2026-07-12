@@ -168,7 +168,8 @@ natural-lsp-darwin-arm64
 natural-lsp-windows-amd64.exe
 ```
 
-Place it somewhere on your `PATH`:
+Each release also publishes a `checksums.txt` (SHA-256 of every binary) — verify
+your download against it. Place the binary somewhere on your `PATH`:
 
 ```bash
 # Linux / macOS
@@ -195,20 +196,42 @@ go build -o natural-lsp ./cmd/natural-lsp
 go install github.com/dkrieg/natural-lsp/cmd/natural-lsp@latest
 ```
 
+`go install` is the current package-style install path. A native OS
+package-manager channel (Homebrew tap, Scoop) is **future work** and not yet
+provided.
+
+### Verify an install
+
+Any binary — pre-built, built-from-source, or `go install`ed — can be smoke-checked
+with the bundled script, which runs `--version` and a minimal
+`initialize → initialized → shutdown → exit` stdio round-trip:
+
+```bash
+scripts/smoke.sh "$(command -v natural-lsp)"
+```
+
+(The underlying one-liner the script builds on is `natural-lsp --stdio < /dev/null`,
+which must start and exit cleanly on EOF.)
+
 ---
 
 ## Editor setup
 
 ### VS Code
 
-Install the companion extension from the VS Code Marketplace or directly from a `.vsix`:
+The companion extension lives in this repo under [`editors/vscode/`](editors/vscode/). It is
+distributed as a `.vsix` (not yet on the VS Code Marketplace). Build one, then install it:
 
 ```bash
-code --install-extension natural-lsp-vscode.vsix
+cd editors/vscode
+npm ci
+npm run package                 # produces natural-lsp-vscode-<version>.vsix
+code --install-extension natural-lsp-vscode-0.1.0.vsix
 ```
 
 The extension handles launching the server automatically when a Natural source file (`.NSP`, `.NSN`, `.NSS`, `.NSC`,
-`.NSM`, `.NS4`, `.NS7`, and other `.NSx` types) is opened. No additional configuration required if `natural-lsp` is on your `PATH`.
+`.NSM`, `.NSL`, `.NSG`, `.NSA`, `.NSH`, `.NSD`, `.NS4`, `.NS7`, `.NS3`, `.NS8`, `.NST`) is opened. No additional
+configuration is required if `natural-lsp` is on your `PATH`.
 
 To point at a specific binary location, add to `.vscode/settings.json`:
 
@@ -218,7 +241,47 @@ To point at a specific binary location, add to `.vscode/settings.json`:
 }
 ```
 
-### Neovim (nvim-lspconfig)
+The extension version tracks the server's release line. See
+[`editors/vscode/README.md`](editors/vscode/README.md) for development, testing, and packaging details.
+
+### Neovim
+
+Neovim needs two things: a `natural` **filetype** for `.NSx` files (Neovim has no
+built-in detection for them) and an LSP client that launches `natural-lsp --stdio`
+for that filetype. Root detection uses the `.natural-lsp.toml` sentinel.
+
+**1. Associate `.NSx` files with the `natural` filetype** (required for either LSP
+form below — without it the `filetypes`/`filetype` gate never matches):
+
+```lua
+vim.filetype.add({
+  pattern = {
+    ['.*%.[nN][sS].'] = 'natural',  -- matches .NSP/.NSN/…/.NST (any case)
+  },
+})
+```
+
+The equivalent autocmd form, if you prefer:
+
+```lua
+vim.api.nvim_create_autocmd({ 'BufRead', 'BufNewFile' }, {
+  pattern = { '*.NS*', '*.ns*' },
+  command = 'set filetype=natural',
+})
+```
+
+**2a. Neovim 0.11+ (recommended — built-in `vim.lsp.config`/`vim.lsp.enable`):**
+
+```lua
+vim.lsp.config('natural_lsp', {
+  cmd = { 'natural-lsp', '--stdio' },
+  filetypes = { 'natural' },
+  root_markers = { '.natural-lsp.toml', '.git' },
+})
+vim.lsp.enable('natural_lsp')
+```
+
+**2b. Alternative — `nvim-lspconfig`** (still supported; requires Neovim 0.11.3+):
 
 ```lua
 require('lspconfig').configs['natural_lsp'] = {
@@ -233,29 +296,64 @@ require('lspconfig').configs['natural_lsp'] = {
 require('lspconfig').natural_lsp.setup({})
 ```
 
+**Verify** (against `docs/plans/features/15-editor-clients/sample-workspace/`):
+
+- [ ] Server-side smoke first: `scripts/smoke.sh "$(command -v natural-lsp)"` passes.
+- [ ] Open `HELLO.NSP` from the sample workspace; `:set filetype?` reports
+      `filetype=natural` and `:LspInfo` (or `:checkhealth lsp`) shows `natural_lsp`
+      attached.
+- [ ] Caret on `CALLGREET` → `vim.lsp.buf.definition()` (default `grd`/`gd`)
+      navigates to `CALLGREET.NSN`; on `SAYHELLO` it navigates to `SAYHELLO.NSS`.
+
 ### Zed
+
+Zed's `settings.json` can associate file extensions with a language and point a
+known language at a custom server binary, but it **cannot define a brand-new
+language** (nor bind a language server to one) on its own — Zed only runs a
+language server for a language it already knows, and adding a new language
+requires a [Zed language extension](https://zed.dev/docs/extensions/languages).
+A first-party Natural Zed extension (which would register the `natural` language,
+its Tree-sitter grammar, and the `natural-lsp` server binding) is **future work**.
+
+In the meantime you can associate the `.NSx` extensions and declare the server so
+they are ready once a `natural` language is available. Add to your `settings.json`:
 
 ```json
 {
+  "file_types": {
+    "Natural": [
+      "NSP", "NSN", "NSS", "NSC", "NSM", "NSL", "NSG", "NSA",
+      "NSH", "NSD", "NS4", "NS7", "NS3", "NS8", "NST"
+    ]
+  },
   "lsp": {
     "natural-lsp": {
       "binary": {
         "path": "natural-lsp",
-        "arguments": [
-          "--stdio"
-        ]
+        "arguments": ["--stdio"]
       }
     }
   },
   "languages": {
     "Natural": {
-      "language_servers": [
-        "natural-lsp"
-      ]
+      "language_servers": ["natural-lsp"]
     }
   }
 }
 ```
+
+The server itself launches identically to every other editor
+(`natural-lsp --stdio`) and detects the workspace root via the
+`.natural-lsp.toml` sentinel.
+
+**Verify:**
+
+- [ ] Server-side smoke: `scripts/smoke.sh "$(command -v natural-lsp)"` passes
+      (the automatable lower bound — full in-editor navigation depends on the
+      pending Natural language extension above).
+- [ ] `.NSx` files open and are associated with the `Natural` language entry
+      (once the language extension is installed, go-to-definition on the sample
+      workspace's `CALLGREET`/`SAYHELLO` navigates to their definitions).
 
 ### Helix (`languages.toml`)
 
@@ -271,21 +369,33 @@ command = "natural-lsp"
 args = ["--stdio"]
 ```
 
+This registers a `natural` language for all 15 `.NSx` file types and launches
+`natural-lsp --stdio`. Helix does not pass explicit root markers here — the
+server itself finds the workspace root by walking up for the `.natural-lsp.toml`
+sentinel, so run Helix from within your Natural project.
+
+**Verify** (against `docs/plans/features/15-editor-clients/sample-workspace/`):
+
+- [ ] Server-side smoke: `scripts/smoke.sh "$(command -v natural-lsp)"` passes.
+- [ ] Open `HELLO.NSP`; `:lsp-workspace-command` / the status line shows
+      `natural-lsp` active, and `hx --health` lists the `natural` language.
+- [ ] Caret on `CALLGREET` → **goto definition** (`gd`) navigates to
+      `CALLGREET.NSN`; on `SAYHELLO` it navigates to `SAYHELLO.NSS`.
+
 ### JetBrains IDEs (IntelliJ, PyCharm, …)
 
-JetBrains does not auto-discover LSP servers the way VS Code does. The recommended route is the free
-**[LSP4IJ](https://github.com/redhat-developer/lsp4ij)** plugin, which works in all JetBrains IDEs — including the
-Community editions:
+JetBrains does not auto-discover LSP servers the way VS Code does. The recommended route — which works in
+**all** JetBrains IDEs including the free **Community** editions — is the free
+**[LSP4IJ](https://github.com/redhat-developer/lsp4ij)** plugin. This repo ships an importable LSP4IJ
+server template (all 15 Natural file types, command `natural-lsp --stdio`) so setup is reproducible:
 
 1. Install **LSP4IJ** from the JetBrains Marketplace.
-2. Add a new language server (*New Language Server → Command*) with the command:
+2. **Settings/Preferences → Languages & Frameworks → Language Servers → [+] → Template → Import from
+   custom template…** and select [`editors/jetbrains/lsp4ij-template/`](editors/jetbrains/lsp4ij-template/).
+3. Open the project root containing your `.natural-lsp.toml` sentinel and open a Natural file.
 
-   ```
-   natural-lsp --stdio
-   ```
-
-3. Associate it with the Natural file types (`.NSP`, `.NSN`, `.NSS`, `.NSC`, `.NSM`, `.NSL`, `.NSG`, `.NSA`, `.NSH`,
-   `.NSD`, `.NS4`, `.NS7`, `.NS3`, `.NS8`, `.NST`).
+Full step-by-step instructions (including a manual by-hand alternative and a Verify checklist) are in
+**[`editors/jetbrains/README.md`](editors/jetbrains/README.md)**.
 
 The native JetBrains LSP API (`com.intellij.platform.lsp`) is an alternative, but it requires a paid/Ultimate-tier IDE
 and a custom plugin — LSP4IJ is the simpler, more portable path.
