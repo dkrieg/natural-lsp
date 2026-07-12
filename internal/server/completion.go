@@ -2,7 +2,6 @@ package server
 
 import (
 	"os"
-	"path"
 	"strings"
 	"unicode"
 
@@ -422,11 +421,8 @@ func provideModuleCompletion(idx *workspace.Index, cfg *config.Config, relPath, 
 	// Build CompletionItem for each candidate
 	var items []protocol.CompletionItem
 	for _, cand := range candidates {
-		// Extract object name from the candidate's path (mirroring objectIdentity logic)
-		objName := extractObjectName(cand.Path)
-
 		item := protocol.CompletionItem{
-			Label:  objName,
+			Label:  cand.Name,
 			Kind:   objectTypeToCompletionKind(cand.Type),
 			Detail: protocol.NewOptional[string](objectTypeLabel(cand.Type)),
 		}
@@ -438,16 +434,6 @@ func provideModuleCompletion(idx *workspace.Index, cfg *config.Config, relPath, 
 		items = []protocol.CompletionItem{}
 	}
 	return items, nil
-}
-
-// extractObjectName derives the object name from a workspace-relative path.
-// It mirrors the logic of objectIdentity (internal/workspace/resolution.go) but
-// takes only the path, not the config (we don't need library info for the name).
-// path.Base / path.Ext operate on slash-separated keys, not OS file paths.
-func extractObjectName(relPath string) string {
-	base := path.Base(relPath)
-	ext := path.Ext(base)
-	return strings.ToUpper(strings.TrimSuffix(base, ext))
 }
 
 // provideDDMFieldCompletion handles DDM field-name completion at data-access statements

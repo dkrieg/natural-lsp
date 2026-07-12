@@ -22,6 +22,11 @@ type Candidate struct {
 	// Path is the workspace-relative file path.
 	Path string
 
+	// Name is the uppercased object name (filename stem, Natural identifiers are
+	// case-insensitive). E.g. "APP/MYSUB.NSN" → "MYSUB". It is always non-empty
+	// for a valid indexed file and matches the key used by objectIdentity.
+	Name string
+
 	// Library is the owning Natural library name (e.g., "APP", "COMMON"),
 	// derived from the config Library mapping, or empty if not in a declared library.
 	Library string
@@ -120,6 +125,7 @@ func (idx *Index) LookupByName(name string, typ model.ObjectType, cfg *config.Co
 
 		candidates = append(candidates, Candidate{
 			Path:    path,
+			Name:    objName,
 			Library: objLibrary,
 			Type:    fa.ObjectType,
 		})
@@ -248,6 +254,7 @@ func (idx *Index) buildNameIndex(cfg *config.Config) map[string][]Candidate {
 		objName, objLibrary := objectIdentity(path, cfg)
 		nameMap[objName] = append(nameMap[objName], Candidate{
 			Path:    path,
+			Name:    objName,
 			Library: objLibrary,
 			Type:    fa.ObjectType,
 		})
