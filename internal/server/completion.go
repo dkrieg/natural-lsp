@@ -362,6 +362,10 @@ func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) (
 							item := protocol.CompletionItem{
 								Label: child.Name,
 								Kind:  protocol.CompletionItemKindFunction,
+								// SortText forces inline candidates ahead of external
+								// ones in the client UI — array order alone is advisory
+								// per LSP 3.x (clients may re-sort). "0" < "1" group.
+								SortText: protocol.NewOptional[string]("0" + childNameUpper),
 							}
 							items = append(items, item)
 						}
@@ -376,6 +380,11 @@ func provideCompletion(hctx *handlerContext, params protocol.CompletionParams) (
 					return []protocol.CompletionItem{}, nil
 				}
 				return items, nil
+			}
+			// Stamp external candidates into the "1" SortText group so they follow
+			// inline "0" candidates regardless of client-side re-sorting (AC1/AC2).
+			for i := range externalItems {
+				externalItems[i].SortText = protocol.NewOptional[string]("1" + strings.ToUpper(externalItems[i].Label))
 			}
 			// Append external items after inline items (ensures inline-before-external ordering, AC1/AC2)
 			items = append(items, externalItems...)

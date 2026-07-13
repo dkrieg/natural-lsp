@@ -149,15 +149,17 @@ func (idx *Index) LookupByName(name string, typ model.ObjectType, cfg *config.Co
 // uppercased prefix AND whose Type == typ. The method reuses the steplib chain
 // resolution logic from resolveByName: with a library map configured, only
 // candidates reachable from the caller's current library (longest-prefix match of
-// referencingPath) via the non-transitive steplib chain are returned; for a name
-// colliding across reachable libraries, the steplib winner (first in chain) is kept.
-// With no library map (or an undeclared-path caller), flat namespace: all prefix+type
-// matches are returned.
+// referencingPath) via the non-transitive steplib chain are returned. Unlike
+// resolveByName (which collapses to a single binding), completion is a discovery
+// surface: a name present in more than one reachable library yields one candidate
+// per library (all reachable options are offered, not deduped to a single steplib
+// winner). With no library map (or an undeclared-path caller), flat namespace: all
+// prefix+type matches are returned.
 //
 // Empty prefix returns all reachable candidates of that type. Type filter of zero
 // ObjectType ("") is not supported; pass a non-zero typ.
 //
-// Results are deterministic: sorted by object name (stable across calls).
+// Results are deterministic: sorted by path (stable across calls).
 // Returns a non-nil (possibly empty) slice.
 //
 // This method is thread-safe and race-free (mirrors LookupByName discipline).

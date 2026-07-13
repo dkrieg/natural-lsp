@@ -1345,3 +1345,132 @@ func TestProvideCompletion_ContextNone(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideCompletion_DDMField verifies DDM field-name completion at data-access
+// statements (feature 16, T7, Story 3): field names + verbatim types are drawn from
+// the resolved indexed .NSD (AC1/AC2), and a data-access statement naming an
+// unindexed DDM yields an empty list with no error (AC3, FR-17).
+//
+// Fields come from the live buffer's data-access line, so each case is driven through
+// the document Store (the real completion path). The workspace index holds CUSTOMER.NSD
+// so LookupByName(CUSTOMER, ObjectDDM) resolves; ORDERS is intentionally absent.
+func TestProvideCompletion_DDMField(t *testing.T) {
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+	az := natural.New(nil)
+
+	ddmPath := filepath.Join("testdata/completion/ddmfield", "CUSTOMER.NSD")
+	ddmContent, err := os.ReadFile(ddmPath)
+	if err != nil {
+		t.Fatalf("failed to read CUSTOMER.NSD: %v", err)
+	}
+	ddmAnalysis, err := az.Analyze(ddmPath, ddmContent)
+	if err != nil {
+		t.Fatalf("failed to analyze CUSTOMER.NSD: %v", err)
+	}
+	// Prerequisite: the DDM parser populated field definitions.
+	if len(ddmAnalysis.Definitions) == 0 {
+		t.Fatalf("CUSTOMER.NSD produced no Definitions; DDM-field completion prerequisite unmet")
+	}
+	idx.Add("testdata/completion/ddmfield/CUSTOMER.NSD", ddmAnalysis)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	store := NewTestStore(t.TempDir(), az)
+
+	tests := []struct {
+		name         string
+		bufferLine   string // dynamic data-access line placed in the open buffer
+		cursorCol    int    // 0-based byte column (end of the partial field)
+		expectFound  bool
+		expectLabel  string
+		expectDetail string // substring expected in Detail (the field type)
+	}{
+		{
+			name:         "partial field NAM offers CUSTOMER-NAME with type A50 (AC1/AC2)",
+			bufferLine:   "READ CUSTOMER NAM",
+			cursorCol:    17,
+			expectFound:  true,
+			expectLabel:  "CUSTOMER-NAME",
+			expectDetail: "A50",
+		},
+		{
+			name:         "partial field EMA offers EMAIL with type A60 (AC1/AC2)",
+			bufferLine:   "READ CUSTOMER EMA",
+			cursorCol:    17,
+			expectFound:  true,
+			expectLabel:  "EMAIL",
+			expectDetail: "A60",
+		},
+		{
+			name:        "unresolved DDM (ORDERS not indexed) offers nothing (AC3, FR-17)",
+			bufferLine:  "READ ORDERS FLD",
+			cursorCol:   15,
+			expectFound: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			docURI := newTestURI("ddm-buffer.NSP")
+			store.Open(docURI, 1, []byte(tc.bufferLine))
+
+			result, err := provideCompletion(&handlerContext{
+				cfg:         cfg,
+				idx:         idx,
+				res:         resSet,
+				root:        workspaceRoot,
+				posEncoding: protocol.PositionEncodingKindUTF8,
+				store:       store,
+			}, protocol.CompletionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{URI: docURI},
+					Position: protocol.Position{
+						Line:      0,
+						Character: uint32(tc.cursorCol),
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("provideCompletion returned error: %v", err)
+			}
+			if result == nil {
+				result = []protocol.CompletionItem{}
+			}
+
+			if !tc.expectFound {
+				if len(result) != 0 {
+					t.Errorf("expected empty result for unresolved DDM, got %d items", len(result))
+					for i, item := range result {
+						t.Logf("  [%d] %q", i, item.Label)
+					}
+				}
+				return
+			}
+
+			var found *protocol.CompletionItem
+			for i := range result {
+				if result[i].Label == tc.expectLabel {
+					found = &result[i]
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("expected field %q not found in %d items", tc.expectLabel, len(result))
+			}
+			if found.Kind != protocol.CompletionItemKindField {
+				t.Errorf("Kind: got %v, want Field (%v)", found.Kind, protocol.CompletionItemKindField)
+			}
+			detail, ok := found.Detail.Get()
+			if !ok {
+				t.Errorf("Detail not set on field completion %q", tc.expectLabel)
+			} else if !strings.Contains(detail, tc.expectDetail) {
+				t.Errorf("Detail: got %q, want to contain %q (field type)", detail, tc.expectDetail)
+			}
+		})
+	}
+}
