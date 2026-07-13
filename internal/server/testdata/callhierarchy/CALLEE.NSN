@@ -1,0 +1,18 @@
+* A simple subprogram with inline subroutine
+SUBROUTINE 'CALLEE'
+
+DEFINE DATA
+  PARAMETER
+    1 PARM-IN (A10)
+  LOCAL
+    1 LOCAL-VAR (N5)
+  END
+END
+
+DISPLAY PARM-IN
+
+DEFINE SUBROUTINE SUB-A
+  WRITE 'Inline subroutine'
+END-SUBROUTINE
+
+END
