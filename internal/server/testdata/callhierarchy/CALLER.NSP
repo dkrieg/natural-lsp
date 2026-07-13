@@ -11,6 +11,9 @@ END
 * Static call to CALLEE
 CALLNAT 'CALLEE' #A
 
+* Program transfer (FETCH) to PGM
+FETCH 'PGM'
+
 * Inline PERFORM to a subroutine in the same file
 PERFORM SUB-A
 

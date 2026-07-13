@@ -533,8 +533,147 @@ func incomingCallSites(idx *workspace.Index, res *workspace.ResolutionSet, targe
 	return incomingByCaller
 }
 
-// provideOutgoingCalls (feature 18, T1) is a stub provider that returns
-// an empty array for the callHierarchy/outgoingCalls request.
+// provideOutgoingCalls (feature 18, T5 GREEN) is the LSP provider for
+// callHierarchy/outgoingCalls (FR-49, Story 3, AC1-3).
+//
+// Returns all static outgoing call relationships from the source module:
+// CALLNAT, external PERFORM, FETCH, and RUN statements where the target
+// is statically resolved. Dynamic/unresolvable and INCLUDE (copycode)
+// edges are excluded (FR-17, OQ-1).
+//
+// Each result entry carries the callee's CallHierarchyItem and the fromRanges
+// (call-site positions within the current module), sorted by start.
+//
+// Concurrency (F7): snapshots idx/res/posEncoding/root under RLock, releases before I/O.
+// Graceful degradation (FR-43): unresolvable target / unreadable files → empty, never panics.
 func provideOutgoingCalls(hctx *handlerContext, params protocol.CallHierarchyOutgoingCallsParams) ([]protocol.CallHierarchyOutgoingCall, error) {
-	return nil, nil
+	// Guard: hctx must be initialized
+	if hctx == nil {
+		return nil, nil
+	}
+
+	// Snapshot idx/res/posEncoding/root under read lock (F7); release before I/O
+	hctx.idxResMu.RLock()
+	idx := hctx.idx
+	res := hctx.res
+	posEncoding := hctx.posEncoding
+	root := hctx.root
+	hctx.idxResMu.RUnlock()
+
+	if idx == nil || res == nil {
+		return nil, nil
+	}
+
+	// Resolve the item to get the source module's identity
+	sourcePath, sourceFA, _, ok := resolveItemIdentity(idx, root, params.Item, posEncoding)
+	if !ok {
+		// Cannot resolve the source item; return empty
+		return nil, nil
+	}
+
+	// Read the source file content for range conversion
+	sourceAbsPath := filepath.Join(root, sourcePath)
+	sourceContent, err := os.ReadFile(sourceAbsPath)
+	if err != nil {
+		// Can't read source file; return empty (FR-43)
+		return nil, nil
+	}
+
+	// Collect outgoing call sites grouped by callee
+	outgoingByCalleePath := make(map[string][]model.Range)
+
+	// Walk fa.Edges to collect outgoing calls
+	for _, edge := range sourceFA.Edges {
+		// Determine if this is an outgoing-call edge kind
+		isOutgoingCallKind := edge.Kind == model.EdgeCalls ||
+			edge.Kind == model.EdgeNavigatesTo ||
+			edge.Kind == model.EdgePerforms
+
+		// Skip non-outgoing-call kinds: dynamic variants, data-access, includes
+		if !isOutgoingCallKind {
+			continue
+		}
+
+		// Get the resolution for this edge
+		resolution, ok := res.Get(sourcePath, edge.Source)
+		if !ok {
+			// Edge not in resolution set; skip
+			continue
+		}
+
+		// Skip unresolved/dynamic/ambiguous edges (FR-17)
+		if !resolution.IsResolved() {
+			continue
+		}
+
+		// SKIP SAME-FILE/INLINE PERFORM for now (T6a)
+		if edge.Kind == model.EdgePerforms {
+			normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+			if strings.EqualFold(normalizedResPath, sourcePath) {
+				// Inline subroutine in the same object; skip (T6a)
+				continue
+			}
+		}
+
+		// This is an outgoing call to an external target; record it
+		outgoingByCalleePath[resolution.Path] = append(outgoingByCalleePath[resolution.Path], edge.Source)
+	}
+
+	// For each distinct outgoing callee, build a CallHierarchyOutgoingCall entry
+	var result []protocol.CallHierarchyOutgoingCall
+
+	// Sort callees by path for deterministic output
+	calleePaths := make([]string, 0, len(outgoingByCalleePath))
+	for calleePath := range outgoingByCalleePath {
+		calleePaths = append(calleePaths, calleePath)
+	}
+	sort.Strings(calleePaths)
+
+	for _, calleePath := range calleePaths {
+		ranges := outgoingByCalleePath[calleePath]
+
+		// Get the callee's analysis
+		calleeFA, ok := idx.Get(calleePath)
+		if !ok || calleeFA.Structure == nil {
+			// Can't find callee or no structure; skip (FR-43)
+			continue
+		}
+
+		// Read the callee's content for range conversion
+		calleeAbsPath := filepath.Join(root, calleePath)
+		calleeContent, err := os.ReadFile(calleeAbsPath)
+		if err != nil {
+			// Can't read callee file; skip (FR-43)
+			continue
+		}
+
+		// Build the To item from the callee's object root
+		toItem := buildCallHierarchyItem(root, calleePath, calleeContent, calleeFA.Structure, posEncoding)
+
+		// Convert each call-site range to protocol.Range and sort by start
+		fromRanges := make([]protocol.Range, len(ranges))
+		for i, rng := range ranges {
+			fromRanges[i] = toProtocolRange(rng, string(sourceContent), posEncoding)
+		}
+
+		// Sort by start position (already in source order but be explicit)
+		sort.Slice(fromRanges, func(i, j int) bool {
+			if fromRanges[i].Start.Line != fromRanges[j].Start.Line {
+				return fromRanges[i].Start.Line < fromRanges[j].Start.Line
+			}
+			return fromRanges[i].Start.Character < fromRanges[j].Start.Character
+		})
+
+		result = append(result, protocol.CallHierarchyOutgoingCall{
+			To:         toItem,
+			FromRanges: fromRanges,
+		})
+	}
+
+	// Sort result by callee URI for deterministic output
+	sort.Slice(result, func(i, j int) bool {
+		return string(result[i].To.URI) < string(result[j].To.URI)
+	})
+
+	return result, nil
 }

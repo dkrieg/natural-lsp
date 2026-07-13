@@ -1,0 +1,6 @@
+* A copycode for INCLUDE to resolve to
+DEFINE DATA
+  LOCAL
+    1 #CCVAR (A10)
+  END
+END
