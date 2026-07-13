@@ -71,6 +71,7 @@ type Subroutine struct {
 	StartPos    model.Position
 	EndPos      model.Position
 	Name        string
+	NameRange   model.Range // The range of the subroutine name token (feature 18, T6a)
 	DataSection *DataSection
 }
 

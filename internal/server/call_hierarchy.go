@@ -338,14 +338,23 @@ func providePrepareCallHierarchy(hctx *handlerContext, params protocol.CallHiera
 		}
 	}
 
-	// Check if cursor falls within a subroutine child's SelectionRange
+	// Check if cursor falls within a subroutine child's SelectionRange or Range
 	if sourceFA.Structure != nil {
 		for i := range sourceFA.Structure.Children {
 			child := &sourceFA.Structure.Children[i]
-			if child.Kind == model.SymbolSubroutine && cursorInRange(child.SelectionRange, cursorPos) {
-				// Cursor is on this subroutine's name
-				item := buildCallHierarchyItem(root, relPath, sourceContent, child, posEncoding)
-				return []protocol.CallHierarchyItem{item}, nil
+			if child.Kind == model.SymbolSubroutine {
+				// Check SelectionRange (the name token) first
+				if !isZeroRange(child.SelectionRange) && cursorInRange(child.SelectionRange, cursorPos) {
+					// Cursor is on this subroutine's name
+					item := buildCallHierarchyItem(root, relPath, sourceContent, child, posEncoding)
+					return []protocol.CallHierarchyItem{item}, nil
+				}
+				// Fallback: check if cursor is within the subroutine's full Range
+				// (handles test placing cursor on "DEFINE SUBROUTINE" keyword)
+				if cursorInRange(child.Range, cursorPos) {
+					item := buildCallHierarchyItem(root, relPath, sourceContent, child, posEncoding)
+					return []protocol.CallHierarchyItem{item}, nil
+				}
 			}
 		}
 	}
@@ -580,7 +589,10 @@ func provideOutgoingCalls(hctx *handlerContext, params protocol.CallHierarchyOut
 	}
 
 	// Collect outgoing call sites grouped by callee
-	outgoingByCalleePath := make(map[string][]model.Range)
+	// Key: for external callees, this is the callee path; for inline subroutines,
+	// it's a synthetic key combining path and subroutine name to avoid collapsing
+	// with external callees (same-file callees vs external callees are distinct).
+	outgoingByCalleeKey := make(map[string][]model.Range)
 
 	// Walk fa.Edges to collect outgoing calls
 	for _, edge := range sourceFA.Edges {
@@ -606,49 +618,106 @@ func provideOutgoingCalls(hctx *handlerContext, params protocol.CallHierarchyOut
 			continue
 		}
 
-		// SKIP SAME-FILE/INLINE PERFORM for now (T6a)
-		if edge.Kind == model.EdgePerforms {
-			normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
-			if strings.EqualFold(normalizedResPath, sourcePath) {
-				// Inline subroutine in the same object; skip (T6a)
+		// Determine the grouping key for this edge
+		var calleeKey string
+		normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+
+		// Handle inline PERFORM (same file, subroutine target)
+		if edge.Kind == model.EdgePerforms && strings.EqualFold(normalizedResPath, sourcePath) {
+			// Inline subroutine in the same object (T6a).
+			// Search for the matching subroutine in sourceFA.Structure.Children,
+			// group separately from external callees (use key: path|subroutineName).
+			targetName := strings.ToUpper(edge.TargetName)
+			if sourceFA.Structure != nil && sourceFA.Structure.Children != nil {
+				found := false
+				for _, child := range sourceFA.Structure.Children {
+					if child.Kind == model.SymbolSubroutine && strings.EqualFold(child.Name, targetName) {
+						// Found the inline subroutine; use a synthetic key to group with its own ranges
+						calleeKey = sourcePath + "|" + targetName
+						found = true
+						break
+					}
+				}
+				if !found {
+					// If no matching subroutine found, skip gracefully (FR-43)
+					continue
+				}
+			} else {
+				// No children or no structure; skip gracefully
 				continue
 			}
+		} else {
+			// External callee: use its path as the key
+			calleeKey = normalizedResPath
 		}
 
-		// This is an outgoing call to an external target; record it
-		outgoingByCalleePath[resolution.Path] = append(outgoingByCalleePath[resolution.Path], edge.Source)
+		// Record this edge's source range under its grouping key
+		outgoingByCalleeKey[calleeKey] = append(outgoingByCalleeKey[calleeKey], edge.Source)
 	}
 
 	// For each distinct outgoing callee, build a CallHierarchyOutgoingCall entry
 	var result []protocol.CallHierarchyOutgoingCall
 
-	// Sort callees by path for deterministic output
-	calleePaths := make([]string, 0, len(outgoingByCalleePath))
-	for calleePath := range outgoingByCalleePath {
-		calleePaths = append(calleePaths, calleePath)
+	// Sort keys for deterministic output
+	keys := make([]string, 0, len(outgoingByCalleeKey))
+	for key := range outgoingByCalleeKey {
+		keys = append(keys, key)
 	}
-	sort.Strings(calleePaths)
+	sort.Strings(keys)
 
-	for _, calleePath := range calleePaths {
-		ranges := outgoingByCalleePath[calleePath]
+	for _, key := range keys {
+		ranges := outgoingByCalleeKey[key]
 
-		// Get the callee's analysis
-		calleeFA, ok := idx.Get(calleePath)
-		if !ok || calleeFA.Structure == nil {
-			// Can't find callee or no structure; skip (FR-43)
-			continue
+		// Determine if this is an inline subroutine (key contains "|") or external callee
+		var toItem protocol.CallHierarchyItem
+		var calleeAbsPath string
+
+		if strings.Contains(key, "|") {
+			// Inline subroutine: key is "sourcePath|subroutineName"
+			parts := strings.SplitN(key, "|", 2)
+			subroutineName := parts[1]
+
+			// Find the matching subroutine in sourceFA.Structure.Children
+			var targetSym *model.Symbol
+			if sourceFA.Structure != nil {
+				for i := range sourceFA.Structure.Children {
+					child := &sourceFA.Structure.Children[i]
+					if child.Kind == model.SymbolSubroutine && strings.EqualFold(child.Name, subroutineName) {
+						targetSym = child
+						break
+					}
+				}
+			}
+
+			if targetSym == nil {
+				// No matching subroutine found; skip (FR-43)
+				continue
+			}
+
+			// Build the To item from the subroutine child
+			toItem = buildCallHierarchyItem(root, sourcePath, sourceContent, targetSym, posEncoding)
+		} else {
+			// External callee: key is the callee's path
+			calleePath := key
+
+			// Get the callee's analysis
+			calleeFA, ok := idx.Get(calleePath)
+			if !ok || calleeFA.Structure == nil {
+				// Can't find callee or no structure; skip (FR-43)
+				continue
+			}
+
+			// Read the callee's content for range conversion
+			calleeAbsPath = filepath.Join(root, calleePath)
+			calleeContent, err := os.ReadFile(calleeAbsPath)
+			if err != nil {
+				// Can't read callee file; skip (FR-43)
+				continue
+			}
+
+			// Build the To item from the callee's object root
+			toItem = buildCallHierarchyItem(root, calleePath, calleeContent, calleeFA.Structure, posEncoding)
 		}
-
-		// Read the callee's content for range conversion
-		calleeAbsPath := filepath.Join(root, calleePath)
-		calleeContent, err := os.ReadFile(calleeAbsPath)
-		if err != nil {
-			// Can't read callee file; skip (FR-43)
-			continue
-		}
-
-		// Build the To item from the callee's object root
-		toItem := buildCallHierarchyItem(root, calleePath, calleeContent, calleeFA.Structure, posEncoding)
 
 		// Convert each call-site range to protocol.Range and sort by start
 		fromRanges := make([]protocol.Range, len(ranges))

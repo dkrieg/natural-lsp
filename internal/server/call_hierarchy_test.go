@@ -946,3 +946,187 @@ func TestProvideOutgoingCalls(t *testing.T) {
 		}
 	})
 }
+
+// Helper function to extract callee names from outgoing call results
+func getCalleeNames(result []protocol.CallHierarchyOutgoingCall) map[string]int {
+	names := make(map[string]int)
+	for _, call := range result {
+		names[call.To.Name]++
+	}
+	return names
+}
+
+// TestProvideOutgoingCalls_InlinePerform tests inline PERFORM as an outgoing call to a same-object
+// subroutine (Feature 18, T6a, Story 3, AC4).
+//
+// FR-ID: FR-49, AC4 — "When an outgoing EdgePerforms edge resolves to a subroutine in the same
+// object, emit a CallHierarchyOutgoingCall whose To is the matching SymbolSubroutine child's item
+// (its SelectionRange, Kind=Function, same URI), not the object root."
+func TestProvideOutgoingCalls_InlinePerform(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{} // Empty config for flat-namespace resolution
+
+	files := []string{"CALLER.NSP", "CALLEE.NSN", "PGM.NSP", "CC.NSC"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Read CALLER.NSP to build the source item
+	callerAbsPath := filepath.Join(root, testdata, "CALLER.NSP")
+	callerContent, err := os.ReadFile(callerAbsPath)
+	if err != nil {
+		t.Fatalf("failed to read CALLER.NSP: %v", callerAbsPath)
+	}
+
+	callerAnalysis, ok := idx.Get("testdata/callhierarchy/CALLER.NSP")
+	if !ok {
+		t.Fatalf("CALLER.NSP not in index")
+	}
+
+	if callerAnalysis.Structure == nil {
+		t.Fatalf("CALLER.NSP Structure is nil")
+	}
+
+	// Build the source item from CALLER's object root
+	sourceItem := buildCallHierarchyItem(root, "testdata/callhierarchy/CALLER.NSP", callerContent, callerAnalysis.Structure, protocol.PositionEncodingKindUTF8)
+
+	// Create handler context
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Call provideOutgoingCalls
+	params := protocol.CallHierarchyOutgoingCallsParams{
+		Item: sourceItem,
+	}
+
+	result, err := provideOutgoingCalls(hctx, params)
+
+	// Check error
+	if err != nil {
+		t.Errorf("provideOutgoingCalls returned error: %v", err)
+	}
+
+	// Sub-test: inline PERFORM should appear as an outgoing call (AC4)
+	t.Run("AC4: inline PERFORM → same-object subroutine item", func(t *testing.T) {
+		// Find the SUB-A item in the result
+		var subAItem *protocol.CallHierarchyItem
+		for i := range result {
+			if strings.EqualFold(result[i].To.Name, "SUB-A") {
+				subAItem = &result[i].To
+				break
+			}
+		}
+
+		// Assert SUB-A was found
+		if subAItem == nil {
+			t.Errorf("SUB-A not found in outgoing calls; found: %v", getCalleeNames(result))
+		} else {
+			// Assert SUB-A's properties
+			if subAItem.Name != "SUB-A" {
+				t.Errorf("SUB-A.Name = %q, want %q", subAItem.Name, "SUB-A")
+			}
+
+			// Assert Kind is Function (subroutine, not object/module)
+			if subAItem.Kind != protocol.SymbolKindFunction {
+				t.Errorf("SUB-A.Kind = %v, want %v (Function for subroutine)", subAItem.Kind, protocol.SymbolKindFunction)
+			}
+
+			// Assert URI points to CALLER.NSP (same file)
+			if !strings.Contains(string(subAItem.URI), "CALLER.NSP") {
+				t.Errorf("SUB-A.URI = %q, should contain CALLER.NSP (same file)", subAItem.URI)
+			}
+
+			// Assert SelectionRange is not zero (should be the subroutine's name range, not object root)
+			if isZeroRange(model.Range{
+				Start: model.Position{
+					Line:   int(subAItem.SelectionRange.Start.Line),
+					Column: int(subAItem.SelectionRange.Start.Character),
+				},
+				End: model.Position{
+					Line:   int(subAItem.SelectionRange.End.Line),
+					Column: int(subAItem.SelectionRange.End.Character),
+				},
+			}) {
+				t.Errorf("SUB-A.SelectionRange is zero-range; expected non-zero subroutine-name range")
+			}
+
+			// Assert SelectionRange is distinct from the object root's range
+			if subAItem.SelectionRange == sourceItem.SelectionRange {
+				t.Errorf("SUB-A.SelectionRange equals object root SelectionRange; should point at subroutine's name")
+			}
+
+			// Assert this outgoing call has a fromRange (the PERFORM SUB-A statement)
+			// Find the outgoing call for SUB-A
+			var subAOutgoing *protocol.CallHierarchyOutgoingCall
+			for i := range result {
+				if strings.EqualFold(result[i].To.Name, "SUB-A") {
+					subAOutgoing = &result[i]
+					break
+				}
+			}
+			if subAOutgoing == nil {
+				t.Errorf("SUB-A outgoing call not found")
+			} else {
+				if len(subAOutgoing.FromRanges) == 0 {
+					t.Errorf("SUB-A outgoing call has no fromRanges (PERFORM SUB-A site)")
+				}
+			}
+		}
+	})
+
+	// Sub-test: inline PERFORM (SUB-A) should be distinct from external callees
+	t.Run("AC4: inline PERFORM distinct from external callees", func(t *testing.T) {
+		// Collect all callee names
+		calleeNames := getCalleeNames(result)
+
+		// Assert we have CALLEE (external subprogram)
+		if calleeNames["CALLEE"] < 1 {
+			t.Errorf("CALLEE not found in outgoing calls; expected static CALLNAT 'CALLEE'")
+		}
+
+		// Assert we have PGM (external program)
+		if calleeNames["PGM"] < 1 {
+			t.Errorf("PGM not found in outgoing calls; expected static FETCH 'PGM'")
+		}
+
+		// Assert we have SUB-A (inline subroutine)
+		if calleeNames["SUB-A"] < 1 {
+			t.Errorf("SUB-A not found in outgoing calls; expected inline PERFORM SUB-A")
+		}
+
+		// Verify these are distinct items (at least 3 items in result, or grouped correctly)
+		distinctCallees := len(calleeNames)
+		if distinctCallees < 3 {
+			t.Errorf("expected at least 3 distinct callees (CALLEE, PGM, SUB-A), got %d", distinctCallees)
+		}
+	})
+}
