@@ -1,0 +1,13 @@
+* Ambiguous case: multiple definitions of the same name in flat namespace
+* Feature 18, T3: ambiguous call-site → one item per candidate
+PROGRAM MAIN
+
+DEFINE DATA
+  LOCAL
+    1 #A (N8)
+  END
+END
+
+CALLNAT 'AMBIG' #A
+
+END

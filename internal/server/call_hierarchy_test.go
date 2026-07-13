@@ -10,6 +10,7 @@ import (
 	"go.lsp.dev/uri"
 
 	"natural-lsp/internal/analysis/natural"
+	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
 	"natural-lsp/internal/workspace"
 )
@@ -77,7 +78,7 @@ func TestCallHierarchyItemRoundTrip(t *testing.T) {
 			name: "(a) round-trip object root",
 			run: func(t *testing.T) {
 				// Act: build an item from the object root
-				item := buildCallHierarchyItem(root, calleeRelPathNorm, calleeAnalysis.Structure, enc)
+				item := buildCallHierarchyItem(root, calleeRelPathNorm, calleeContent, calleeAnalysis.Structure, enc)
 
 				// Assert: basic fields are populated
 				if item.Name != calleeAnalysis.Structure.Name {
@@ -116,7 +117,7 @@ func TestCallHierarchyItemRoundTrip(t *testing.T) {
 				}
 
 				// Act: build an item from the subroutine
-				item := buildCallHierarchyItem(root, calleeRelPathNorm, subAChild, enc)
+				item := buildCallHierarchyItem(root, calleeRelPathNorm, calleeContent, subAChild, enc)
 
 				// Assert: basic fields are populated
 				if !strings.EqualFold(item.Name, subAChild.Name) {
@@ -151,7 +152,7 @@ func TestCallHierarchyItemRoundTrip(t *testing.T) {
 			name: "(c) fallback: clear Data, recover via URI+SelectionRange",
 			run: func(t *testing.T) {
 				// Act: build an item from the object root and blank its Data
-				item := buildCallHierarchyItem(root, calleeRelPathNorm, calleeAnalysis.Structure, enc)
+				item := buildCallHierarchyItem(root, calleeRelPathNorm, calleeContent, calleeAnalysis.Structure, enc)
 				// Blank the Data field
 				item.Data = protocol.LSPAny{}
 
@@ -209,5 +210,306 @@ func TestCallHierarchyItemRoundTrip(t *testing.T) {
 
 	for _, tc := range tt {
 		t.Run(tc.name, tc.run)
+	}
+}
+
+// TestProvidePrepareCallHierarchyCallSite tests the textDocument/prepareCallHierarchy handler
+// for cursor on a call site (Feature 18, Story 1, AC1).
+//
+// FR-ID: FR-49 (call hierarchy), AC1 — "textDocument/prepareCallHierarchy at a ... call site
+// returns a CallHierarchyItem with the symbol's name, kind, file URI, and selection range."
+func TestProvidePrepareCallHierarchyCallSite(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing all files in the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{} // Empty config for flat-namespace resolution
+
+	files := []string{"CALLER.NSP", "CALLEE.NSN"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Read CALLER.NSP to find cursor positions
+	callerPath := filepath.Join(testdata, "CALLER.NSP")
+	callerContent, err := os.ReadFile(callerPath)
+	if err != nil {
+		t.Fatalf("failed to read CALLER.NSP: %v", err)
+	}
+	callerContentStr := string(callerContent)
+
+	// Create handler context
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	tt := []struct {
+		name           string
+		filePath       string
+		findText       string // Text to find in the file to determine cursor position
+		expectItemName string // Expected CallHierarchyItem.Name
+		expectItemKind protocol.SymbolKind
+		expectCount    int // Expected number of items returned (1 for single, 2 for ambiguous, 0 for empty)
+		story          string
+	}{
+		{
+			name:           "cursor on 'CALLEE' call site → one item",
+			filePath:       filepath.Join("testdata", "callhierarchy", "CALLER.NSP"),
+			findText:       "CALLNAT 'CALLEE'", // Find the static call
+			expectItemName: "CALLEE",
+			expectItemKind: protocol.SymbolKindModule,
+			expectCount:    1,
+			story:          "Story 1, AC1: call-site → callee item",
+		},
+		{
+			name:           "cursor on inline DEFINE SUBROUTINE name → one item",
+			filePath:       filepath.Join("testdata", "callhierarchy", "CALLER.NSP"),
+			findText:       "DEFINE SUBROUTINE SUB-A",
+			expectItemName: "SUB-A",
+			expectItemKind: protocol.SymbolKindFunction,
+			expectCount:    1,
+			story:          "Story 1, AC1: definition-name → own item",
+		},
+		{
+			name:           "cursor on dynamic CALLNAT #DYN target → empty",
+			filePath:       filepath.Join("testdata", "callhierarchy", "CALLER.NSP"),
+			findText:       "CALLNAT #DYN",
+			expectItemName: "",
+			expectItemKind: 0,
+			expectCount:    0,
+			story:          "Story 1, AC2: dynamic/unresolved → empty",
+		},
+		{
+			name:           "cursor on a comment/data field → empty",
+			filePath:       filepath.Join("testdata", "callhierarchy", "CALLER.NSP"),
+			findText:       "* A program with",
+			expectItemName: "",
+			expectItemKind: 0,
+			expectCount:    0,
+			story:          "Story 1, AC3: non-callable position → empty",
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Find the cursor position by searching for the text
+			content := callerContentStr
+			idx_pos := strings.Index(content, tc.findText)
+			if idx_pos < 0 {
+				t.Fatalf("could not find text '%s' in file", tc.findText)
+			}
+
+			// Convert byte offset to line/char
+			// Count newlines before the position to get the line number
+			line := 0
+			char := 0
+			for i := 0; i < idx_pos; i++ {
+				if content[i] == '\n' {
+					line++
+					char = 0
+				} else {
+					char++
+				}
+			}
+
+			// Call providePrepareCallHierarchy
+			params := protocol.CallHierarchyPrepareParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(filepath.Join(root, tc.filePath)),
+					},
+					Position: protocol.Position{Line: uint32(line), Character: uint32(char)},
+				},
+			}
+
+			items, err := providePrepareCallHierarchy(hctx, params)
+
+			// Check error
+			if err != nil {
+				t.Errorf("providePrepareCallHierarchy returned error: %v", err)
+			}
+
+			// Check count of items
+			if len(items) != tc.expectCount {
+				t.Errorf("providePrepareCallHierarchy returned %d items, want %d (%s)",
+					len(items), tc.expectCount, tc.story)
+			}
+
+			// If expecting items, verify their properties
+			if tc.expectCount > 0 {
+				for i, item := range items {
+					if item.Name != tc.expectItemName {
+						t.Errorf("item[%d].Name = %q, want %q", i, item.Name, tc.expectItemName)
+					}
+					if item.Kind != tc.expectItemKind {
+						t.Errorf("item[%d].Kind = %v, want %v", i, item.Kind, tc.expectItemKind)
+					}
+
+					// Verify URI is set and matches the expected file
+					if item.URI == "" {
+						t.Errorf("item[%d].URI is empty", i)
+					}
+
+					// Verify Data is populated (can round-trip via resolveItemIdentity)
+					if len(item.Data) == 0 {
+						t.Errorf("item[%d].Data is empty", i)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestProvidePrepareCallHierarchyAmbiguous tests the textDocument/prepareCallHierarchy handler
+// for an ambiguous call site (Feature 18, T3 — OQ-4 approved decision).
+//
+// FR-ID: FR-49, AC1 — "returns a CallHierarchyItem ... at a call site",
+// with OQ-4 approved decision: "Ambiguous target → one CallHierarchyItem per candidate".
+func TestProvidePrepareCallHierarchyAmbiguous(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy", "AMBIGUOUS_CALLER")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing all files in the fixture (flat namespace, no library map)
+	idx := &workspace.Index{}
+	cfg := config.Config{} // Empty config for flat-namespace resolution
+
+	files := []string{"MAIN.NSP", "LIBA/AMBIG.NSN", "LIBB/AMBIG.NSN"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", "AMBIGUOUS_CALLER", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute the resolution set (flat namespace will produce Ambiguous for AMBIG)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Read MAIN.NSP to find cursor position
+	mainPath := filepath.Join(testdata, "MAIN.NSP")
+	mainContent, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("failed to read MAIN.NSP: %v", err)
+	}
+	mainContentStr := string(mainContent)
+
+	// Create handler context
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Find cursor position on "CALLNAT 'AMBIG'" target
+	findText := "CALLNAT 'AMBIG'"
+	idx_pos := strings.Index(mainContentStr, findText)
+	if idx_pos < 0 {
+		t.Fatalf("could not find text '%s' in MAIN.NSP", findText)
+	}
+
+	// Convert byte offset to line/char
+	line := 0
+	char := 0
+	for i := 0; i < idx_pos; i++ {
+		if mainContentStr[i] == '\n' {
+			line++
+			char = 0
+		} else {
+			char++
+		}
+	}
+
+	// Call providePrepareCallHierarchy
+	params := protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(root, "testdata", "callhierarchy", "AMBIGUOUS_CALLER", "MAIN.NSP")),
+			},
+			Position: protocol.Position{Line: uint32(line), Character: uint32(char)},
+		},
+	}
+
+	items, err := providePrepareCallHierarchy(hctx, params)
+
+	// Check error
+	if err != nil {
+		t.Errorf("providePrepareCallHierarchy returned error: %v", err)
+	}
+
+	// Expect 2 items (one per candidate) per OQ-4 approved decision
+	if len(items) != 2 {
+		t.Errorf("providePrepareCallHierarchy returned %d items, want 2 (ambiguous → one per candidate)",
+			len(items))
+	}
+
+	// Verify each item
+	expectedNames := []string{"AMBIG", "AMBIG"}
+	expectedKinds := []protocol.SymbolKind{protocol.SymbolKindFunction, protocol.SymbolKindFunction}
+
+	// Both should have the name AMBIG
+	for i, item := range items {
+		if item.Name != expectedNames[0] {
+			t.Errorf("item[%d].Name = %q, want %q", i, item.Name, expectedNames[0])
+		}
+		if item.Kind != expectedKinds[0] {
+			t.Errorf("item[%d].Kind = %v, want %v", i, item.Kind, expectedKinds[0])
+		}
+
+		// Verify Data is populated
+		if len(item.Data) == 0 {
+			t.Errorf("item[%d].Data is empty", i)
+		}
+
+		// Verify each item has a URI set
+		if item.URI == "" {
+			t.Errorf("item[%d].URI is empty", i)
+		}
+	}
+
+	// Verify the items have distinct URIs (one per candidate)
+	if len(items) >= 2 {
+		if items[0].URI == items[1].URI {
+			t.Errorf("items[0].URI == items[1].URI, want distinct URIs for each candidate")
+		}
 	}
 }

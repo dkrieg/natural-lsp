@@ -1,0 +1,28 @@
+* A program with static and dynamic calls, plus an inline subroutine
+PROGRAM CALLER
+
+DEFINE DATA
+  LOCAL
+    1 #A (N8)
+    1 #DYN (A50)
+  END
+END
+
+* Static call to CALLEE
+CALLNAT 'CALLEE' #A
+
+* Inline PERFORM to a subroutine in the same file
+PERFORM SUB-A
+
+* Dynamic call (unresolvable)
+CALLNAT #DYN
+
+* INCLUDE (excluded from call hierarchy)
+INCLUDE CC
+
+* An inline subroutine
+DEFINE SUBROUTINE SUB-A
+  WRITE 'Inline subroutine in caller'
+END-SUBROUTINE
+
+END

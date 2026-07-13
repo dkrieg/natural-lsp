@@ -1,0 +1,14 @@
+* AMBIG subprogram in library B
+SUBROUTINE 'AMBIG'
+
+DEFINE DATA
+  PARAMETER
+    1 PARM-IN (A10)
+  LOCAL
+    1 LOCAL-VAR (N5)
+  END
+END
+
+DISPLAY PARM-IN ' from LIBB'
+
+END
