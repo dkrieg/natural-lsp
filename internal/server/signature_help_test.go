@@ -1299,3 +1299,538 @@ func TestProvideSignatureHelp_MarshaledActiveParameter(t *testing.T) {
 		t.Errorf("expected JSON to contain '\"activeParameter\":1', got: %s", jsonStr)
 	}
 }
+
+// TestProvideSignatureHelp_DynamicTarget tests signature help for a dynamic CALLNAT
+// (variable operand) (feature 17, T6, RED phase).
+//
+// Exercises:
+// - CALLNAT #VAR (variable operand) → resolution IsDynamic() → returns nil (no signature)
+// - No diagnostic is produced (FR-17: modeled gaps stay off diagnostic channel)
+// - No error is returned
+//
+// FR-48, Story 1, AC#4; FR-17 modeled gaps.
+func TestProvideSignatureHelp_DynamicTarget(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the dynamic-call fixture (CALLNAT_DYNAMIC.NSP)
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"CALLNAT_DYNAMIC.NSP"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the dynamic CALLNAT target (#SUB-NAME)
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "CALLNAT_DYNAMIC.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(9),  // 0-based line 9 = 1-based line 10
+				Character: uint32(10), // On #SUB-NAME
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Assert result is nil (no signature for dynamic target)
+	if result != nil {
+		t.Errorf("expected nil SignatureHelp for dynamic target, got %+v", result)
+	}
+}
+
+// TestProvideSignatureHelp_UnresolvedTarget tests signature help for an unresolved
+// CALLNAT (literal target that does not exist in the workspace)
+// (feature 17, T6, RED phase).
+//
+// Exercises:
+// - CALLNAT 'NOPE' where NOPE is not in the workspace → resolution IsUnresolved() → returns nil
+// - No diagnostic is produced (FR-17)
+// - No error is returned
+//
+// FR-48, Story 1, AC#4; FR-17 modeled gaps.
+func TestProvideSignatureHelp_UnresolvedTarget(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the unresolved-call fixture (CALLNAT_UNRESOLVED.NSP)
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"CALLNAT_UNRESOLVED.NSP"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the unresolved CALLNAT target ('NOPE')
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "CALLNAT_UNRESOLVED.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(8),  // 0-based line 8 = 1-based line 9
+				Character: uint32(13), // On 'NOPE'
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Assert result is nil (no signature for unresolved target)
+	if result != nil {
+		t.Errorf("expected nil SignatureHelp for unresolved target, got %+v", result)
+	}
+}
+
+// TestProvideSignatureHelp_AmbiguousTarget tests signature help for an ambiguous
+// CALLNAT (literal target matching multiple objects in a flat namespace)
+// (feature 17, T6, RED phase).
+//
+// Exercises:
+// - CALLNAT 'AMBIG' where AMBIG is in both LIBA and LIBB → resolution IsAmbiguous() → returns nil
+// - No diagnostic is produced by signature help (FR-17)
+// - No error is returned
+//
+// FR-48, Story 1, AC#4; FR-17 modeled gaps.
+func TestProvideSignatureHelp_AmbiguousTarget(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the ambiguous-call fixture (AMBIGUOUS_CALLER/MAIN.NSP with LIBA/AMBIG.NSN, LIBB/AMBIG.NSN)
+	testdataDir := filepath.Join("testdata", "signaturehelp", "AMBIGUOUS_CALLER")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"MAIN.NSP"},
+		{"LIBA/AMBIG.NSN"},
+		{"LIBB/AMBIG.NSN"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the ambiguous CALLNAT target ('AMBIG')
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "MAIN.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(9),  // 0-based line 9 = 1-based line 10 (CALLNAT 'AMBIG')
+				Character: uint32(13), // On 'AMBIG'
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Assert result is nil (no signature for ambiguous target)
+	if result != nil {
+		t.Errorf("expected nil SignatureHelp for ambiguous target, got %+v", result)
+	}
+}
+
+// TestProvideSignatureHelp_FetchTarget tests that FETCH does not trigger signature help
+// (feature 17, T6, RED phase, OQ-2).
+//
+// Exercises:
+//   - FETCH 'PROG' #I → detectSignatureContext returns sigNone → provideSignatureHelp returns nil
+//   - Per OQ-2 (natural-expert verified), programs invoked via FETCH receive data via the Natural
+//     stack (INPUT), not declared parameters. So FETCH has no signature.
+//   - This is an explicit negative test documenting the category-error decision (FR-17).
+//   - No error is returned
+//
+// FR-48, OQ-2.
+func TestProvideSignatureHelp_FetchTarget(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the FETCH fixture (FETCH_CALLER.NSP)
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"FETCH_CALLER.NSP"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the FETCH target ('PROG')
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "FETCH_CALLER.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(8),  // 0-based line 8 = 1-based line 9 (FETCH 'PROG')
+				Character: uint32(10), // On 'PROG'
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Assert result is nil (FETCH has no signature context)
+	if result != nil {
+		t.Errorf("expected nil SignatureHelp for FETCH (no declared parameters), got %+v", result)
+	}
+}
+
+// TestProvideSignatureHelp_RunTarget tests that RUN does not trigger signature help
+// (feature 17, T6, RED phase, OQ-2).
+//
+// Exercises:
+//   - RUN 'PROG' #I → detectSignatureContext returns sigNone → provideSignatureHelp returns nil
+//   - Per OQ-2 (natural-expert verified), programs invoked via RUN receive data via the Natural
+//     stack (INPUT), not declared parameters. So RUN has no signature.
+//   - This is an explicit negative test documenting the category-error decision (FR-17).
+//   - No error is returned
+//
+// FR-48, OQ-2.
+func TestProvideSignatureHelp_RunTarget(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the RUN fixture (RUN_CALLER.NSP)
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"RUN_CALLER.NSP"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the RUN target ('PROG')
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "RUN_CALLER.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(8), // 0-based line 8 = 1-based line 9 (RUN 'PROG')
+				Character: uint32(7), // On 'PROG'
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Assert result is nil (RUN has no signature context)
+	if result != nil {
+		t.Errorf("expected nil SignatureHelp for RUN (no declared parameters), got %+v", result)
+	}
+}
+
+// TestProvideSignatureHelp_NotInCallContext tests that signature help returns nil
+// when the cursor is not in a call context (feature 17, T6, RED phase).
+//
+// Exercises:
+// - Cursor on a plain statement (MOVE, COMPUTE, etc.) → detectSignatureContext returns sigNone → returns nil
+// - No error is returned
+//
+// FR-48, Story 4, AC#2.
+func TestProvideSignatureHelp_NotInCallContext(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the not-in-context fixture (NOT_IN_CONTEXT.NSP)
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"NOT_IN_CONTEXT.NSP"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the MOVE statement (not a call context)
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "NOT_IN_CONTEXT.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(9), // 0-based line 9 = 1-based line 10 (MOVE 42 TO #X)
+				Character: uint32(6), // On '42'
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Assert result is nil (not in a call context)
+	if result != nil {
+		t.Errorf("expected nil SignatureHelp when not in call context, got %+v", result)
+	}
+}

@@ -1,0 +1,13 @@
+* Caller with unresolved CALLNAT (target does not exist in workspace)
+* Feature 17, T6, FR-17: unresolved literal → nil signature, no diagnostic
+PROGRAM CALLNAT_UNRESOLVED
+
+DEFINE DATA
+  LOCAL
+    1 #A (N8)
+  END
+END
+
+CALLNAT 'NOPE' #A
+
+END

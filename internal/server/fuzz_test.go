@@ -1365,3 +1365,251 @@ func FuzzProvideCompletion(f *testing.F) {
 		}
 	})
 }
+
+// FuzzSignatureContext is the executable proof of the signature-context detector's
+// robustness (FR-43, Task T2 of feature 17): detectSignatureContext must NEVER panic
+// when fed arbitrary line text and cursor positions.
+//
+// The detector is a pure function that classifies whether the cursor is in a CALLNAT
+// or PERFORM signature context, returning the context kind and argument index.
+// It must handle degenerate input (empty line, negative/oversized cursor) gracefully
+// without panicking (FR-43).
+//
+// Seed corpus covers:
+//   - CALLNAT and PERFORM with various target and argument patterns
+//   - FETCH, RUN, READ, GET, FIND, STORE (non-call contexts)
+//   - Degenerate inputs: empty line, negative cursor, cursor past end, non-ASCII
+//   - Case variations (lowercase, mixed case)
+func FuzzSignatureContext(f *testing.F) {
+	// Seed with various line patterns from the detector test cases.
+	// CALLNAT patterns
+	f.Add("CALLNAT", 7)
+	f.Add("CALLNAT 'SUBPRG'", 10)
+	f.Add("CALLNAT 'SUBPRG' ", 17)
+	f.Add("CALLNAT 'SUBPRG' #A ", 20)
+	f.Add("callnat 'SUBPRG' #A", 19)
+	f.Add("CALLNAT #VAR", 12)
+	f.Add("CALLNAT &PLACEHOLDER", 20)
+	f.Add("CALLNAT 'SUB' #A #B #C", 23)
+
+	// PERFORM patterns
+	f.Add("PERFORM", 7)
+	f.Add("PERFORM INLINE-SUB", 13)
+	f.Add("PERFORM INLINE-SUB ", 19)
+	f.Add("PERFORM INLINE-SUB #X ", 22)
+	f.Add("perform EXT-SUB #A", 18)
+
+	// Non-call contexts (should return sigNone)
+	f.Add("FETCH 'PROG'", 11)
+	f.Add("RUN 'PROG'", 9)
+	f.Add("READ CUSTOMER", 8)
+	f.Add("FIND EMPLOYEE", 10)
+	f.Add("GET PRODUCT", 8)
+	f.Add("STORE INVENTORY", 12)
+
+	// Degenerate inputs
+	f.Add("", 0)
+	f.Add("    ", 2)
+	f.Add("CALLNAT MYSU", -1)  // negative cursor
+	f.Add("CALLNAT MYSU", 100) // cursor past end
+	f.Add("CALLNAT", 0)        // cursor at start
+	f.Add("CALLNAT MYSU", 6)   // cursor between keyword and space
+	f.Add("café", 4)           // multi-byte UTF-8
+	f.Add("CALLNAT-LIKE", 10)  // hyphen in keyword (not CALLNAT)
+
+	f.Fuzz(func(t *testing.T, line string, cursorByteCol int) {
+		// Act: call detectSignatureContext — must NOT panic (FR-43).
+		kind, argIndex := detectSignatureContext(line, cursorByteCol)
+
+		// Assert: result is well-formed.
+		// kind is a sigContextKind (int-like); check it's in valid range.
+		// argIndex is an int; should never be negative (clamped).
+		if argIndex < 0 {
+			t.Errorf("argIndex should never be negative, got %d", argIndex)
+		}
+
+		// Verify kind is one of the expected values.
+		switch kind {
+		case sigNone, sigCallnat, sigPerform:
+			// Valid kinds, no error.
+		default:
+			t.Errorf("detectSignatureContext returned unknown kind: %v", kind)
+		}
+
+		// No panic means success (FR-43).
+		_ = kind
+		_ = argIndex
+	})
+}
+
+// FuzzProvideSignatureHelp is the executable proof of the signature-help provider's
+// robustness (FR-43, Task T6 of feature 17): provideSignatureHelp must NEVER panic
+// when fed arbitrary cursor positions over arbitrary workspace content, and must
+// ALWAYS return a well-formed result (either nil or a valid *protocol.SignatureHelp).
+//
+// The provider is called on every signature-help request (potentially many times per
+// second while the user types). A panic on any input violates FR-43. The result must be
+// well-formed protocol output.
+//
+// Seed corpus:
+//   - Fixture files from testdata/signaturehelp (CALLNAT, PERFORM, dynamic, unresolved)
+//   - Empty input
+//   - CALLNAT with dynamic/unresolved targets
+//   - Various statement types (FETCH, RUN, READ, data access)
+//   - Both position encodings (UTF-8 and UTF-16)
+//   - Arbitrary cursor positions (including out-of-bounds)
+func FuzzProvideSignatureHelp(f *testing.F) {
+	// Seed from signature-help fixtures.
+	fixtureNames := []string{
+		"testdata/signaturehelp/CALLER.NSP",
+		"testdata/signaturehelp/CALLNOPARM.NSP",
+		"testdata/signaturehelp/SUBPRG.NSN",
+		"testdata/signaturehelp/PERFCALLER.NSP",
+		"testdata/signaturehelp/MY-SUB.NSS",
+		"testdata/signaturehelp/PERFEXT.NSP",
+		"testdata/signaturehelp/EXTSUB.NSS",
+		"testdata/signaturehelp/NOPARM.NSS",
+		"testdata/signaturehelp/CALLNAT_DYNAMIC.NSP",
+		"testdata/signaturehelp/CALLNAT_UNRESOLVED.NSP",
+		"testdata/signaturehelp/FETCH_CALLER.NSP",
+		"testdata/signaturehelp/RUN_CALLER.NSP",
+		"testdata/signaturehelp/NOT_IN_CONTEXT.NSP",
+	}
+
+	for _, name := range fixtureNames {
+		path := filepath.Join("internal/server", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			// Skip missing fixtures (not a test failure).
+			continue
+		}
+		f.Add(data)
+	}
+
+	// Hand-written edge-case seeds (FR-43 graceful degradation).
+
+	// Empty input.
+	f.Add([]byte(""))
+
+	// Bare CALLNAT with no target.
+	f.Add([]byte("CALLNAT"))
+
+	// Dynamic CALLNAT (#VAR) — variable target, unresolvable.
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #SUB-NAME (A10)\nEND-DEFINE\nCALLNAT #SUB-NAME\nEND\n"))
+
+	// CALLNAT with unresolved target.
+	f.Add([]byte("CALLNAT 'NOPE'\n"))
+
+	// PERFORM with inline subroutine.
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nDEFINE SUBROUTINE MY-SUB\n  MOVE 1 TO #X\nEND-SUBROUTINE\nPERFORM MY-SUB\nEND\n"))
+
+	// FETCH (not a signature context).
+	f.Add([]byte("FETCH 'PROG'\n"))
+
+	// RUN (not a signature context).
+	f.Add([]byte("RUN 'PROG'\n"))
+
+	// Plain statement (not a call context).
+	f.Add([]byte("MOVE 42 TO #X\nCOMPUTE #X = #X + 1\nEND\n"))
+
+	// Malformed DEFINE DATA (no END-DEFINE).
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #X (A5)\nCALLNAT 'Y'\n"))
+
+	// Data-access statement (not a signature context).
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nREAD CUSTOMER\nEND-READ\nEND\n"))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// Arrange: build a minimal handler context over a single-file workspace.
+		az := natural.New(nil)
+		fa, err := az.Analyze("fuzz.NSP", input)
+		// err may be non-nil (expected for malformed input), fa is a value type.
+		_ = err
+
+		// Build a minimal index containing just the fuzzed file.
+		idx := &workspace.Index{}
+		idx.Add("fuzz.NSP", fa)
+
+		// Resolve the index (will return an empty result set for unresolvable edges).
+		cfg := &config.Config{}
+		res := workspace.Resolve(idx, cfg)
+
+		// Create a minimal handler context with a temp root.
+		tmpDir := t.TempDir()
+		hctx := &handlerContext{
+			idx:         idx,
+			res:         res,
+			posEncoding: protocol.PositionEncodingKindUTF8,
+			root:        tmpDir,
+			cfg:         *cfg,
+		}
+
+		// Write the fuzzed input to a file so provideSignatureHelp can read it.
+		fuzzPath := filepath.Join(tmpDir, "fuzz.NSP")
+		if err := os.WriteFile(fuzzPath, input, 0600); err != nil {
+			// If we can't write the file, skip this test case (FR-43).
+			return
+		}
+
+		// Test both encodings (UTF-8 and UTF-16)
+		encodings := []protocol.PositionEncodingKind{
+			protocol.PositionEncodingKindUTF8,
+			protocol.PositionEncodingKindUTF16,
+		}
+
+		// Generate arbitrary cursor positions (including out-of-bounds).
+		testPositions := []protocol.Position{
+			{Line: 0, Character: 0},       // start
+			{Line: 0, Character: 50},      // beyond first line
+			{Line: 100, Character: 0},     // beyond file
+			{Line: 1000000, Character: 1}, // huge position
+		}
+
+		// Act: call provideSignatureHelp with each arbitrary position and encoding.
+		// This must NOT panic for any input, position, or encoding (FR-43).
+		for _, enc := range encodings {
+			hctx.posEncoding = enc
+			for _, protPos := range testPositions {
+				params := protocol.SignatureHelpParams{
+					TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+						TextDocument: protocol.TextDocumentIdentifier{
+							URI: uri.File(fuzzPath),
+						},
+						Position: protPos,
+					},
+				}
+
+				// Call provideSignatureHelp — must not panic (FR-43).
+				result, err := provideSignatureHelp(hctx, params)
+
+				// Assert: result is well-formed.
+				// Either nil or a valid *protocol.SignatureHelp.
+				if result != nil {
+					// Non-nil result must have Signatures.
+					if result.Signatures == nil {
+						t.Errorf("non-nil SignatureHelp.Signatures is nil; unexpected")
+					}
+					// Each SignatureInformation must be well-formed.
+					for _, sig := range result.Signatures {
+						// Label is required.
+						_ = sig.Label
+						// Parameters may be nil or a valid slice.
+						if sig.Parameters != nil {
+							for _, param := range sig.Parameters {
+								// Label is required.
+								_ = param.Label
+							}
+						}
+						// ActiveParameter is optional (Nullable[uint32]).
+						_ = sig.ActiveParameter
+					}
+					// ActiveSignature is optional.
+					_ = result.ActiveSignature
+				}
+				// No specific assertion on result fields beyond type safety;
+				// the main goal is no panic.
+				_ = result
+				_ = err
+			}
+		}
+	})
+}

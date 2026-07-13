@@ -1,0 +1,10 @@
+* One definition of AMBIG (in LIBA)
+* Feature 17, T6: This and LIBB/AMBIG.NSN create an ambiguous resolution
+DEFINE SUBROUTINE AMBIG
+  DEFINE DATA
+    PARAMETER
+      1 #P1 (N8)
+    END
+  END
+  MOVE 0 TO #P1
+END

@@ -1,0 +1,15 @@
+* Caller with plain statement (not a call context)
+* Feature 17, T6, FR-17: sigNone → nil signature, no error
+PROGRAM NOT_IN_CONTEXT
+
+DEFINE DATA
+  LOCAL
+    1 #X (N8)
+  END
+END
+
+MOVE 42 TO #X
+
+COMPUTE #X = #X + 1
+
+END
