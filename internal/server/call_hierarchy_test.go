@@ -513,3 +513,212 @@ func TestProvidePrepareCallHierarchyAmbiguous(t *testing.T) {
 		}
 	}
 }
+
+// TestProvideIncomingCalls tests the callHierarchy/incomingCalls handler (Feature 18, T4).
+//
+// FR-ID: FR-49 (call hierarchy), Story 2, AC1–3:
+//
+//	AC1: "callHierarchy/incomingCalls at a symbol returns all call sites across the workspace
+//	     that resolve to that symbol, grouped by caller file."
+//	AC2: "Each incoming call entry carries the caller's CallHierarchyItem and a fromRanges
+//	     array with all call-site ranges within that caller."
+//	AC3: "Dynamic/unresolved call sites are excluded (FR-11/FR-17); only resolved edges count."
+func TestProvideIncomingCalls(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing all files in the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{} // Empty config for flat-namespace resolution
+
+	files := []string{"CALLER.NSP", "CALLER2.NSP", "CALLEE.NSN"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Read CALLEE.NSN to build the target item
+	calleeAbsPath := filepath.Join(root, testdata, "CALLEE.NSN")
+	calleeContent, err := os.ReadFile(calleeAbsPath)
+	if err != nil {
+		t.Fatalf("failed to read CALLEE.NSN: %v", err)
+	}
+
+	calleeAnalysis, ok := idx.Get("testdata/callhierarchy/CALLEE.NSN")
+	if !ok {
+		t.Fatalf("CALLEE.NSN not in index")
+	}
+
+	if calleeAnalysis.Structure == nil {
+		t.Fatalf("CALLEE.NSN Structure is nil")
+	}
+
+	// Build the target item from CALLEE's object root
+	targetItem := buildCallHierarchyItem(root, "testdata/callhierarchy/CALLEE.NSN", calleeContent, calleeAnalysis.Structure, protocol.PositionEncodingKindUTF8)
+
+	// Create handler context
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Call provideIncomingCalls
+	params := protocol.CallHierarchyIncomingCallsParams{
+		Item: targetItem,
+	}
+
+	result, err := provideIncomingCalls(hctx, params)
+
+	// Check error
+	if err != nil {
+		t.Errorf("provideIncomingCalls returned error: %v", err)
+	}
+
+	// Assert the result (AC1–AC3)
+	t.Run("AC1: returns all static callers", func(t *testing.T) {
+		// Expect exactly 2 incoming calls (CALLER.NSP with 1 site, CALLER2.NSP with 2 sites)
+		if len(result) != 2 {
+			t.Errorf("result length = %d, want 2 (CALLER.NSP + CALLER2.NSP)", len(result))
+		}
+
+		// The result should be sorted by caller URI
+		if len(result) >= 1 {
+			// First caller should be CALLER.NSP
+			firstCallerName := result[0].From.Name
+			if firstCallerName != "CALLER" {
+				t.Errorf("result[0].From.Name = %q, want %q", firstCallerName, "CALLER")
+			}
+
+			// First caller should have 1 fromRange (one CALLNAT 'CALLEE' site)
+			if len(result[0].FromRanges) != 1 {
+				t.Errorf("result[0].FromRanges length = %d, want 1", len(result[0].FromRanges))
+			}
+		}
+
+		if len(result) >= 2 {
+			// Second caller should be CALLER2.NSP
+			secondCallerName := result[1].From.Name
+			if secondCallerName != "CALLER2" {
+				t.Errorf("result[1].From.Name = %q, want %q", secondCallerName, "CALLER2")
+			}
+
+			// Second caller should have 2 fromRanges (two CALLNAT 'CALLEE' sites)
+			if len(result[1].FromRanges) != 2 {
+				t.Errorf("result[1].FromRanges length = %d, want 2", len(result[1].FromRanges))
+			}
+		}
+	})
+
+	t.Run("AC2: each caller has populated From and sorted FromRanges", func(t *testing.T) {
+		for i, incoming := range result {
+			// Check From is populated
+			if incoming.From.Name == "" {
+				t.Errorf("result[%d].From.Name is empty", i)
+			}
+			if incoming.From.URI == "" {
+				t.Errorf("result[%d].From.URI is empty", i)
+			}
+			if len(incoming.From.Data) == 0 {
+				t.Errorf("result[%d].From.Data is empty (should be round-trippable)", i)
+			}
+
+			// Check FromRanges are sorted by start position
+			for j := 0; j < len(incoming.FromRanges)-1; j++ {
+				curr := incoming.FromRanges[j]
+				next := incoming.FromRanges[j+1]
+				if curr.Start.Line > next.Start.Line ||
+					(curr.Start.Line == next.Start.Line && curr.Start.Character > next.Start.Character) {
+					t.Errorf("result[%d].FromRanges[%d] not sorted before [%d]", i, j, j+1)
+				}
+			}
+		}
+	})
+
+	t.Run("AC3: dynamic calls are excluded", func(t *testing.T) {
+		// CALLER.NSP has:
+		//   - One static CALLNAT 'CALLEE' (should be included)
+		//   - One dynamic CALLNAT #DYN (should be excluded)
+		// So we expect only the static call site in the result.
+		// Since we got result[0] as CALLER with 1 fromRange, the dynamic is correctly excluded.
+
+		// Verify the FromRanges in CALLER do NOT include the dynamic call site.
+		// The dynamic CALLNAT #DYN is on line ~18 in CALLER.NSP
+		// The static CALLNAT 'CALLEE' is on line ~12
+		// So the range should only cover the static call.
+		if len(result) >= 1 {
+			// The single fromRange in CALLER should be for the static call on line 11 (0-indexed = line 11)
+			// Just check that we have exactly 1 range, not 2 (which would indicate the dynamic was included)
+			if len(result[0].FromRanges) != 1 {
+				t.Errorf("CALLER.NSP has %d fromRanges, want 1 (dynamic should be excluded)", len(result[0].FromRanges))
+			}
+		}
+	})
+
+	t.Run("deterministic ordering by caller URI", func(t *testing.T) {
+		// Callers should be sorted by URI
+		if len(result) >= 2 {
+			uri1 := string(result[0].From.URI)
+			uri2 := string(result[1].From.URI)
+			if uri1 > uri2 {
+				t.Errorf("result not sorted by URI: %s > %s", uri1, uri2)
+			}
+		}
+	})
+
+	t.Run("FR-43: garbage/unknown Item → empty, no panic", func(t *testing.T) {
+		// Create a garbage item with invalid data
+		badItem := protocol.CallHierarchyItem{
+			Name: "NONEXISTENT",
+			Kind: protocol.SymbolKindObject,
+			URI:  uri.File(filepath.Join(root, "testdata", "callhierarchy", "NONEXISTENT.NSP")),
+			Range: protocol.Range{
+				Start: protocol.Position{Line: 0, Character: 0},
+				End:   protocol.Position{Line: 0, Character: 0},
+			},
+			SelectionRange: protocol.Range{
+				Start: protocol.Position{Line: 0, Character: 0},
+				End:   protocol.Position{Line: 0, Character: 0},
+			},
+			Data: protocol.LSPAny("invalid json data"),
+		}
+
+		badParams := protocol.CallHierarchyIncomingCallsParams{
+			Item: badItem,
+		}
+
+		// Should not panic and should return empty (or nil, which dispatch converts to [])
+		badResult, badErr := provideIncomingCalls(hctx, badParams)
+
+		// No error expected
+		if badErr != nil {
+			t.Errorf("provideIncomingCalls on garbage Item returned error: %v (expected nil)", badErr)
+		}
+
+		// Should be empty
+		if len(badResult) != 0 {
+			t.Errorf("provideIncomingCalls on garbage Item returned %d results, want 0", len(badResult))
+		}
+	})
+}

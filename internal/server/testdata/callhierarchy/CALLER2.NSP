@@ -1,0 +1,19 @@
+* A second caller program with two static calls to CALLEE
+PROGRAM CALLER2
+
+DEFINE DATA
+  LOCAL
+    1 #PARAM1 (N8)
+    1 #PARAM2 (A20)
+  END
+END
+
+* First static call to CALLEE
+CALLNAT 'CALLEE' #PARAM1
+
+* Some comment line
+
+* Second static call to CALLEE
+CALLNAT 'CALLEE' #PARAM2
+
+END

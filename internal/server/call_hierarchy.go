@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	gojson "github.com/go-json-experiment/json"
@@ -404,10 +405,132 @@ func adjustCallHierarchyItemKind(item *protocol.CallHierarchyItem, objType model
 	}
 }
 
-// provideIncomingCalls (feature 18, T1) is a stub provider that returns
-// an empty array for the callHierarchy/incomingCalls request.
+// provideIncomingCalls (feature 18, T4 GREEN) is the LSP provider for
+// callHierarchy/incomingCalls (FR-49, Story 2, AC1-3).
+//
+// Returns all call sites across the workspace that resolve to the target symbol,
+// grouped by caller file, with FromRanges sorted by start position.
+// Dynamic/unresolved edges are excluded (FR-11/FR-17).
+//
+// Concurrency (F7): snapshots idx/res/posEncoding/root under RLock, releases before I/O.
+// Graceful degradation (FR-43): unresolvable target / unreadable files → empty, never panics.
 func provideIncomingCalls(hctx *handlerContext, params protocol.CallHierarchyIncomingCallsParams) ([]protocol.CallHierarchyIncomingCall, error) {
-	return nil, nil
+	// Guard: hctx must be initialized
+	if hctx == nil {
+		return nil, nil
+	}
+
+	// Snapshot idx/res/posEncoding/root under read lock (F7); release before I/O
+	hctx.idxResMu.RLock()
+	idx := hctx.idx
+	res := hctx.res
+	posEncoding := hctx.posEncoding
+	root := hctx.root
+	hctx.idxResMu.RUnlock()
+
+	if idx == nil || res == nil {
+		return nil, nil
+	}
+
+	// Resolve the target item to get its identity
+	targetPath, targetFA, targetSym, ok := resolveItemIdentity(idx, root, params.Item, posEncoding)
+	if !ok {
+		// Cannot resolve the target; return empty
+		return nil, nil
+	}
+
+	// Determine the target's ObjectType and name to match against
+	targetType := targetFA.ObjectType
+	targetName := strings.ToUpper(targetSym.Name)
+
+	// Collect incoming call sites grouped by caller (reverse sweep)
+	incomingByCallerPath := incomingCallSites(idx, res, targetPath, targetType, targetName)
+
+	// For each caller, build a CallHierarchyIncomingCall entry
+	var result []protocol.CallHierarchyIncomingCall
+
+	// Sort callers by URI for deterministic output
+	callerPaths := make([]string, 0, len(incomingByCallerPath))
+	for callerPath := range incomingByCallerPath {
+		callerPaths = append(callerPaths, callerPath)
+	}
+	sort.Strings(callerPaths)
+
+	for _, callerPath := range callerPaths {
+		ranges := incomingByCallerPath[callerPath]
+
+		// Get the caller's analysis
+		callerFA, ok := idx.Get(callerPath)
+		if !ok {
+			continue
+		}
+
+		// Read the caller's content for range conversion
+		callerAbsPath := filepath.Join(root, callerPath)
+		callerContent, err := os.ReadFile(callerAbsPath)
+		if err != nil {
+			// Can't read caller file; skip (FR-43)
+			continue
+		}
+
+		// Check that Structure exists
+		if callerFA.Structure == nil {
+			continue
+		}
+
+		// Build the From item from the caller's object root
+		fromItem := buildCallHierarchyItem(root, callerPath, callerContent, callerFA.Structure, posEncoding)
+
+		// Convert each range to protocol.Range and sort by start
+		fromRanges := make([]protocol.Range, len(ranges))
+		for i, rng := range ranges {
+			fromRanges[i] = toProtocolRange(rng, string(callerContent), posEncoding)
+		}
+
+		// Sort by start position (already in source order but be explicit)
+		sort.Slice(fromRanges, func(i, j int) bool {
+			if fromRanges[i].Start.Line != fromRanges[j].Start.Line {
+				return fromRanges[i].Start.Line < fromRanges[j].Start.Line
+			}
+			return fromRanges[i].Start.Character < fromRanges[j].Start.Character
+		})
+
+		result = append(result, protocol.CallHierarchyIncomingCall{
+			From:       fromItem,
+			FromRanges: fromRanges,
+		})
+	}
+
+	return result, nil
+}
+
+// incomingCallSites collects all call sites across the workspace that resolve to the target,
+// grouped by caller file path.
+// It mirrors referenceSites' reverse sweep: for each file's edges, it checks if the
+// resolution matches the target (via edgeMatchesTarget, which excludes dynamic/unresolved).
+// Returns a map from caller file path to a slice of edge.Source ranges, in source order.
+func incomingCallSites(idx *workspace.Index, res *workspace.ResolutionSet, targetPath string, targetType model.ObjectType, targetName string) map[string][]model.Range {
+	// Map from caller path to list of edge source ranges
+	incomingByCaller := make(map[string][]model.Range)
+
+	// Iterate every file in the index
+	idx.ForEach(func(filePath string, fa model.FileAnalysis) {
+		// Scan edges: for each edge, check if its resolution matches the target.
+		for _, edge := range fa.Edges {
+			resolution, ok := res.Get(filePath, edge.Source)
+			if !ok {
+				continue
+			}
+			if !edgeMatchesTarget(resolution, targetPath, targetType) {
+				continue
+			}
+
+			// This edge resolves to the target; record its source range
+			incomingByCaller[filePath] = append(incomingByCaller[filePath], edge.Source)
+		}
+	})
+
+	return incomingByCaller
 }
 
 // provideOutgoingCalls (feature 18, T1) is a stub provider that returns
