@@ -55,7 +55,7 @@ exported to files before it can be indexed.
 > with the resolver's flat-namespace ambiguity warnings and tracking edits across
 > didOpen/didChange/didClose/watched-file changes (clearing via an empty array on fix, close, or delete).
 > Modeled gaps (dynamic/unresolved references) are never diagnostics (FR-17). The remaining
-> signature-help/call-hierarchy LSP *providers* are not yet
+> call-hierarchy LSP *provider* is not yet
 > wired — this README describes the **target** feature set. There are no published binaries. Implemented
 > behavior will be marked as it lands.
 
@@ -113,7 +113,7 @@ The capabilities below define the **target** feature set for the first stable re
 - `workspace/symbol` — **shipped** (feature 10)
 - `textDocument/hover` — **shipped** (feature 12)
 - `textDocument/completion` (module names, subroutine names, DDM field names) — **shipped** (feature 16)
-- `textDocument/signatureHelp` (parameter interfaces at call sites)
+- `textDocument/signatureHelp` (parameter interfaces at call sites) — **shipped** (feature 17)
 - `textDocument/callHierarchy` (incoming/outgoing call panels)
 - `textDocument/documentSymbol` — **shipped** (feature 11)
 - `textDocument/codeLens` (call counts, table write summaries) — **shipped** (feature 13)

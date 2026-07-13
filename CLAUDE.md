@@ -4,7 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–16 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, and completion**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, and `textDocument/completion` (FR-47) shipped in feature 16 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (signature help, call hierarchy) remain unwired.
+**Features 00–17 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, and signature help**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, and `textDocument/signatureHelp` (FR-48) shipped in feature 17 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP provider (call hierarchy) remains unwired.
+
+Feature 17 (signature help) wires the **`textDocument/signatureHelp`** provider (FR-48) — at a CALLNAT
+or PERFORM site it shows the callee's parameter interface in the editor's signature UI. **No
+`internal/model` change and no cache-format bump** (still `0.6.0`): it is a read-only query over the
+existing `Definitions`/resolution, reusing hover's parameter extraction. `internal/server/signature_help.go`
+holds the provider `provideSignatureHelp` (F7 snapshot of `idx`/`res`/`posEncoding`/`root` under `RLock`,
+released before I/O; **store-first** buffer read since it fires while typing) plus a pure
+`detectSignatureContext(line, cursorByteCol)` — a line scanner (sibling to feature 16's
+`detectCompletionContext`) that classifies **only CALLNAT and PERFORM** as signature contexts and returns
+the 0-based **argument index** (Natural has no parentheses — arguments are space-separated after the
+target). Dispatch: `detectSignatureContext` → `enclosingCallEdge` (locates the CALLNAT/PERFORM
+`EdgeEntry` on the cursor line so signature help fires when the cursor is in the **argument region**, not
+only on the target) → resolve via `res.Get` → `buildSignatureInformation` from the callee's PARAMETER
+`Definitions`. **CALLNAT** → the resolved subprogram's PARAMETER block; **PERFORM** → inline
+`DEFINE SUBROUTINE` before external `.NSS` (FR-12; an inline subroutine has no PARAMETER block — shared
+scope — so it yields an empty-`Parameters` signature). A subroutine with no parameters returns a non-nil
+empty signature (Story 2 AC4). `activeParameter` tracks the cursor's argument position, **clamped** to the
+last parameter past the end (never crashes) and omitted for param-less signatures. **Modeled gaps stay off
+the diagnostic/error channel (FR-17):** dynamic/unresolved/ambiguous targets, **FETCH/RUN** targets
+(programs have no declared parameter interface — they read the Natural stack via `INPUT`, natural-expert-
+verified, so signature help there would fabricate metadata), and any non-call context all return **`nil`
+(JSON `null`)**, no error, no diagnostic. Feature 17 **extracted a shared parameter-interface helper**
+(`parameterInterface`/`renderParamType` in `hover.go`) that both hover and signature help consume so they
+agree on the parameter set (hover output stays byte-identical). The `signatureHelpProvider` capability
+(`TriggerCharacters: [" "]`, `RetriggerCharacters: [" "]` — approved decision) is advertised in
+`initialize` and pinned in the locked `TestInitialize` allow-list. **Marshaling note:** unlike the other
+providers (stdlib `json.Marshal`), the `SignatureHelp` result is written via
+`(*protocol.SignatureHelp).MarshalJSONTo` because it carries `Nullable`/union fields (`ActiveParameter
+Nullable[uint32]`, `ParameterInformation.Label` union); `Nullable[uint32]` (no exported constructor) is
+built via its public `UnmarshalJSONFrom` — **no `unsafe`**. `FuzzProvideSignatureHelp` and
+`FuzzSignatureContext` guard the entry points (never panic — FR-43). Fixtures live under
+`internal/server/testdata/signaturehelp/`.
 
 Feature 16 (completion) wires the **`textDocument/completion`** provider (FR-47) — context-aware
 symbol-name completion drawn from the live workspace index. It is the server's first request provider
