@@ -4,7 +4,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–15 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, and diagnostics**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, and `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (completion, signature help, call hierarchy) remain unwired.
+**Features 00–16 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, and completion**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, and `textDocument/completion` (FR-47) shipped in feature 16 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). The remaining higher-level LSP providers (signature help, call hierarchy) remain unwired.
+
+Feature 16 (completion) wires the **`textDocument/completion`** provider (FR-47) — context-aware
+symbol-name completion drawn from the live workspace index. It is the server's first request provider
+that **enumerates the index by prefix** (all prior lookups were exact-name). **No `internal/model`
+change and no cache-format bump** (still `0.6.0`): completion is a read-only query over the existing
+index/resolution, plus one additive `internal/workspace` surface. `internal/server/completion.go` holds
+the provider and a pure **context detector** — `detectCompletionContext(line, cursorByteCol)` — a
+line-prefix scanner (deliberately **not** `findCursorTarget`, which only maps to an *existing* extracted
+edge) that classifies a partial, possibly-unparseable line by its leading keyword: `CALLNAT`→subprogram,
+`FETCH`/`RUN`→program, `INCLUDE`→copycode (module contexts), `PERFORM`→subroutine, a data-access verb
+(`READ`/`FIND`/`GET`/`STORE`/`UPDATE`/`DELETE`) + named view→DDM-field context (carrying the view name),
+else none — returning the partial prefix (leading quote stripped, sigil preserved for dynamic detection).
+`provideCompletion` snapshots `idx`/`posEncoding` under the `idxResMu` RLock and releases before I/O (F7),
+reads the **open buffer store-first** (completion fires while typing, so the buffer is the only source of
+the partial line), and dispatches: **module** contexts query the new `Index.NamesWithPrefix(prefix, typ,
+referencingPath, cfg)` (index.go — an additive steplib-aware prefix enumeration reusing
+`buildNameIndex`/`objectIdentity`/`buildSearchChain`, returning all chain-reachable candidates, flat
+namespace when no library map), building `CompletionItem`s with an object-type→kind mapping
+(subprogram→Module, program→File, copycode→Reference, external-subroutine→Function, DDM field→Field) and
+the object-type/field-type label as `Detail`; **PERFORM** offers inline `DEFINE SUBROUTINE` candidates
+from the buffer's `Structure` first, then external `.NSS` via the index, ordering enforced client-side via
+`SortText` (`"0"` inline / `"1"` external); **DDM-field** resolves the view via `LookupByName(ObjectDDM)`
+and offers its `Definitions` fields (verbatim `Type` as detail). Modeled gaps stay off the error/diagnostic
+channel (FR-17/FR-18): a dynamic/variable target (`#`/`&`/`+` sigil) and an unresolved/ambiguous/nil-field
+DDM both yield an **empty (non-nil) list, never an error** — as does any unrecognized context. The
+`completionProvider` capability (`TriggerCharacters: [" "]`, `ResolveProvider: false` — eager detail, no
+`completionItem/resolve`) is added to the `initialize` allow-list and the locked `TestInitialize` set.
+Completion tracks incremental re-analysis (feature-10 `applyDocumentChange`/`ResolveInto`), so a
+newly-added module appears without a restart. A refactor added an additive `Candidate.Name` field
+(populated where the name is already computed) so the server consumes it rather than re-deriving object
+names from paths (keeping name-derivation on the workspace side of the Analyzer seam).
+`FuzzProvideCompletion` and `FuzzCompletionContext` guard the entry points (never panic — FR-43). Fixtures
+live under `internal/server/testdata/completion/`.
 
 Feature 15 (editor clients & distribution) gets the server in front of users in their editors — the
 first feature with **no Go, `internal/model`, or cache-format change** (the server's existing `--stdio`
