@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+	gojson "github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
@@ -137,6 +138,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	// Feature 13, T6: advertise codeLensProvider.
 	// Feature 16, T3: advertise completionProvider with space-trigger and no resolve handler.
 	// Feature 17, T1: advertise signatureHelpProvider with space trigger and retrigger characters.
+	// Feature 18, T1: advertise callHierarchyProvider.
 	falseVal := false
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
@@ -156,6 +158,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 				TriggerCharacters:   []string{" "},
 				RetriggerCharacters: []string{" "},
 			},
+			CallHierarchyProvider: protocol.Boolean(true),
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",
@@ -917,6 +920,105 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						return
 					}
 					respResult = buf.Bytes()
+				}
+
+			case "textDocument/prepareCallHierarchy":
+				// Feature 18, T1: prepare call hierarchy handler.
+				// Gate on stateInitialized; decode CallHierarchyPrepareParams; call providePrepareCallHierarchy.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.CallHierarchyPrepareParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid prepare call hierarchy params: %v", err))
+					return
+				}
+				// Call the provider function.
+				items, err := providePrepareCallHierarchy(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: items may be nil (empty) for a no-item case.
+				// Important: return [] for empty, never null (arrays are always arrays).
+				if items == nil {
+					respResult = []byte(`[]`)
+				} else {
+					// Marshal the items slice as JSON using gojson to honor MarshalerTo.
+					itemsJSON, marshalErr := gojson.Marshal(items)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal prepare items: %v", marshalErr))
+						return
+					}
+					respResult = itemsJSON
+				}
+
+			case "callHierarchy/incomingCalls":
+				// Feature 18, T1: incoming calls handler.
+				// Gate on stateInitialized; decode CallHierarchyIncomingCallsParams; call provideIncomingCalls.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.CallHierarchyIncomingCallsParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid incoming calls params: %v", err))
+					return
+				}
+				// Call the provider function.
+				calls, err := provideIncomingCalls(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: calls may be nil (empty) for a no-callers case.
+				// Important: return [] for empty, never null (arrays are always arrays).
+				if calls == nil {
+					respResult = []byte(`[]`)
+				} else {
+					// Marshal the calls slice as JSON using gojson to honor MarshalerTo.
+					callsJSON, marshalErr := gojson.Marshal(calls)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal incoming calls: %v", marshalErr))
+						return
+					}
+					respResult = callsJSON
+				}
+
+			case "callHierarchy/outgoingCalls":
+				// Feature 18, T1: outgoing calls handler.
+				// Gate on stateInitialized; decode CallHierarchyOutgoingCallsParams; call provideOutgoingCalls.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.CallHierarchyOutgoingCallsParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid outgoing calls params: %v", err))
+					return
+				}
+				// Call the provider function.
+				calls, err := provideOutgoingCalls(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: calls may be nil (empty) for a no-callees case.
+				// Important: return [] for empty, never null (arrays are always arrays).
+				if calls == nil {
+					respResult = []byte(`[]`)
+				} else {
+					// Marshal the calls slice as JSON using gojson to honor MarshalerTo.
+					callsJSON, marshalErr := gojson.Marshal(calls)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal outgoing calls: %v", marshalErr))
+						return
+					}
+					respResult = callsJSON
 				}
 
 			default:

@@ -533,6 +533,7 @@ func TestInitialize(t *testing.T) {
 					"hoverProvider",
 					"codeLensProvider",
 					"signatureHelpProvider",
+					"callHierarchyProvider",
 				}
 				for _, providerFlag := range requiredProviders {
 					val, exists := caps[providerFlag]
@@ -3685,5 +3686,580 @@ func TestTextDocumentSignatureHelpAfterInitialized(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestTextDocumentPrepareCallHierarchyBeforeInitialized pins the behavior when prepare call hierarchy is requested
+// BEFORE initialization (feature 18, T1 RED phase).
+// The server must return a JSON-RPC error with code ServerNotInitialized.
+func TestTextDocumentPrepareCallHierarchyBeforeInitialized(t *testing.T) {
+	// Arrange: send prepare call hierarchy BEFORE initialize, then initialize → initialized → shutdown → exit
+	prepareCallHierarchyID := jsonrpc2.NewNumberID(1)
+	prepareCallHierarchyParams := `{
+		"textDocument": {"uri": "file:///workspace/test.NSP"},
+		"position": {"line": 0, "character": 5}
+	}`
+	prepareCallHierarchyCall := jsonrpc2.NewCall(prepareCallHierarchyID, "textDocument/prepareCallHierarchy", jsonrpc2.RawMessage(prepareCallHierarchyParams))
+
+	initID := jsonrpc2.NewNumberID(2)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{prepareCallHierarchyCall, initCall, initNotif, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Read prepare call hierarchy response (sent before initialize, should get ServerNotInitialized)
+	prepareCallHierarchyBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse prepare call hierarchy response: %v", err)
+	}
+	prepareCallHierarchyMsg, err := jsonrpc2.DecodeMessage(prepareCallHierarchyBody)
+	if err != nil {
+		t.Fatalf("failed to decode prepare call hierarchy response: %v", err)
+	}
+	prepareCallHierarchyResp, ok := prepareCallHierarchyMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for prepare call hierarchy, got %T", prepareCallHierarchyMsg)
+	}
+
+	// Assert: response should have ServerNotInitialized error (code -32002)
+	if prepareCallHierarchyResp.ID() != prepareCallHierarchyID {
+		t.Errorf("prepare call hierarchy response id = %v, want %v", prepareCallHierarchyResp.ID(), prepareCallHierarchyID)
+	}
+	if prepareCallHierarchyResp.Err() == nil {
+		t.Errorf("prepare call hierarchy response has no error; want ServerNotInitialized, got result: %s", prepareCallHierarchyResp.Result())
+	} else {
+		errTyped, ok := prepareCallHierarchyResp.Err().(*jsonrpc2.Error)
+		if !ok {
+			t.Errorf("prepare call hierarchy response error is %T, not *jsonrpc2.Error: %v", prepareCallHierarchyResp.Err(), prepareCallHierarchyResp.Err())
+		} else if errTyped.Code != jsonrpc2.ServerNotInitialized {
+			t.Errorf("prepare call hierarchy response error code = %v, want %v (ServerNotInitialized)", errTyped.Code, jsonrpc2.ServerNotInitialized)
+		}
+	}
+}
+
+// TestCallHierarchyIncomingCallsBeforeInitialized pins the behavior when incoming calls is requested
+// BEFORE initialization (feature 18, T1 RED phase).
+// The server must return a JSON-RPC error with code ServerNotInitialized.
+func TestCallHierarchyIncomingCallsBeforeInitialized(t *testing.T) {
+	// Arrange: send incoming calls BEFORE initialize, then initialize → initialized → shutdown → exit
+	incomingCallsID := jsonrpc2.NewNumberID(1)
+	incomingCallsParams := `{
+		"item": {
+			"name": "testFunc",
+			"kind": 6,
+			"uri": "file:///workspace/test.NSP",
+			"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}},
+			"selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}}
+		}
+	}`
+	incomingCallsCall := jsonrpc2.NewCall(incomingCallsID, "callHierarchy/incomingCalls", jsonrpc2.RawMessage(incomingCallsParams))
+
+	initID := jsonrpc2.NewNumberID(2)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{incomingCallsCall, initCall, initNotif, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Read incoming calls response (sent before initialize, should get ServerNotInitialized)
+	incomingCallsBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse incoming calls response: %v", err)
+	}
+	incomingCallsMsg, err := jsonrpc2.DecodeMessage(incomingCallsBody)
+	if err != nil {
+		t.Fatalf("failed to decode incoming calls response: %v", err)
+	}
+	incomingCallsResp, ok := incomingCallsMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for incoming calls, got %T", incomingCallsMsg)
+	}
+
+	// Assert: response should have ServerNotInitialized error (code -32002)
+	if incomingCallsResp.ID() != incomingCallsID {
+		t.Errorf("incoming calls response id = %v, want %v", incomingCallsResp.ID(), incomingCallsID)
+	}
+	if incomingCallsResp.Err() == nil {
+		t.Errorf("incoming calls response has no error; want ServerNotInitialized, got result: %s", incomingCallsResp.Result())
+	} else {
+		errTyped, ok := incomingCallsResp.Err().(*jsonrpc2.Error)
+		if !ok {
+			t.Errorf("incoming calls response error is %T, not *jsonrpc2.Error: %v", incomingCallsResp.Err(), incomingCallsResp.Err())
+		} else if errTyped.Code != jsonrpc2.ServerNotInitialized {
+			t.Errorf("incoming calls response error code = %v, want %v (ServerNotInitialized)", errTyped.Code, jsonrpc2.ServerNotInitialized)
+		}
+	}
+}
+
+// TestCallHierarchyOutgoingCallsBeforeInitialized pins the behavior when outgoing calls is requested
+// BEFORE initialization (feature 18, T1 RED phase).
+// The server must return a JSON-RPC error with code ServerNotInitialized.
+func TestCallHierarchyOutgoingCallsBeforeInitialized(t *testing.T) {
+	// Arrange: send outgoing calls BEFORE initialize, then initialize → initialized → shutdown → exit
+	outgoingCallsID := jsonrpc2.NewNumberID(1)
+	outgoingCallsParams := `{
+		"item": {
+			"name": "testFunc",
+			"kind": 6,
+			"uri": "file:///workspace/test.NSP",
+			"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}},
+			"selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}}
+		}
+	}`
+	outgoingCallsCall := jsonrpc2.NewCall(outgoingCallsID, "callHierarchy/outgoingCalls", jsonrpc2.RawMessage(outgoingCallsParams))
+
+	initID := jsonrpc2.NewNumberID(2)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{outgoingCallsCall, initCall, initNotif, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Read outgoing calls response (sent before initialize, should get ServerNotInitialized)
+	outgoingCallsBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse outgoing calls response: %v", err)
+	}
+	outgoingCallsMsg, err := jsonrpc2.DecodeMessage(outgoingCallsBody)
+	if err != nil {
+		t.Fatalf("failed to decode outgoing calls response: %v", err)
+	}
+	outgoingCallsResp, ok := outgoingCallsMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for outgoing calls, got %T", outgoingCallsMsg)
+	}
+
+	// Assert: response should have ServerNotInitialized error (code -32002)
+	if outgoingCallsResp.ID() != outgoingCallsID {
+		t.Errorf("outgoing calls response id = %v, want %v", outgoingCallsResp.ID(), outgoingCallsID)
+	}
+	if outgoingCallsResp.Err() == nil {
+		t.Errorf("outgoing calls response has no error; want ServerNotInitialized, got result: %s", outgoingCallsResp.Result())
+	} else {
+		errTyped, ok := outgoingCallsResp.Err().(*jsonrpc2.Error)
+		if !ok {
+			t.Errorf("outgoing calls response error is %T, not *jsonrpc2.Error: %v", outgoingCallsResp.Err(), outgoingCallsResp.Err())
+		} else if errTyped.Code != jsonrpc2.ServerNotInitialized {
+			t.Errorf("outgoing calls response error code = %v, want %v (ServerNotInitialized)", errTyped.Code, jsonrpc2.ServerNotInitialized)
+		}
+	}
+}
+
+// TestTextDocumentPrepareCallHierarchyAfterInitialized pins the behavior when prepare call hierarchy is requested
+// after initialization (feature 18, T1 RED phase).
+// The server must route the request to a handler and return an empty array result.
+func TestTextDocumentPrepareCallHierarchyAfterInitialized(t *testing.T) {
+	// Arrange: send initialize → initialized → prepare call hierarchy → shutdown
+	initID := jsonrpc2.NewNumberID(1)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	prepareCallHierarchyID := jsonrpc2.NewNumberID(2)
+	prepareCallHierarchyParams := `{
+		"textDocument": {"uri": "file:///workspace/test.NSP"},
+		"position": {"line": 0, "character": 5}
+	}`
+	prepareCallHierarchyCall := jsonrpc2.NewCall(prepareCallHierarchyID, "textDocument/prepareCallHierarchy", jsonrpc2.RawMessage(prepareCallHierarchyParams))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{initCall, initNotif, prepareCallHierarchyCall, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Skip initialize response
+	_, err = parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse initialize response: %v", err)
+	}
+
+	// Read prepare call hierarchy response
+	prepareCallHierarchyBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse prepare call hierarchy response: %v", err)
+	}
+	prepareCallHierarchyMsg, err := jsonrpc2.DecodeMessage(prepareCallHierarchyBody)
+	if err != nil {
+		t.Fatalf("failed to decode prepare call hierarchy response: %v", err)
+	}
+	prepareCallHierarchyResp, ok := prepareCallHierarchyMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for prepare call hierarchy, got %T", prepareCallHierarchyMsg)
+	}
+
+	// Assert: response should have no error
+	if prepareCallHierarchyResp.ID() != prepareCallHierarchyID {
+		t.Errorf("prepare call hierarchy response id = %v, want %v", prepareCallHierarchyResp.ID(), prepareCallHierarchyID)
+	}
+	if prepareCallHierarchyResp.Err() != nil {
+		t.Errorf("prepare call hierarchy response has error: %v; want empty array result", prepareCallHierarchyResp.Err())
+	}
+
+	// Assert: the on-the-wire JSON is exactly "[]" (the stub returns nil → []).
+	if prepareCallHierarchyResp.Result() == nil {
+		t.Errorf("prepare call hierarchy response result is nil; want JSON bytes representing []")
+	} else {
+		resultStr := string(prepareCallHierarchyResp.Result())
+		if resultStr != "[]" {
+			t.Errorf("prepare call hierarchy response result = %q; want JSON \"[]\" (stub returns nil)", resultStr)
+		}
+	}
+}
+
+// TestCallHierarchyIncomingCallsAfterInitialized pins the behavior when incoming calls is requested
+// after initialization (feature 18, T1 RED phase).
+// The server must route the request to a handler and return an empty array result.
+func TestCallHierarchyIncomingCallsAfterInitialized(t *testing.T) {
+	// Arrange: send initialize → initialized → incoming calls → shutdown
+	initID := jsonrpc2.NewNumberID(1)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	incomingCallsID := jsonrpc2.NewNumberID(2)
+	incomingCallsParams := `{
+		"item": {
+			"name": "testFunc",
+			"kind": 6,
+			"uri": "file:///workspace/test.NSP",
+			"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}},
+			"selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}}
+		}
+	}`
+	incomingCallsCall := jsonrpc2.NewCall(incomingCallsID, "callHierarchy/incomingCalls", jsonrpc2.RawMessage(incomingCallsParams))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{initCall, initNotif, incomingCallsCall, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Skip initialize response
+	_, err = parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse initialize response: %v", err)
+	}
+
+	// Read incoming calls response
+	incomingCallsBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse incoming calls response: %v", err)
+	}
+	incomingCallsMsg, err := jsonrpc2.DecodeMessage(incomingCallsBody)
+	if err != nil {
+		t.Fatalf("failed to decode incoming calls response: %v", err)
+	}
+	incomingCallsResp, ok := incomingCallsMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for incoming calls, got %T", incomingCallsMsg)
+	}
+
+	// Assert: response should have no error
+	if incomingCallsResp.ID() != incomingCallsID {
+		t.Errorf("incoming calls response id = %v, want %v", incomingCallsResp.ID(), incomingCallsID)
+	}
+	if incomingCallsResp.Err() != nil {
+		t.Errorf("incoming calls response has error: %v; want empty array result", incomingCallsResp.Err())
+	}
+
+	// Assert: the on-the-wire JSON is exactly "[]" (the stub returns nil → []).
+	if incomingCallsResp.Result() == nil {
+		t.Errorf("incoming calls response result is nil; want JSON bytes representing []")
+	} else {
+		resultStr := string(incomingCallsResp.Result())
+		if resultStr != "[]" {
+			t.Errorf("incoming calls response result = %q; want JSON \"[]\" (stub returns nil)", resultStr)
+		}
+	}
+}
+
+// TestCallHierarchyOutgoingCallsAfterInitialized pins the behavior when outgoing calls is requested
+// after initialization (feature 18, T1 RED phase).
+// The server must route the request to a handler and return an empty array result.
+func TestCallHierarchyOutgoingCallsAfterInitialized(t *testing.T) {
+	// Arrange: send initialize → initialized → outgoing calls → shutdown
+	initID := jsonrpc2.NewNumberID(1)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	outgoingCallsID := jsonrpc2.NewNumberID(2)
+	outgoingCallsParams := `{
+		"item": {
+			"name": "testFunc",
+			"kind": 6,
+			"uri": "file:///workspace/test.NSP",
+			"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}},
+			"selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}}
+		}
+	}`
+	outgoingCallsCall := jsonrpc2.NewCall(outgoingCallsID, "callHierarchy/outgoingCalls", jsonrpc2.RawMessage(outgoingCallsParams))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{initCall, initNotif, outgoingCallsCall, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Skip initialize response
+	_, err = parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse initialize response: %v", err)
+	}
+
+	// Read outgoing calls response
+	outgoingCallsBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse outgoing calls response: %v", err)
+	}
+	outgoingCallsMsg, err := jsonrpc2.DecodeMessage(outgoingCallsBody)
+	if err != nil {
+		t.Fatalf("failed to decode outgoing calls response: %v", err)
+	}
+	outgoingCallsResp, ok := outgoingCallsMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for outgoing calls, got %T", outgoingCallsMsg)
+	}
+
+	// Assert: response should have no error
+	if outgoingCallsResp.ID() != outgoingCallsID {
+		t.Errorf("outgoing calls response id = %v, want %v", outgoingCallsResp.ID(), outgoingCallsID)
+	}
+	if outgoingCallsResp.Err() != nil {
+		t.Errorf("outgoing calls response has error: %v; want empty array result", outgoingCallsResp.Err())
+	}
+
+	// Assert: the on-the-wire JSON is exactly "[]" (the stub returns nil → []).
+	if outgoingCallsResp.Result() == nil {
+		t.Errorf("outgoing calls response result is nil; want JSON bytes representing []")
+	} else {
+		resultStr := string(outgoingCallsResp.Result())
+		if resultStr != "[]" {
+			t.Errorf("outgoing calls response result = %q; want JSON \"[]\" (stub returns nil)", resultStr)
+		}
 	}
 }
