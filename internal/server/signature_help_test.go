@@ -1,7 +1,12 @@
 package server
 
 import (
+	"strings"
 	"testing"
+
+	"go.lsp.dev/protocol"
+
+	"natural-lsp/internal/model"
 )
 
 // TestDetectSignatureContext tests the pure function that classifies whether a
@@ -303,6 +308,213 @@ func TestDetectSignatureContext(t *testing.T) {
 			// Assert argIndex is never negative
 			if argIndex < 0 {
 				t.Errorf("argIndex should never be negative, got %d (case: %s)", argIndex, tc.description)
+			}
+		})
+	}
+}
+
+// TestBuildSignatureInformation tests the pure builder that renders a subroutine
+// signature as a protocol.SignatureInformation with structured ParameterInformation
+// entries (feature 17, T3 RED phase).
+//
+// Semantics (from tasks.md T3):
+// - Filter defs to SectionKind=="parameter", in declaration order
+// - Honor array dimensions (same rendering as hover: "1:10", "1:*" for unbounded)
+// - Honor group nesting (same way hover does)
+// - Each parameter → protocol.ParameterInformation{ Label: protocol.String("<name> <type-with-dims>") }
+// - SignatureInformation.Label = a readable header (e.g., "<name> (<p1>, <p2>, ...)")
+// - Empty parameter interface → SignatureInformation with empty (non-nil) Parameters slice
+// - Pure function: no I/O, no locks
+//
+// IMPORTANT REFACTOR INVARIANT (T3 GREEN phase):
+// The existing hover tests in hover_test.go (TestBuildSubroutineHover_WithParameters,
+// TestBuildSubroutineHover_NoParameters) MUST remain byte-identical after T3's
+// green extraction refactor. The refactor will extract a shared helper so both hover
+// and signature help render the same "name + type" string, but hover's Markdown
+// output and test assertions must NOT change. Do not modify hover_test.go during
+// the refactor — only refactor hover.go and signature_help.go to call the shared helper.
+func TestBuildSignatureInformation(t *testing.T) {
+	tests := []struct {
+		name                string
+		inputName           string
+		inputDefs           []model.DataDefinition
+		expectLabelContains string   // substring that should appear in SignatureInformation.Label
+		expectParamCount    int      // expected number of ParameterInformation entries
+		expectParamLabels   []string // expected Label strings for each ParameterInformation
+		description         string
+	}{
+		// === Case (a): Multiple parameters with mixed types and arrays ===
+		{
+			name:      "two_params_scalar_and_array",
+			inputName: "MYROUTINE",
+			inputDefs: []model.DataDefinition{
+				// Non-parameter defs (should be filtered out)
+				{
+					Name:        "LOCAL-VAR",
+					Type:        "N5",
+					SectionKind: "local",
+					Level:       1,
+				},
+				// Parameter defs (should be included)
+				{
+					Name:        "#PNUM",
+					Type:        "N8",
+					SectionKind: "parameter",
+					Level:       1,
+				},
+				{
+					Name:        "#ARR",
+					Type:        "A10",
+					SectionKind: "parameter",
+					Level:       1,
+					Dimensions: []model.ArrayDimension{
+						{Lower: 1, Upper: 5, UpperUnbounded: false},
+					},
+				},
+			},
+			expectLabelContains: "MYROUTINE",
+			expectParamCount:    2,
+			expectParamLabels: []string{
+				"#PNUM N8",
+				"#ARR A10 (1:5)",
+			},
+			description: "filter to parameters, render type + dims",
+		},
+
+		// === Case (b): Array parameter with unbounded dimension ===
+		{
+			name:      "array_param_unbounded",
+			inputName: "ARRGEN",
+			inputDefs: []model.DataDefinition{
+				{
+					Name:        "#ITEMS",
+					Type:        "N3",
+					SectionKind: "parameter",
+					Level:       1,
+					Dimensions: []model.ArrayDimension{
+						{Lower: 1, Upper: 0, UpperUnbounded: true},
+					},
+				},
+			},
+			expectLabelContains: "ARRGEN",
+			expectParamCount:    1,
+			expectParamLabels: []string{
+				"#ITEMS N3 (1:*)",
+			},
+			description: "unbounded array dimension rendered as 1:*",
+		},
+
+		// === Case (c): Empty parameter interface ===
+		{
+			name:      "no_parameters",
+			inputName: "NOPARAM",
+			inputDefs: []model.DataDefinition{
+				{
+					Name:        "#LOCALVAR",
+					Type:        "N5",
+					SectionKind: "local",
+					Level:       1,
+				},
+				{
+					Name:        "#ANOTHERLOCAL",
+					Type:        "A20",
+					SectionKind: "local",
+					Level:       1,
+				},
+			},
+			expectLabelContains: "NOPARAM",
+			expectParamCount:    0, // empty (non-nil) slice
+			expectParamLabels:   []string{},
+			description:         "no parameters → empty Parameters slice (non-nil)",
+		},
+
+		// === Case (d): Group nesting ===
+		{
+			name:      "group_with_children",
+			inputName: "GROUPED",
+			inputDefs: []model.DataDefinition{
+				{
+					Name:        "OUT-RESULT", // group header (no Type)
+					Type:        "",
+					SectionKind: "parameter",
+					Level:       1,
+					Children: []model.DataDefinition{
+						{
+							Name:        "RES-CODE",
+							Type:        "N1",
+							SectionKind: "parameter",
+							Level:       2,
+						},
+						{
+							Name:        "RES-MSG",
+							Type:        "A50",
+							SectionKind: "parameter",
+							Level:       2,
+						},
+					},
+				},
+			},
+			expectLabelContains: "GROUPED",
+			expectParamCount:    3, // group header + 2 children (flat enumeration)
+			expectParamLabels: []string{
+				"OUT-RESULT",  // group header (no type)
+				"RES-CODE N1", // child scalar
+				"RES-MSG A50", // child scalar
+			},
+			description: "group nesting: header (no type) + children rendered as params",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Act: build the signature information
+			result := buildSignatureInformation(tc.inputName, tc.inputDefs)
+
+			// Assert: result is non-nil
+			if result == nil {
+				t.Fatal("buildSignatureInformation returned nil, expected non-nil *protocol.SignatureInformation")
+			}
+
+			// Assert: Label contains the routine name
+			if !strings.Contains(result.Label, tc.expectLabelContains) {
+				t.Errorf("SignatureInformation.Label missing expected substring %q; got: %q", tc.expectLabelContains, result.Label)
+			}
+
+			// Assert: Parameters count matches
+			if len(result.Parameters) != tc.expectParamCount {
+				t.Errorf("Parameters count: got %d, want %d (case: %s)", len(result.Parameters), tc.expectParamCount, tc.description)
+			}
+
+			// Assert: Parameters is always non-nil (even if empty) per Story 2 AC4
+			if result.Parameters == nil {
+				t.Errorf("Parameters slice must be non-nil (even if empty); got nil (case: %s)", tc.description)
+			}
+
+			// Assert: each ParameterInformation.Label matches expected string
+			for i, param := range result.Parameters {
+				if i >= len(tc.expectParamLabels) {
+					t.Errorf("unexpected ParameterInformation at index %d (case: %s)", i, tc.description)
+					break
+				}
+
+				// Extract the string value from the union Label
+				label := param.Label
+				if label == nil {
+					t.Errorf("ParameterInformation[%d].Label is nil (case: %s)", i, tc.description)
+					continue
+				}
+
+				// Type-assert to protocol.String to read the value
+				strLabel, ok := label.(protocol.String)
+				if !ok {
+					t.Errorf("ParameterInformation[%d].Label is not protocol.String; got %T (case: %s)", i, label, tc.description)
+					continue
+				}
+
+				if string(strLabel) != tc.expectParamLabels[i] {
+					t.Errorf("ParameterInformation[%d].Label: got %q, want %q (case: %s)",
+						i, string(strLabel), tc.expectParamLabels[i], tc.description)
+				}
 			}
 		})
 	}

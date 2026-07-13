@@ -5,6 +5,8 @@ import (
 	"unicode"
 
 	"go.lsp.dev/protocol"
+
+	"natural-lsp/internal/model"
 )
 
 // sigContextKind classifies the context in which signature help is triggered.
@@ -129,4 +131,61 @@ func detectSignatureContext(line string, cursorByteCol int) (sigContextKind, int
 	}
 
 	return kind, argIndex
+}
+
+// buildSignatureInformation builds a protocol.SignatureInformation from a subroutine
+// name and a list of data definitions (feature 17, T3 GREEN phase).
+//
+// The function filters defs to SectionKind=="parameter" and renders each parameter
+// as a protocol.ParameterInformation with Label = protocol.String("<name> <type-with-dims>").
+// Array dimensions are rendered as (lower:upper) or (lower:*) for unbounded dimensions,
+// matching the rendering style used by hover (so both agree on the parameter interface).
+// Group nesting is honored: a group header (Type=="") is rendered with no type,
+// and its children are enumerated as separate ParameterInformation entries.
+//
+// SignatureInformation.Label is a readable header, e.g., "<name> (<p1>, <p2>, ...)"
+// or just "<name>" if no parameters.
+//
+// When there are no parameters, the returned SignatureInformation has an empty
+// (non-nil) Parameters slice per Story 2 AC4 — no parameters is a valid signature.
+//
+// No I/O, no locks — a pure function.
+func buildSignatureInformation(name string, defs []model.DataDefinition) *protocol.SignatureInformation {
+	// Use the shared parameter-interface helper (from hover.go)
+	params := parameterInterface(defs)
+
+	// Build the ParameterInformation slice (always non-nil, even if empty per AC4)
+	paramInfos := make([]protocol.ParameterInformation, 0, len(params))
+	for _, p := range params {
+		// Render the label: name alone for group headers, name + type for others
+		var label string
+		if p.typeStr == "" {
+			label = p.name
+		} else {
+			label = p.name + " " + p.typeStr
+		}
+
+		// Create a protocol.ParameterInformation with Label as protocol.String (union arm)
+		paramInfos = append(paramInfos, protocol.ParameterInformation{
+			Label: protocol.String(label),
+		})
+	}
+
+	// Build the header label: "name (p1, p2, ...)" or just "name" if no params
+	var headerLabel string
+	if len(paramInfos) > 0 {
+		// Collect parameter names (not types) for the header
+		var paramNames []string
+		for _, p := range params {
+			paramNames = append(paramNames, p.name)
+		}
+		headerLabel = name + " (" + strings.Join(paramNames, ", ") + ")"
+	} else {
+		headerLabel = name
+	}
+
+	return &protocol.SignatureInformation{
+		Label:      headerLabel,
+		Parameters: paramInfos, // Always non-nil, even if empty
+	}
 }
