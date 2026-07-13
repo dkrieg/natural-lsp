@@ -539,6 +539,46 @@ func TestInitialize(t *testing.T) {
 						t.Errorf("%s = %v; want true (required by feature 10, T3 + feature 12, T6)", providerFlag, val)
 					}
 				}
+
+				// Assert: completionProvider is advertised with correct shape (feature 16, T3).
+				// completionProvider must be a CompletionOptions object (not a boolean).
+				completionProviderVal, exists := caps["completionProvider"]
+				if !exists {
+					t.Errorf("completionProvider = %v; want present (required by feature 16, T3)", completionProviderVal)
+				} else if completionProvider, ok := completionProviderVal.(map[string]interface{}); ok {
+					// Assert: triggerCharacters is present and contains " " (space).
+					triggerChars, hasTriggerChars := completionProvider["triggerCharacters"]
+					if !hasTriggerChars {
+						t.Errorf("completionProvider.triggerCharacters = %v; want present", triggerChars)
+					} else if triggerCharsSlice, ok := triggerChars.([]interface{}); ok {
+						foundSpace := false
+						for _, char := range triggerCharsSlice {
+							if char == " " {
+								foundSpace = true
+								break
+							}
+						}
+						if !foundSpace {
+							t.Errorf("completionProvider.triggerCharacters = %v; want [\" \"]", triggerChars)
+						}
+					} else {
+						t.Errorf("completionProvider.triggerCharacters type = %T; want []interface{}", triggerChars)
+					}
+
+					// Assert: resolveProvider is false.
+					resolveProvider, hasResolveProvider := completionProvider["resolveProvider"]
+					if !hasResolveProvider {
+						t.Errorf("completionProvider.resolveProvider = %v; want present", resolveProvider)
+					} else if resolveProviderVal, ok := resolveProvider.(bool); ok {
+						if resolveProviderVal != false {
+							t.Errorf("completionProvider.resolveProvider = %v; want false", resolveProviderVal)
+						}
+					} else {
+						t.Errorf("completionProvider.resolveProvider type = %T; want bool", resolveProvider)
+					}
+				} else {
+					t.Errorf("completionProvider type = %T; want map[string]interface{} (CompletionOptions)", completionProviderVal)
+				}
 			}
 		})
 	}
@@ -3170,6 +3210,226 @@ func TestTextDocumentHoverAfterInitialized(t *testing.T) {
 					t.Errorf("hover response result is not valid JSON: %v (result: %s)", err, string(hoverResp.Result()))
 				} else if _, hasContents := hoverObj["contents"]; !hasContents {
 					t.Errorf("hover response result does not have 'contents' field; got: %v", hoverObj)
+				}
+			}
+		})
+	}
+}
+
+// TestTextDocumentCompletionBeforeInitialized pins the behavior when completion is requested
+// before the server has reached the initialized state (feature 16, T3 RED phase).
+// The server must return JSON-RPC ServerNotInitialized error (not process the request).
+func TestTextDocumentCompletionBeforeInitialized(t *testing.T) {
+	// Arrange: send completion BEFORE initialize, then initialize → initialized → shutdown → exit
+	completionID := jsonrpc2.NewNumberID(1)
+	completionParams := `{
+		"textDocument": {"uri": "file:///workspace/test.NSP"},
+		"position": {"line": 0, "character": 5}
+	}`
+	completionCall := jsonrpc2.NewCall(completionID, "textDocument/completion", jsonrpc2.RawMessage(completionParams))
+
+	initID := jsonrpc2.NewNumberID(2)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{completionCall, initCall, initNotif, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Read completion response (sent before initialize, should get ServerNotInitialized)
+	completionBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse completion response: %v", err)
+	}
+	completionMsg, err := jsonrpc2.DecodeMessage(completionBody)
+	if err != nil {
+		t.Fatalf("failed to decode completion response: %v", err)
+	}
+	completionResp, ok := completionMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for completion, got %T", completionMsg)
+	}
+
+	// Assert: response should have ServerNotInitialized error (code -32002)
+	if completionResp.ID() != completionID {
+		t.Errorf("completion response id = %v, want %v", completionResp.ID(), completionID)
+	}
+	if completionResp.Err() == nil {
+		t.Errorf("completion response has no error; want ServerNotInitialized")
+	} else {
+		// Check the error code (ServerNotInitialized is -32002)
+		errTyped, ok := completionResp.Err().(*jsonrpc2.Error)
+		if !ok {
+			t.Errorf("completion response error is %T, not *jsonrpc2.Error: %v", completionResp.Err(), completionResp.Err())
+		} else if errTyped.Code != jsonrpc2.ServerNotInitialized {
+			t.Errorf("completion response error code = %v, want %v (ServerNotInitialized)", errTyped.Code, jsonrpc2.ServerNotInitialized)
+		}
+	}
+}
+
+// TestTextDocumentCompletionAfterInitialized pins the behavior when completion is requested
+// after the server has reached initialized state (feature 16, T3 RED phase).
+// The server must:
+// 1. Route textDocument/completion in the dispatch switch (gated on stateInitialized)
+// 2. Decode CompletionParams
+// 3. Call provideCompletion (a stub returning [] during RED phase)
+// 4. Marshal the result as a JSON array ([] when empty, never null)
+//
+// Currently in RED phase, the stub provider returns an empty list;
+// actual completion logic is implemented in T4–T8.
+func TestTextDocumentCompletionAfterInitialized(t *testing.T) {
+	testCases := []struct {
+		name             string
+		completionParams string
+		expectNonEmpty   bool // whether we expect a non-empty completion list (RED phase: always false)
+		description      string
+	}{
+		{
+			name: "CompletionAtValidPosition",
+			completionParams: `{
+				"textDocument": {"uri": "file:///workspace/test.NSP"},
+				"position": {"line": 0, "character": 5}
+			}`,
+			expectNonEmpty: false, // RED phase: stub returns empty list
+			description:    "completion should return empty list from stub during RED phase",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: send initialize → initialized → completion → shutdown
+			initID := jsonrpc2.NewNumberID(1)
+			initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+			initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+			initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+			completionID := jsonrpc2.NewNumberID(2)
+			completionCall := jsonrpc2.NewCall(completionID, "textDocument/completion", jsonrpc2.RawMessage(tc.completionParams))
+
+			shutdownID := jsonrpc2.NewNumberID(3)
+			shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+			exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+			// Write requests as Content-Length-framed messages
+			var inBuf bytes.Buffer
+			for i, msg := range []jsonrpc2.Message{initCall, initNotif, completionCall, shutdownCall, exitNotif} {
+				if err := writeFramedMessage(&inBuf, msg); err != nil {
+					t.Fatalf("failed to write framed message %d: %v", i, err)
+				}
+			}
+
+			// Create output buffer and logger
+			var outBuf bytes.Buffer
+			logBuf := &bytes.Buffer{}
+			logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+			// Act: run the server
+			cfg := config.Defaults()
+			az := &stubAnalyzer{}
+			err := Run(
+				context.Background(),
+				&inBuf,
+				&outBuf,
+				"0.0.0-test",
+				"/workspace",
+				cfg,
+				az,
+				logger,
+			)
+
+			// Assert: Run should complete without fatal error
+			if err != nil {
+				t.Fatalf("Run failed: %v", err)
+			}
+
+			// Parse framed responses
+			responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+			// Skip initialize response
+			_, err = parseFramedResponse(responseBuf)
+			if err != nil {
+				t.Fatalf("failed to parse initialize response: %v", err)
+			}
+
+			// Read completion response
+			completionBody, err := parseFramedResponse(responseBuf)
+			if err != nil {
+				t.Fatalf("failed to parse completion response: %v", err)
+			}
+			completionMsg, err := jsonrpc2.DecodeMessage(completionBody)
+			if err != nil {
+				t.Fatalf("failed to decode completion response: %v", err)
+			}
+			completionResp, ok := completionMsg.(*jsonrpc2.Response)
+			if !ok {
+				t.Fatalf("expected *jsonrpc2.Response for completion, got %T", completionMsg)
+			}
+
+			// Assert: response should have no error
+			if completionResp.ID() != completionID {
+				t.Errorf("completion response id = %v, want %v", completionResp.ID(), completionID)
+			}
+			if completionResp.Err() != nil {
+				t.Errorf("completion response has error: %v; want empty list from stub", completionResp.Err())
+			}
+
+			// Assert: result should be an empty JSON array (RED phase: stub returns [])
+			// The stub provider must never return null — completion list is always an array
+			if completionResp.Result() == nil {
+				t.Errorf("completion response result is null; want empty array []")
+			} else {
+				resultStr := string(completionResp.Result())
+				if resultStr != "[]" {
+					// During RED phase, we expect an empty array from the stub
+					// Parse as JSON array to check if it's at least valid
+					var items []interface{}
+					if err := json.Unmarshal(completionResp.Result(), &items); err != nil {
+						t.Errorf("completion response result is not valid JSON array: %v (result: %s)", err, resultStr)
+					}
+					// RED phase: expecting empty array from stub
+					if len(items) > 0 && !tc.expectNonEmpty {
+						t.Errorf("completion response has %d items during RED phase; expected empty array from stub", len(items))
+					}
 				}
 			}
 		})

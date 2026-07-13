@@ -135,6 +135,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	// Feature 11, T3: advertise documentSymbolProvider.
 	// Feature 12, T6: advertise hoverProvider.
 	// Feature 13, T6: advertise codeLensProvider.
+	// Feature 16, T3: advertise completionProvider with space-trigger and no resolve handler.
 	falseVal := false
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
@@ -146,6 +147,10 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 			DocumentSymbolProvider:  protocol.Boolean(true),
 			HoverProvider:           protocol.Boolean(true),
 			CodeLensProvider:        &protocol.CodeLensOptions{ResolveProvider: &falseVal},
+			CompletionProvider: &protocol.CompletionOptions{
+				TriggerCharacters: []string{" "},
+				ResolveProvider:   &falseVal,
+			},
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",
@@ -838,6 +843,39 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						return
 					}
 					respResult = lensesJSON
+				}
+
+			case "textDocument/completion":
+				// Feature 16, T3: completion provider handler.
+				// Gate on stateInitialized; decode CompletionParams; call provideCompletion.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.CompletionParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid completion params: %v", err))
+					return
+				}
+				// Call the provider function.
+				items, err := provideCompletion(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: items may be nil (empty) for a no-match case.
+				// Important: return [] for empty, never null (completion list is always an array).
+				if items == nil {
+					respResult = []byte(`[]`)
+				} else {
+					// Marshal the completion items slice as JSON.
+					itemsJSON, marshalErr := json.Marshal(items)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal completion items: %v", marshalErr))
+						return
+					}
+					respResult = itemsJSON
 				}
 
 			default:

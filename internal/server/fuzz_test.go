@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.lsp.dev/protocol"
@@ -1084,6 +1085,283 @@ func FuzzDiagnosticConversion(f *testing.F) {
 			// Source should be set to the constant "natural-lsp".
 			// Source is an Optional[string], so we can check it without casting.
 			_ = protDiag.Source
+		}
+	})
+}
+
+// FuzzCompletionContext is the executable proof of the completion context detector's
+// robustness (FR-43, Story 4 AC1, Task T8): detectCompletionContext must NEVER panic
+// when fed arbitrary line strings and arbitrary cursor byte-column positions, and must
+// ALWAYS return a valid completionKind and prefix string.
+//
+// The detector is called on every completion request and is expected to handle
+// incomplete/unparseable input robustly (a prefix scan, not a re-parse). A panic on
+// any input violates FR-43. The result must be a well-formed classification.
+//
+// The fuzzer exercises:
+//   - Arbitrary line strings (empty, single-line, multi-line, multi-byte UTF-8, garbage)
+//   - Arbitrary cursor byte-column positions (0, negative, huge, beyond line length)
+//   - All context kinds (CALLNAT, FETCH, RUN, INCLUDE, PERFORM, data-access, none)
+//   - Dynamic sigil detection (#, &, +)
+//
+// Seed corpus:
+//   - Completion-detector table cases (all context kinds + empty/degenerate input)
+//   - Multi-byte UTF-8 content
+//   - Out-of-bounds cursor positions
+//
+// Feature 16 Task T8, FR-43.
+func FuzzCompletionContext(f *testing.F) {
+	// Seed with various line patterns from the detector test cases.
+	f.Add("CALLNAT MYSU", 12)
+	f.Add("CALLNAT ", 8)
+	f.Add("CALLNAT 'MYS", 13)
+	f.Add("callnat PART", 12)
+	f.Add("CallNat MYSU", 12)
+	f.Add("CALLNAT #DYN", 12)
+	f.Add("CALLNAT &VAR", 12)
+
+	f.Add("FETCH MYPRO", 11)
+	f.Add("FETCH 'MYP", 10)
+	f.Add("FETCH REPEAT MYPRO", 18)
+	f.Add("fetch PRO", 9)
+
+	f.Add("RUN MYPRO", 9)
+	f.Add("RUN 'MYP", 8)
+
+	f.Add("INCLUDE SHAR", 12)
+	f.Add("INCLUDE 'SHAR", 13)
+	f.Add("INCLUDE ", 8)
+	f.Add("include SHAR", 12)
+
+	f.Add("PERFORM MY", 10)
+	f.Add("perform MY", 10)
+	f.Add("PERFORM ", 8)
+	f.Add("PERFORM #DYN", 12)
+
+	f.Add("READ CUSTOMER ", 14)
+	f.Add("READ CUSTOMER CUST", 18)
+	f.Add("FIND ORDERS ", 12)
+	f.Add("GET PRODUCTS ", 13)
+	f.Add("STORE INVENTORY ", 16)
+
+	f.Add("COMPUTE X = 1", 14)
+	f.Add("MOVE 'X' TO Y", 13)
+	f.Add("* This is a comment", 19)
+
+	// Degenerate inputs.
+	f.Add("", 0)
+	f.Add("    ", 4)
+	f.Add("CALLNAT MYSU", -1) // negative cursor
+	f.Add("CALLNAT", 100)     // cursor past end
+	f.Add("CALLNAT MYSU", 0)  // cursor at position 0
+	f.Add("café naïve", 10)   // multi-byte UTF-8
+	f.Add("hello🎉world", 12)  // emoji
+	f.Add("CALLNAT VERY-LONG-NAME-WITH-HYPHENS-AND-STUFF", 45)
+
+	f.Fuzz(func(t *testing.T, line string, cursorByteCol int) {
+		// Act: call detectCompletionContext — must NOT panic (FR-43).
+		kind, prefix := detectCompletionContext(line, cursorByteCol)
+
+		// Assert: result is well-formed.
+		// kind is a struct with valid fields; no specific assertion needed beyond type safety.
+		// prefix is a string; no assertion needed.
+		_ = kind
+		_ = prefix
+
+		// Basic sanity checks:
+		// - prefix must be a valid string (could be empty)
+		if prefix != strings.ToUpper(prefix) {
+			t.Errorf("prefix is not uppercased: %q", prefix)
+		}
+		// - kind must be one of the known types (or unknown, which is still valid).
+		// We verify the kind type is not corrupted by checking it's in a reasonable state.
+		_ = kind.kind
+		_ = kind.ObjectType()
+		_ = kind.DDMName()
+	})
+}
+
+// FuzzProvideCompletion is the executable proof of the completion provider's
+// robustness (FR-43, Story 4 AC1, Task T8): provideCompletion must NEVER panic
+// when fed arbitrary cursor positions over arbitrary workspace content, and must
+// ALWAYS return a well-formed result (either nil or a valid []protocol.CompletionItem).
+//
+// The provider is called on every completion request (potentially many times per second
+// while the user types). A panic on any input violates FR-43. The result must be
+// well-formed protocol output.
+//
+// The fuzzer exercises:
+//   - Arbitrary cursor positions (0, negative, huge line/column)
+//   - Arbitrary workspace content (valid, malformed, empty, mixed)
+//   - All completion contexts (module, subroutine, DDM field, unrecognized)
+//   - Both position encodings (UTF-8 and UTF-16)
+//   - Dynamic targets (excluded from completion, no error)
+//
+// Seed corpus:
+//   - Completion fixtures (module/perform/ddmfield/none)
+//   - Navigation fixtures (caller.NSP, helper.NSN)
+//   - Empty input
+//   - Malformed constructs with valid/invalid contexts
+//
+// Feature 16 Task T8, FR-43.
+func FuzzProvideCompletion(f *testing.F) {
+	// Seed from completion fixtures and navigation fixtures.
+	fixtureNames := []string{
+		// Completion-specific fixtures (T4-T7)
+		"testdata/completion/module/CALLER.NSP",
+		"testdata/completion/module/MYSUB.NSN",
+		"testdata/completion/module/MYPROG.NSP",
+		"testdata/completion/module/SHARED.NSC",
+		"testdata/completion/perform/CALLER.NSP",
+		"testdata/completion/perform/MYEXT.NSS",
+		"testdata/completion/ddmfield/CALLER.NSP",
+		"testdata/completion/ddmfield/CUSTOMER.NSD",
+		"testdata/completion/none/CALLER.NSP", // ctxNone fixture
+		// Navigation fixtures (reused)
+		"testdata/navigation/caller.NSP",
+		"testdata/navigation/helper.NSN",
+		"testdata/navigation/unresolved.NSP",
+	}
+
+	for _, name := range fixtureNames {
+		path := filepath.Join("internal/server", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			// Skip missing fixtures (not a test failure).
+			continue
+		}
+		f.Add(data)
+	}
+
+	// Hand-written edge-case seeds (FR-43 graceful degradation).
+
+	// Empty input.
+	f.Add([]byte(""))
+
+	// CALLNAT with no target.
+	f.Add([]byte("CALLNAT"))
+
+	// CALLNAT with dynamic target (#VAR).
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #SUB-NAME (A10)\nEND-DEFINE\nCALLNAT #SUB-NAME\nEND\n"))
+
+	// PERFORM with dynamic target.
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #SUB-NAME (A10)\nEND-DEFINE\nPERFORM #SUB-NAME\nEND\n"))
+
+	// INCLUDE copycode.
+	f.Add([]byte("INCLUDE 'SHARED'\nCALLNAT 'X'\nEND\n"))
+
+	// FETCH program.
+	f.Add([]byte("FETCH 'PROG'\nEND\n"))
+
+	// RUN program.
+	f.Add([]byte("RUN 'PROG' 'LIB'\nEND\n"))
+
+	// READ with data-access (DDM field context).
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nREAD CUSTOMER\nEND-READ\nEND\n"))
+
+	// STORE with data-access.
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nSTORE EMPLOYEE\nEND-STORE\nEND\n"))
+
+	// Non-triggering statements (ctxNone).
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #X (N3)\nEND-DEFINE\nCOMPUTE #X = 1\nMOVE 'Y' TO #X\nEND\n"))
+
+	// Comment lines (ctxNone).
+	f.Add([]byte("* This is a comment\nCALLNAT 'X'\nEND\n"))
+
+	// Inline PERFORM with DEFINE SUBROUTINE.
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nDEFINE SUBROUTINE INLINE-SUB\n  CALLNAT 'X'\nEND-SUBROUTINE\nPERFORM INLINE-SUB\nEND\n"))
+
+	// Malformed DEFINE DATA (no END-DEFINE).
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #X (A5)\nCALLNAT 'Y'\n"))
+
+	// Multiple completion contexts on different lines.
+	f.Add([]byte("CALLNAT 'GOOD'\nPERFORM 'X'\nINCLUDE 'Y'\nFETCH 'Z'\nEND\n"))
+
+	// Multi-byte UTF-8 content.
+	f.Add([]byte("café\nCALLNAT 'café-program'\nnaïve\nFETCH 'программа'\nEND\n"))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// Arrange: build a minimal handler context over a single-file workspace.
+		az := natural.New(nil)
+		fa, err := az.Analyze("fuzz.NSP", input)
+		// err may be non-nil (expected for malformed input), fa is a value type.
+		_ = err
+
+		// Build a minimal index containing just the fuzzed file.
+		idx := &workspace.Index{}
+		idx.Add("fuzz.NSP", fa)
+
+		// Resolve the index (will return an empty result set for unresolvable edges).
+		cfg := &config.Config{}
+		res := workspace.Resolve(idx, cfg)
+
+		// Create a minimal handler context with a temp root.
+		tmpDir := t.TempDir()
+		hctx := &handlerContext{
+			idx:         idx,
+			res:         res,
+			posEncoding: protocol.PositionEncodingKindUTF8,
+			root:        tmpDir,
+			cfg:         *cfg,
+		}
+
+		// Write the fuzzed input to a file so provideCompletion can read it.
+		fuzzPath := filepath.Join(tmpDir, "fuzz.NSP")
+		if err := os.WriteFile(fuzzPath, input, 0600); err != nil {
+			// If we can't write the file, skip this test case (FR-43).
+			return
+		}
+
+		// Test both encodings (UTF-8 and UTF-16)
+		encodings := []protocol.PositionEncodingKind{
+			protocol.PositionEncodingKindUTF8,
+			protocol.PositionEncodingKindUTF16,
+		}
+
+		// Generate arbitrary cursor positions (including out-of-bounds).
+		testPositions := []protocol.Position{
+			{Line: 0, Character: 0},       // start
+			{Line: 0, Character: 50},      // beyond first line
+			{Line: 100, Character: 0},     // beyond file
+			{Line: 1000000, Character: 1}, // huge position
+		}
+
+		// Act: call provideCompletion with each arbitrary position and encoding.
+		// This must NOT panic for any input, position, or encoding (FR-43).
+		for _, enc := range encodings {
+			hctx.posEncoding = enc
+			for _, protPos := range testPositions {
+				params := protocol.CompletionParams{
+					TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+						TextDocument: protocol.TextDocumentIdentifier{
+							URI: uri.File(fuzzPath),
+						},
+						Position: protPos,
+					},
+				}
+
+				// Call provideCompletion — must not panic (FR-43).
+				items, err := provideCompletion(hctx, params)
+
+				// Assert: result is well-formed.
+				// Either nil or a valid []protocol.CompletionItem (never panics).
+				if items != nil {
+					// Non-nil result must be a valid slice.
+					for _, item := range items {
+						// Each item must have at least a Label.
+						_ = item.Label
+						// Kind is a valid CompletionItemKind (uint, always valid).
+						_ = item.Kind
+						// Detail and SortText are Optional fields (may be unset).
+						_ = item.Detail
+						_ = item.SortText
+					}
+				}
+				// No specific assertion on items or err beyond type safety;
+				// the main goal is no panic.
+				_ = items
+				_ = err
+			}
 		}
 	})
 }

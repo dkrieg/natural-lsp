@@ -1,0 +1,22 @@
+*> Fixture for testing unrecognized completion contexts (ctxNone, Story 4, AC1).
+*> Contains only non-triggering statements:
+*> - COMPUTE (arithmetic operation)
+*> - MOVE (data movement)
+*> - comment lines
+*> - blank lines
+*>
+*> A completion request at any line in this fixture should return an empty list,
+*> not an error, demonstrating the ctxNone path (FR-43).
+
+DEFINE DATA LOCAL
+  1 #X (N3)
+  1 #Y (N3)
+  1 #Z (N3)
+END-DEFINE
+
+PROCEDURE DIVISION.
+  COMPUTE #X = 1 + 2
+  MOVE 'HELLO' TO #Y
+  *> This is a comment
+  COMPUTE #Z = #X + #Y
+END PROCEDURE.

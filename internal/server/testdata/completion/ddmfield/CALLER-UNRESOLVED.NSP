@@ -1,0 +1,13 @@
+* Test program for unresolved DDM (feature 16, T7, Story 3, AC3)
+* This reads from ORDERS which is not present in the workspace index
+DEFINE DATA
+LOCAL
+  1 #ORDER-ID     (N8)
+END-DEFINE
+
+PROCEDURE DIVISION.
+  READ ORDERS
+    MOVE ORDER-ID TO #ORDER-ID
+  END-READ
+  STOP.
+END PROCEDURE.

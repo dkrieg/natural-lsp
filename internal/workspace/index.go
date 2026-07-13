@@ -22,6 +22,11 @@ type Candidate struct {
 	// Path is the workspace-relative file path.
 	Path string
 
+	// Name is the uppercased object name (filename stem, Natural identifiers are
+	// case-insensitive). E.g. "APP/MYSUB.NSN" → "MYSUB". It is always non-empty
+	// for a valid indexed file and matches the key used by objectIdentity.
+	Name string
+
 	// Library is the owning Natural library name (e.g., "APP", "COMMON"),
 	// derived from the config Library mapping, or empty if not in a declared library.
 	Library string
@@ -120,6 +125,7 @@ func (idx *Index) LookupByName(name string, typ model.ObjectType, cfg *config.Co
 
 		candidates = append(candidates, Candidate{
 			Path:    path,
+			Name:    objName,
 			Library: objLibrary,
 			Type:    fa.ObjectType,
 		})
@@ -137,6 +143,89 @@ func (idx *Index) LookupByName(name string, typ model.ObjectType, cfg *config.Co
 	}
 
 	return candidates
+}
+
+// NamesWithPrefix returns reachable candidates whose object name starts with the
+// uppercased prefix AND whose Type == typ. The method reuses the steplib chain
+// resolution logic from resolveByName: with a library map configured, only
+// candidates reachable from the caller's current library (longest-prefix match of
+// referencingPath) via the non-transitive steplib chain are returned. Unlike
+// resolveByName (which collapses to a single binding), completion is a discovery
+// surface: a name present in more than one reachable library yields one candidate
+// per library (all reachable options are offered, not deduped to a single steplib
+// winner). With no library map (or an undeclared-path caller), flat namespace: all
+// prefix+type matches are returned.
+//
+// Empty prefix returns all reachable candidates of that type. Type filter of zero
+// ObjectType ("") is not supported; pass a non-zero typ.
+//
+// Results are deterministic: sorted by path (stable across calls).
+// Returns a non-nil (possibly empty) slice.
+//
+// This method is thread-safe and race-free (mirrors LookupByName discipline).
+// It is used by the completion provider (feature 16, Task 2).
+func (idx *Index) NamesWithPrefix(prefix string, typ model.ObjectType, referencingPath string, cfg *config.Config) []Candidate {
+	// Build the name index once from the current snapshot.
+	nameIndex := idx.buildNameIndex(cfg)
+
+	// Normalize prefix to uppercase for case-insensitive matching.
+	upperPrefix := strings.ToUpper(prefix)
+
+	// Filter names by prefix match and collect candidates.
+	var allCandidates []Candidate
+	for name, candidates := range nameIndex {
+		// Skip names that don't start with the prefix.
+		if !strings.HasPrefix(name, upperPrefix) {
+			continue
+		}
+
+		// Filter by ObjectType.
+		for _, cand := range candidates {
+			if cand.Type == typ {
+				allCandidates = append(allCandidates, cand)
+			}
+		}
+	}
+
+	// Determine if we have a library map and the caller's current library.
+	_, currentLibrary := objectIdentity(referencingPath, cfg)
+	searchChain := buildSearchChain(currentLibrary, cfg)
+
+	// Apply reachability filtering:
+	// - If searchChain is non-empty: filter to chain-reachable candidates.
+	// - If searchChain is empty (flat namespace): keep all candidates.
+	if len(searchChain) > 0 {
+		// Library map mode: keep only candidates whose library is in the search chain.
+		var result []Candidate
+		for _, cand := range allCandidates {
+			inChain := false
+			for _, lib := range searchChain {
+				if cand.Library == lib {
+					inChain = true
+					break
+				}
+			}
+			if inChain {
+				result = append(result, cand)
+			}
+		}
+
+		// Sort by path for determinism.
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Path < result[j].Path
+		})
+		return result
+	}
+
+	// Flat namespace mode: no library map (or undeclared-path caller).
+	// Return all prefix+type matches (no deduping).
+	sort.Slice(allCandidates, func(i, j int) bool {
+		return allCandidates[i].Path < allCandidates[j].Path
+	})
+	if len(allCandidates) == 0 {
+		return []Candidate{}
+	}
+	return allCandidates
 }
 
 // buildNameIndex snapshots the index and returns a map from uppercase object name
@@ -167,6 +256,7 @@ func (idx *Index) buildNameIndex(cfg *config.Config) map[string][]Candidate {
 		objName, objLibrary := objectIdentity(path, cfg)
 		nameMap[objName] = append(nameMap[objName], Candidate{
 			Path:    path,
+			Name:    objName,
 			Library: objLibrary,
 			Type:    fa.ObjectType,
 		})

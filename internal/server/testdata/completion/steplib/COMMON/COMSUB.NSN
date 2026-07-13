@@ -1,0 +1,6 @@
+*> Subprogram in COMMON library (reachable via steplib chain)
+DEFINE DATA
+END-DEFINE
+
+PROCEDURE DIVISION.
+END PROCEDURE.
