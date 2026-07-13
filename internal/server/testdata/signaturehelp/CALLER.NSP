@@ -1,0 +1,15 @@
+* Caller with CALLNAT for signature help (feature 17, T4, FR-48)
+* Exercises cursor on target and in argument region (after the target name)
+PROGRAM CALLER
+
+DEFINE DATA
+  LOCAL
+    1 #A (N8)
+    1 #B (A20)
+    1 #C (I4)
+  END
+END
+
+CALLNAT 'SUBPRG' #A #B
+
+END

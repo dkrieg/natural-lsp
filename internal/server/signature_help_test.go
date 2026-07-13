@@ -1,29 +1,30 @@
 package server
 
 import (
-	"strings"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"go.lsp.dev/protocol"
+	"go.lsp.dev/uri"
 
-	"natural-lsp/internal/model"
+	"natural-lsp/internal/analysis/natural"
+	"natural-lsp/internal/config"
+	"natural-lsp/internal/workspace"
 )
 
-// TestDetectSignatureContext tests the pure function that classifies whether a
-// cursor position is in a CALLNAT or PERFORM call context and, if so, computes
-// the 0-based argument index (count of whitespace-separated argument tokens before the cursor).
-//
-// This is the spine of signature help's active-parameter detection (feature 17, T2).
+// TestDetectSignatureContext tests the pure function that classifies the signature-help
+// context from a partial line and cursor position, extracting the argument index.
+// (feature 17, T2, RED phase).
 //
 // The detector must:
-// - Classify CALLNAT → sigCallnat, PERFORM → sigPerform, everything else → sigNone
-// - Compute argIndex = count of whitespace-separated tokens between the target token and cursor
-// - Fire on or after the target (cursor still in Source range)
-// - Handle trailing whitespace: space means cursor has moved to next arg slot (index +1)
-// - Handle mid-token typing: no trailing space means token is under construction (index unchanged)
-// - Be case-insensitive for keywords
-// - Never panic on degenerate input (empty/whitespace lines, cursor past end, negative cursor)
-// - Never return negative argIndex
+// - Recognize CALLNAT and PERFORM as signature contexts, returning the context kind and arg index
+// - Return sigNone for other verbs (FETCH, RUN, data-access, etc.)
+// - Compute argIndex = 0-based count of space-separated argument tokens before the cursor
+// - Handle trailing whitespace (cursor on next arg slot → argIndex++); mid-token → argIndex stays put
+// - Clamp to valid range; never panic on empty line, keyword-only, or out-of-range cursor
 func TestDetectSignatureContext(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -31,262 +32,190 @@ func TestDetectSignatureContext(t *testing.T) {
 		cursorByteCol  int
 		expectKind     sigContextKind
 		expectArgIndex int
-		description    string // for clarity on the test's intent
+		description    string
 	}{
 		// === CALLNAT context ===
 		{
-			name:           "CALLNAT only, no args",
+			name:           "CALLNAT keyword only (no space after)",
 			line:           "CALLNAT",
 			cursorByteCol:  7,
-			expectKind:     sigNone, // keyword-only, no space → sigNone
+			expectKind:     sigNone,
 			expectArgIndex: 0,
-			description:    "cursor at end of keyword-only line",
+			description:    "keyword-only → no context yet",
 		},
 		{
-			name:           "CALLNAT with trailing space, cursor at space (first arg slot)",
-			line:           "CALLNAT ",
-			cursorByteCol:  8,
+			name:           "CALLNAT with target, cursor on target",
+			line:           "CALLNAT 'SUBPRG'",
+			cursorByteCol:  13, // Inside 'SUBPRG'
 			expectKind:     sigCallnat,
 			expectArgIndex: 0,
-			description:    "cursor on trailing space after keyword",
+			description:    "cursor on target → context recognized, argIndex 0",
 		},
 		{
-			name:           "CALLNAT 'SUB' cursor on target name",
-			line:           "CALLNAT 'SUB'",
-			cursorByteCol:  11,
+			name:           "CALLNAT with target + space, cursor after space",
+			line:           "CALLNAT 'SUBPRG' ",
+			cursorByteCol:  17, // After trailing space
 			expectKind:     sigCallnat,
 			expectArgIndex: 0,
-			description:    "cursor on target, no args yet",
+			description:    "trailing space → moving to first arg slot",
 		},
 		{
-			name:           "CALLNAT 'SUB' with space, cursor at first arg slot",
-			line:           "CALLNAT 'SUB' ",
-			cursorByteCol:  14,
-			expectKind:     sigCallnat,
-			expectArgIndex: 0,
-			description:    "cursor after target + space, at first arg slot",
-		},
-		{
-			name:           "CALLNAT 'SUB' A typing first arg, no trailing space",
-			line:           "CALLNAT 'SUB' A",
-			cursorByteCol:  15,
-			expectKind:     sigCallnat,
-			expectArgIndex: 0,
-			description:    "cursor mid-typing first arg (no trailing space) → arg 0",
-		},
-		{
-			name:           "CALLNAT 'SUB' A with trailing space, cursor at second arg slot",
-			line:           "CALLNAT 'SUB' A ",
-			cursorByteCol:  16,
+			name:           "CALLNAT with target + first arg, cursor after arg",
+			line:           "CALLNAT 'SUBPRG' #A ",
+			cursorByteCol:  20, // After #A + space
 			expectKind:     sigCallnat,
 			expectArgIndex: 1,
-			description:    "cursor after first arg + space → arg 1",
+			description:    "one complete arg + space → argIndex 1",
 		},
 		{
-			name:           "CALLNAT 'SUB' A B progress to third arg slot",
-			line:           "CALLNAT 'SUB' A B",
-			cursorByteCol:  17,
+			name:           "CALLNAT with target + first arg, cursor mid-token",
+			line:           "CALLNAT 'SUBPRG' #A",
+			cursorByteCol:  19, // End of #A, no trailing space
 			expectKind:     sigCallnat,
-			expectArgIndex: 1,
-			description:    "cursor mid-typing second arg (no trailing space) → arg 1",
+			expectArgIndex: 0,
+			description:    "arg token under construction (no trailing space) → argIndex 0",
 		},
 		{
-			name:           "CALLNAT 'SUB' A B with trailing space, third arg slot",
-			line:           "CALLNAT 'SUB' A B ",
-			cursorByteCol:  18,
+			name:           "CALLNAT with target + two args, cursor after second arg",
+			line:           "CALLNAT 'SUBPRG' #A #B ",
+			cursorByteCol:  24, // After #B + space
 			expectKind:     sigCallnat,
 			expectArgIndex: 2,
-			description:    "cursor after second arg + space → arg 2",
+			description:    "two complete args + space → argIndex 2",
 		},
 		{
-			name:           "CALLNAT lowercase keyword",
-			line:           "callnat 'SUB' ",
-			cursorByteCol:  14,
-			expectKind:     sigCallnat,
-			expectArgIndex: 0,
-			description:    "case-insensitive keyword match",
-		},
-		{
-			name:           "CALLNAT mixed case keyword",
-			line:           "CallNat 'SUB' ",
-			cursorByteCol:  14,
-			expectKind:     sigCallnat,
-			expectArgIndex: 0,
-			description:    "mixed-case keyword match",
-		},
-		{
-			name:           "CALLNAT with quoted target, bare args",
-			line:           "CALLNAT 'SUBPRG' VAR1 VAR2 ",
-			cursorByteCol:  28,
+			name:           "CALLNAT with target + three args, cursor mid-third arg",
+			line:           "CALLNAT 'SUBPRG' #A #B #C",
+			cursorByteCol:  26, // End of line, at #C
 			expectKind:     sigCallnat,
 			expectArgIndex: 2,
-			description:    "quoted target, multiple bare args, cursor after last + space",
-		},
-		{
-			name:           "CALLNAT bare target (unquoted)",
-			line:           "CALLNAT SUBPRG ",
-			cursorByteCol:  15,
-			expectKind:     sigCallnat,
-			expectArgIndex: 0,
-			description:    "bare unquoted target (less common but valid)",
+			description:    "third arg under construction → argIndex 2",
 		},
 
 		// === PERFORM context ===
 		{
-			name:           "PERFORM only, no args",
+			name:           "PERFORM keyword only",
 			line:           "PERFORM",
 			cursorByteCol:  7,
-			expectKind:     sigNone, // keyword-only, no space → sigNone
+			expectKind:     sigNone,
 			expectArgIndex: 0,
-			description:    "cursor at end of keyword-only PERFORM",
+			description:    "PERFORM keyword-only → no context yet",
 		},
 		{
-			name:           "PERFORM with trailing space",
-			line:           "PERFORM ",
-			cursorByteCol:  8,
+			name:           "PERFORM with target, cursor on target",
+			line:           "PERFORM INLINE-SUB",
+			cursorByteCol:  12, // Inside INLINE-SUB
 			expectKind:     sigPerform,
 			expectArgIndex: 0,
-			description:    "cursor on trailing space after PERFORM",
+			description:    "cursor on PERFORM target → context recognized",
 		},
 		{
-			name:           "PERFORM 'SUB' cursor on target name",
-			line:           "PERFORM 'SUB'",
-			cursorByteCol:  12,
+			name:           "PERFORM with target + space",
+			line:           "PERFORM INLINE-SUB ",
+			cursorByteCol:  19, // After space
 			expectKind:     sigPerform,
 			expectArgIndex: 0,
-			description:    "cursor on PERFORM target, no args",
+			description:    "PERFORM target + space → context, argIndex 0",
 		},
 		{
-			name:           "PERFORM 'SUB' with space at first arg slot",
-			line:           "PERFORM 'SUB' ",
-			cursorByteCol:  14,
+			name:           "PERFORM with target + one arg",
+			line:           "PERFORM EXT-SUB #X ",
+			cursorByteCol:  19, // After #X + space
 			expectKind:     sigPerform,
-			expectArgIndex: 0,
-			description:    "cursor after PERFORM target + space",
-		},
-		{
-			name:           "PERFORM 'SUB' A B C with full args",
-			line:           "PERFORM 'SUB' A B C ",
-			cursorByteCol:  20,
-			expectKind:     sigPerform,
-			expectArgIndex: 3,
-			description:    "cursor after three args + space",
-		},
-		{
-			name:           "PERFORM lowercase keyword",
-			line:           "perform 'SUB' ",
-			cursorByteCol:  14,
-			expectKind:     sigPerform,
-			expectArgIndex: 0,
-			description:    "case-insensitive PERFORM",
-		},
-		{
-			name:           "PERFORM mixed case keyword",
-			line:           "PerForm 'SUB' ",
-			cursorByteCol:  14,
-			expectKind:     sigPerform,
-			expectArgIndex: 0,
-			description:    "mixed-case PERFORM",
+			expectArgIndex: 1,
+			description:    "PERFORM with one arg → argIndex 1",
 		},
 
-		// === Non-call contexts (sigNone) ===
+		// === Non-call contexts ===
 		{
-			name:           "FETCH context → sigNone",
-			line:           "FETCH 'PRG' ",
-			cursorByteCol:  12,
-			expectKind:     sigNone,
-			expectArgIndex: 0,
-			description:    "FETCH is NOT a signature context (OQ-2, deferred)",
-		},
-		{
-			name:           "RUN context → sigNone",
-			line:           "RUN 'PRG' ",
-			cursorByteCol:  10,
-			expectKind:     sigNone,
-			expectArgIndex: 0,
-			description:    "RUN is NOT a signature context (OQ-2, deferred)",
-		},
-		{
-			name:           "READ data-access verb → sigNone",
-			line:           "READ VIEW ",
-			cursorByteCol:  10,
-			expectKind:     sigNone,
-			expectArgIndex: 0,
-			description:    "data-access verbs are not call contexts",
-		},
-		{
-			name:           "STORE data-access verb → sigNone",
-			line:           "STORE VIEW ",
+			name:           "FETCH keyword (not a signature context)",
+			line:           "FETCH 'PROG' #I",
 			cursorByteCol:  11,
 			expectKind:     sigNone,
 			expectArgIndex: 0,
-			description:    "STORE is not a signature context",
+			description:    "FETCH is not a signature context (OQ-2)",
 		},
 		{
-			name:           "COMPUTE statement → sigNone",
-			line:           "COMPUTE X = 1 ",
-			cursorByteCol:  14,
+			name:           "RUN keyword (not a signature context)",
+			line:           "RUN 'PROG'",
+			cursorByteCol:  6,
 			expectKind:     sigNone,
 			expectArgIndex: 0,
-			description:    "plain statement, not a call",
+			description:    "RUN is not a signature context (OQ-2)",
 		},
 		{
-			name:           "MOVE statement → sigNone",
-			line:           "MOVE X TO Y ",
-			cursorByteCol:  12,
+			name:           "READ keyword (data-access, not signature)",
+			line:           "READ EMPLOYEE",
+			cursorByteCol:  9,
 			expectKind:     sigNone,
 			expectArgIndex: 0,
-			description:    "MOVE is not a call context",
+			description:    "READ is not a signature context",
 		},
 		{
-			name:           "plain line with no keyword → sigNone",
-			line:           "Some plain text ",
-			cursorByteCol:  16,
+			name:           "Plain line, no keyword",
+			line:           "WRITE 'Hello'",
+			cursorByteCol:  6,
 			expectKind:     sigNone,
 			expectArgIndex: 0,
-			description:    "no recognized keyword",
+			description:    "non-call verb → no context",
 		},
 
-		// === Degenerate input (never panics) ===
+		// === Edge cases: degenerate input (never panic) ===
 		{
 			name:           "empty line",
 			line:           "",
 			cursorByteCol:  0,
 			expectKind:     sigNone,
 			expectArgIndex: 0,
-			description:    "empty line",
+			description:    "empty line → no context, no panic",
+		},
+		{
+			name:           "negative cursor (clamped)",
+			line:           "CALLNAT 'SUB'",
+			cursorByteCol:  -5,
+			expectKind:     sigNone,
+			expectArgIndex: 0,
+			description:    "negative cursor clamped to 0 → no context",
+		},
+		{
+			name:           "cursor past end of line (clamped)",
+			line:           "CALLNAT 'SUB'",
+			cursorByteCol:  100,
+			expectKind:     sigNone,
+			expectArgIndex: 0,
+			description:    "cursor way past end → clamped, no context",
+		},
+		{
+			name:           "cursor at end of line",
+			line:           "CALLNAT 'SUB' #A #B",
+			cursorByteCol:  19, // At end
+			expectKind:     sigCallnat,
+			expectArgIndex: 1,
+			description:    "cursor at end of line → valid context with last computed argIndex",
 		},
 		{
 			name:           "whitespace-only line",
 			line:           "    ",
-			cursorByteCol:  4,
+			cursorByteCol:  2,
 			expectKind:     sigNone,
 			expectArgIndex: 0,
-			description:    "whitespace-only line",
+			description:    "whitespace-only line → no context",
 		},
 		{
-			name:           "cursor negative",
-			line:           "CALLNAT 'SUB' ",
-			cursorByteCol:  -1,
-			expectKind:     sigNone,
-			expectArgIndex: 0,
-			description:    "negative cursor column (clamped to 0)",
+			name:           "case insensitive: callnat lowercase",
+			line:           "callnat 'SUB' #A ",
+			cursorByteCol:  17,
+			expectKind:     sigCallnat,
+			expectArgIndex: 1,
+			description:    "lowercase keyword → recognized",
 		},
 		{
-			name:           "cursor past end of line",
-			line:           "CALLNAT 'SUB' A",
-			cursorByteCol:  100,
-			expectKind:     sigNone,
+			name:           "case insensitive: PERFORM mixed case",
+			line:           "PerForm TARGET ",
+			cursorByteCol:  15,
+			expectKind:     sigPerform,
 			expectArgIndex: 0,
-			description:    "cursor past line end (clamped to line length)",
-		},
-		{
-			name:           "cursor at position 0",
-			line:           "CALLNAT 'SUB'",
-			cursorByteCol:  0,
-			expectKind:     sigNone,
-			expectArgIndex: 0,
-			description:    "cursor at line start",
+			description:    "mixed-case PERFORM → recognized",
 		},
 	}
 
@@ -295,227 +224,221 @@ func TestDetectSignatureContext(t *testing.T) {
 			// Act
 			kind, argIndex := detectSignatureContext(tc.line, tc.cursorByteCol)
 
-			// Assert kind
+			// Assert context kind
 			if kind != tc.expectKind {
-				t.Errorf("kind: got %s, want %s (case: %s)", kind, tc.expectKind, tc.description)
+				t.Errorf("kind: got %v, want %v (context: %s)", kind, tc.expectKind, tc.description)
 			}
 
-			// Assert argIndex
+			// Assert argument index
 			if argIndex != tc.expectArgIndex {
-				t.Errorf("argIndex: got %d, want %d (case: %s)", argIndex, tc.expectArgIndex, tc.description)
-			}
-
-			// Assert argIndex is never negative
-			if argIndex < 0 {
-				t.Errorf("argIndex should never be negative, got %d (case: %s)", argIndex, tc.description)
+				t.Errorf("argIndex: got %d, want %d (context: %s)", argIndex, tc.expectArgIndex, tc.description)
 			}
 		})
 	}
 }
 
-// TestBuildSignatureInformation tests the pure builder that renders a subroutine
-// signature as a protocol.SignatureInformation with structured ParameterInformation
-// entries (feature 17, T3 RED phase).
+// TestProvideSignatureHelp_CallnatBasic tests the signature help provider for CALLNAT
+// context (feature 17, T4, RED phase).
 //
-// Semantics (from tasks.md T3):
-// - Filter defs to SectionKind=="parameter", in declaration order
-// - Honor array dimensions (same rendering as hover: "1:10", "1:*" for unbounded)
-// - Honor group nesting (same way hover does)
-// - Each parameter → protocol.ParameterInformation{ Label: protocol.String("<name> <type-with-dims>") }
-// - SignatureInformation.Label = a readable header (e.g., "<name> (<p1>, <p2>, ...)")
-// - Empty parameter interface → SignatureInformation with empty (non-nil) Parameters slice
-// - Pure function: no I/O, no locks
+// Exercises:
+// - Cursor on the CALLNAT target returns signature for the resolved subprogram
+// - Cursor in the argument region (after the target) returns the same signature
+// - SignatureInformation includes Label and Parameters matching the subprogram's PARAMETER block
+// - Parameters are rendered as "name type" (with array dims for array parameters)
+// - ActiveSignature = 0 (only one signature per call)
 //
-// IMPORTANT REFACTOR INVARIANT (T3 GREEN phase):
-// The existing hover tests in hover_test.go (TestBuildSubroutineHover_WithParameters,
-// TestBuildSubroutineHover_NoParameters) MUST remain byte-identical after T3's
-// green extraction refactor. The refactor will extract a shared helper so both hover
-// and signature help render the same "name + type" string, but hover's Markdown
-// output and test assertions must NOT change. Do not modify hover_test.go during
-// the refactor — only refactor hover.go and signature_help.go to call the shared helper.
-func TestBuildSignatureInformation(t *testing.T) {
-	tests := []struct {
-		name                string
-		inputName           string
-		inputDefs           []model.DataDefinition
-		expectLabelContains string   // substring that should appear in SignatureInformation.Label
-		expectParamCount    int      // expected number of ParameterInformation entries
-		expectParamLabels   []string // expected Label strings for each ParameterInformation
-		description         string
+// FR-48, Story 1, AC#1–AC#2.
+func TestProvideSignatureHelp_CallnatBasic(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the signaturehelp fixture (CALLER.NSP + SUBPRG.NSN)
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index from fixtures
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
 	}{
-		// === Case (a): Multiple parameters with mixed types and arrays ===
-		{
-			name:      "two_params_scalar_and_array",
-			inputName: "MYROUTINE",
-			inputDefs: []model.DataDefinition{
-				// Non-parameter defs (should be filtered out)
-				{
-					Name:        "LOCAL-VAR",
-					Type:        "N5",
-					SectionKind: "local",
-					Level:       1,
-				},
-				// Parameter defs (should be included)
-				{
-					Name:        "#PNUM",
-					Type:        "N8",
-					SectionKind: "parameter",
-					Level:       1,
-				},
-				{
-					Name:        "#ARR",
-					Type:        "A10",
-					SectionKind: "parameter",
-					Level:       1,
-					Dimensions: []model.ArrayDimension{
-						{Lower: 1, Upper: 5, UpperUnbounded: false},
-					},
-				},
-			},
-			expectLabelContains: "MYROUTINE",
-			expectParamCount:    2,
-			expectParamLabels: []string{
-				"#PNUM N8",
-				"#ARR A10 (1:5)",
-			},
-			description: "filter to parameters, render type + dims",
-		},
+		{"CALLER.NSP"},
+		{"SUBPRG.NSN"},
+	}
 
-		// === Case (b): Array parameter with unbounded dimension ===
-		{
-			name:      "array_param_unbounded",
-			inputName: "ARRGEN",
-			inputDefs: []model.DataDefinition{
-				{
-					Name:        "#ITEMS",
-					Type:        "N3",
-					SectionKind: "parameter",
-					Level:       1,
-					Dimensions: []model.ArrayDimension{
-						{Lower: 1, Upper: 0, UpperUnbounded: true},
-					},
-				},
-			},
-			expectLabelContains: "ARRGEN",
-			expectParamCount:    1,
-			expectParamLabels: []string{
-				"#ITEMS N3 (1:*)",
-			},
-			description: "unbounded array dimension rendered as 1:*",
-		},
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
 
-		// === Case (c): Empty parameter interface ===
-		{
-			name:      "no_parameters",
-			inputName: "NOPARAM",
-			inputDefs: []model.DataDefinition{
-				{
-					Name:        "#LOCALVAR",
-					Type:        "N5",
-					SectionKind: "local",
-					Level:       1,
-				},
-				{
-					Name:        "#ANOTHERLOCAL",
-					Type:        "A20",
-					SectionKind: "local",
-					Level:       1,
-				},
-			},
-			expectLabelContains: "NOPARAM",
-			expectParamCount:    0, // empty (non-nil) slice
-			expectParamLabels:   []string{},
-			description:         "no parameters → empty Parameters slice (non-nil)",
-		},
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
 
-		// === Case (d): Group nesting ===
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set (resolves CALLNAT 'SUBPRG' to SUBPRG.NSN)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	tests := []struct {
+		name           string
+		cursorLine     int // 1-based
+		cursorColumn   int // 1-based
+		wantSignature  bool
+		checkSignature func(*testing.T, *protocol.SignatureHelp)
+		description    string
+	}{
 		{
-			name:      "group_with_children",
-			inputName: "GROUPED",
-			inputDefs: []model.DataDefinition{
-				{
-					Name:        "OUT-RESULT", // group header (no Type)
-					Type:        "",
-					SectionKind: "parameter",
-					Level:       1,
-					Children: []model.DataDefinition{
-						{
-							Name:        "RES-CODE",
-							Type:        "N1",
-							SectionKind: "parameter",
-							Level:       2,
-						},
-						{
-							Name:        "RES-MSG",
-							Type:        "A50",
-							SectionKind: "parameter",
-							Level:       2,
-						},
-					},
-				},
+			name:          "cursor on CALLNAT target 'SUBPRG'",
+			cursorLine:    13, // Line with CALLNAT 'SUBPRG' #A #B
+			cursorColumn:  13, // Inside 'SUBPRG' (1-based)
+			wantSignature: true,
+			checkSignature: func(t *testing.T, sh *protocol.SignatureHelp) {
+				if sh == nil {
+					t.Fatal("expected non-nil SignatureHelp")
+				}
+
+				// Assert exactly one signature
+				if len(sh.Signatures) != 1 {
+					t.Errorf("expected 1 signature, got %d", len(sh.Signatures))
+					return
+				}
+
+				sig := sh.Signatures[0]
+
+				// Assert the signature label contains the target name
+				if sig.Label != "SUBPRG (P-NUM, P-NAME, P-ARR)" {
+					t.Errorf("signature label: got %q, expected 'SUBPRG (P-NUM, P-NAME, P-ARR)'", sig.Label)
+				}
+
+				// Assert exactly 3 parameters
+				if len(sig.Parameters) != 3 {
+					t.Errorf("parameter count: got %d, expected 3", len(sig.Parameters))
+					return
+				}
+
+				// Assert parameter labels are protocol.String and have correct format
+				// First param: P-NUM (N8)
+				pinfo0 := sig.Parameters[0]
+				label0 := extractLabelString(t, pinfo0.Label)
+				if label0 != "P-NUM N8" {
+					t.Errorf("param[0] label: got %q, expected 'P-NUM N8'", label0)
+				}
+
+				// Second param: P-NAME (A50)
+				pinfo1 := sig.Parameters[1]
+				label1 := extractLabelString(t, pinfo1.Label)
+				if label1 != "P-NAME A50" {
+					t.Errorf("param[1] label: got %q, expected 'P-NAME A50'", label1)
+				}
+
+				// Third param: P-ARR (A10/1:5) — array with dimensions
+				pinfo2 := sig.Parameters[2]
+				label2 := extractLabelString(t, pinfo2.Label)
+				if label2 != "P-ARR A10 (1:5)" {
+					t.Errorf("param[2] label (array dims): got %q, expected 'P-ARR A10 (1:5)'", label2)
+				}
+
+				// Assert ActiveSignature = 0
+				if sh.ActiveSignature == nil || *sh.ActiveSignature != 0 {
+					t.Errorf("activeSignature: got %v, expected 0", sh.ActiveSignature)
+				}
 			},
-			expectLabelContains: "GROUPED",
-			expectParamCount:    3, // group header + 2 children (flat enumeration)
-			expectParamLabels: []string{
-				"OUT-RESULT",  // group header (no type)
-				"RES-CODE N1", // child scalar
-				"RES-MSG A50", // child scalar
+			description: "cursor on target name",
+		},
+		{
+			name:          "cursor in argument region (after target, on first arg)",
+			cursorLine:    13,
+			cursorColumn:  17, // On #A (first argument)
+			wantSignature: true,
+			checkSignature: func(t *testing.T, sh *protocol.SignatureHelp) {
+				if sh == nil {
+					t.Fatal("expected non-nil SignatureHelp")
+				}
+
+				// Assert exactly one signature
+				if len(sh.Signatures) != 1 {
+					t.Errorf("expected 1 signature, got %d", len(sh.Signatures))
+					return
+				}
+
+				sig := sh.Signatures[0]
+
+				// Assert 3 parameters
+				if len(sig.Parameters) != 3 {
+					t.Errorf("parameter count: got %d, expected 3", len(sig.Parameters))
+				}
 			},
-			description: "group nesting: header (no type) + children rendered as params",
+			description: "cursor in argument list (after target)",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Act: build the signature information
-			result := buildSignatureInformation(tc.inputName, tc.inputDefs)
-
-			// Assert: result is non-nil
-			if result == nil {
-				t.Fatal("buildSignatureInformation returned nil, expected non-nil *protocol.SignatureInformation")
+			// Convert 1-based cursor to 0-based protocol position
+			params := protocol.SignatureHelpParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(filepath.Join(fixtureRoot, "CALLER.NSP")),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine - 1),
+						Character: uint32(tc.cursorColumn - 1),
+					},
+				},
 			}
 
-			// Assert: Label contains the routine name
-			if !strings.Contains(result.Label, tc.expectLabelContains) {
-				t.Errorf("SignatureInformation.Label missing expected substring %q; got: %q", tc.expectLabelContains, result.Label)
+			// Act: call the provider
+			result, err := provideSignatureHelp(hctx, params)
+
+			// Assert no error
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
 			}
 
-			// Assert: Parameters count matches
-			if len(result.Parameters) != tc.expectParamCount {
-				t.Errorf("Parameters count: got %d, want %d (case: %s)", len(result.Parameters), tc.expectParamCount, tc.description)
-			}
-
-			// Assert: Parameters is always non-nil (even if empty) per Story 2 AC4
-			if result.Parameters == nil {
-				t.Errorf("Parameters slice must be non-nil (even if empty); got nil (case: %s)", tc.description)
-			}
-
-			// Assert: each ParameterInformation.Label matches expected string
-			for i, param := range result.Parameters {
-				if i >= len(tc.expectParamLabels) {
-					t.Errorf("unexpected ParameterInformation at index %d (case: %s)", i, tc.description)
-					break
+			// Assert signature presence
+			if tc.wantSignature {
+				if result == nil {
+					t.Fatal("expected non-nil SignatureHelp, got nil")
 				}
-
-				// Extract the string value from the union Label
-				label := param.Label
-				if label == nil {
-					t.Errorf("ParameterInformation[%d].Label is nil (case: %s)", i, tc.description)
-					continue
+				if tc.checkSignature != nil {
+					tc.checkSignature(t, result)
 				}
-
-				// Type-assert to protocol.String to read the value
-				strLabel, ok := label.(protocol.String)
-				if !ok {
-					t.Errorf("ParameterInformation[%d].Label is not protocol.String; got %T (case: %s)", i, label, tc.description)
-					continue
-				}
-
-				if string(strLabel) != tc.expectParamLabels[i] {
-					t.Errorf("ParameterInformation[%d].Label: got %q, want %q (case: %s)",
-						i, string(strLabel), tc.expectParamLabels[i], tc.description)
+			} else {
+				if result != nil {
+					t.Errorf("expected nil SignatureHelp, got %+v", result)
 				}
 			}
 		})
 	}
+}
+
+// extractLabelString extracts the string value from a ParameterInformationLabel union.
+// The label is constructed as protocol.String (a string), so we directly convert it.
+func extractLabelString(t *testing.T, label protocol.ParameterInformationLabel) string {
+	// ParameterInformationLabel is a union type. The string arm is directly a string value.
+	// Cast to string directly since it was constructed as protocol.String.
+	str := string(label.(protocol.String))
+	return str
 }

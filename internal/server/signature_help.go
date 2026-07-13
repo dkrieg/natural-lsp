@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"strings"
 	"unicode"
 
@@ -36,17 +37,170 @@ func (k sigContextKind) String() string {
 	}
 }
 
-// provideSignatureHelp is the LSP signature help provider stub (feature 17, T1 RED phase).
+// provideSignatureHelp is the LSP signature help provider (feature 17, T4 GREEN phase).
 // It is called when the client requests textDocument/signatureHelp.
-// Currently returns nil, nil (no signature at any position), which marshals to JSON "null".
+//
+// Implements signature help for CALLNAT and (future) PERFORM contexts.
+// For CALLNAT: resolves the callee subprogram and returns a SignatureInformation
+// with its PARAMETER section rendered as parameter labels.
+// For other contexts: returns nil, nil (no signature).
+//
+// Concurrency (F7): snapshots idx/res/posEncoding/root/cfg under RLock, releases
+// before any file I/O (index lookup, disk read).
 //
 // CRITICAL: When wiring the dispatch in server.go, the result MUST be marshaled via
 // (*protocol.SignatureHelp).MarshalJSONTo(jsontext.NewEncoder(&buf)) — NOT json.Marshal —
 // because SignatureHelp contains union/Nullable fields that require the protocol encoder.
 // See the divergence note in tasks.md and server.go handleInitialize for the pattern.
 func provideSignatureHelp(hctx *handlerContext, params protocol.SignatureHelpParams) (*protocol.SignatureHelp, error) {
-	// Stub: return nil, nil (no signature help at any position during RED phase).
+	// Guard: hctx must be initialized
+	if hctx == nil {
+		return nil, nil
+	}
+
+	// Snapshot idx/res/posEncoding/root under the read lock; release before any file I/O (F7).
+	hctx.idxResMu.RLock()
+	idx := hctx.idx
+	res := hctx.res
+	posEncoding := hctx.posEncoding
+	root := hctx.root
+	hctx.idxResMu.RUnlock()
+
+	if idx == nil || res == nil {
+		return nil, nil
+	}
+
+	// Convert LSP URI to workspace-relative path
+	absPath, relPath, err := uriToRelPath(root, params.TextDocument.URI)
+	if err != nil {
+		// URI outside workspace root — no signature
+		return nil, nil
+	}
+
+	// Get the source file's analysis from the index/store (store-first pattern)
+	var sourceFA *model.FileAnalysis
+	var sourceContent string
+
+	// Try store first (for live edits while typing)
+	if hctx.store != nil {
+		if doc, ok := hctx.store.Get(params.TextDocument.URI); ok && doc != nil {
+			sourceFA = &doc.Analysis
+			sourceContent = string(doc.Content)
+		}
+	}
+
+	// Fall back to index if not in store
+	if sourceFA == nil {
+		fa, ok := idx.Get(relPath)
+		if !ok {
+			// Source file not in index — no signature
+			return nil, nil
+		}
+		sourceFA = &fa
+
+		// Read content from disk for position conversion
+		content, err := os.ReadFile(absPath)
+		if err != nil {
+			// Can't read source; no signature
+			return nil, nil
+		}
+		sourceContent = string(content)
+	}
+
+	// Convert protocol position to model position (1-based)
+	cursorPos := fromProtocolPosition(params.Position, sourceContent, posEncoding)
+
+	// Derive the source line text for detectSignatureContext
+	modelLine0Based := cursorPos.Line - 1 // model is 1-based, lineAt expects 0-based
+	line := lineAt(sourceContent, modelLine0Based)
+	cursorByteCol := cursorPos.Column - 1 // model is 1-based column, detectSignatureContext expects 0-based
+
+	// Clamp cursor to line bounds
+	if cursorByteCol < 0 {
+		cursorByteCol = 0
+	}
+	if cursorByteCol > len(line) {
+		cursorByteCol = len(line)
+	}
+
+	// Detect signature context (pure function, never panics)
+	sigKind, _ := detectSignatureContext(line, cursorByteCol)
+
+	// Handle CALLNAT context
+	if sigKind == sigCallnat {
+		// Find the enclosing CALLNAT or CALLNAT-dynamic edge on this line
+		edge := enclosingCallEdge(sourceFA, modelLine0Based, model.EdgeCalls, model.EdgeCallsDynamic)
+		if edge == nil {
+			// No CALLNAT edge on this line — no signature
+			return nil, nil
+		}
+
+		// Resolve the edge
+		resolution, ok := res.Get(relPath, edge.Source)
+		if !ok {
+			// Edge not found in resolution set — no signature
+			return nil, nil
+		}
+
+		// Handle resolved case
+		if !resolution.IsResolved() {
+			// Dynamic/unresolved/ambiguous — no signature (T6 handles these)
+			return nil, nil
+		}
+
+		// Read the target file's analysis
+		targetFA, ok := idx.Get(resolution.Path)
+		if !ok {
+			// Target file not in index (shouldn't happen after successful resolution)
+			return nil, nil
+		}
+
+		// Build signature information from the target's PARAMETER definitions
+		sigInfo := buildSignatureInformation(edge.TargetName, targetFA.Definitions)
+
+		// Wrap in protocol.SignatureHelp with ActiveSignature = 0
+		activeSignature := uint32(0)
+		return &protocol.SignatureHelp{
+			Signatures:      []protocol.SignatureInformation{*sigInfo},
+			ActiveSignature: &activeSignature,
+		}, nil
+	}
+
+	// For PERFORM (sigPerform), DDM, and sigNone: return nil, nil for now (T4a/T6 handle these)
 	return nil, nil
+}
+
+// enclosingCallEdge returns the edge on a given source line whose kind matches one of
+// the specified kinds (for signature help: EdgeCalls or EdgeCallsDynamic for CALLNAT).
+//
+// This is a helper for finding the enclosing CALLNAT when the cursor may be positioned
+// after the target (in the argument region), where findCursorTarget may miss because it
+// matches EdgeEntry.Source containment on the whole statement, but we want to find the
+// edge on the current line.
+//
+// Returns nil if no matching edge is found on that line.
+func enclosingCallEdge(fa *model.FileAnalysis, line0Based int, kinds ...model.EdgeKind) *model.EdgeEntry {
+	line1Based := line0Based + 1 // model uses 1-based line numbers
+
+	// Check if any of the specified kinds match
+	matchesKind := func(ek model.EdgeKind) bool {
+		for _, k := range kinds {
+			if ek == k {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Scan edges to find one on this line with a matching kind
+	for i := range fa.Edges {
+		edge := &fa.Edges[i]
+		if edge.Source.Start.Line == line1Based && matchesKind(edge.Kind) {
+			return edge
+		}
+	}
+
+	return nil
 }
 
 // detectSignatureContext inspects the text of the current line up to the cursor
