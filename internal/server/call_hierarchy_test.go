@@ -1,9 +1,12 @@
 package server
 
 import (
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.lsp.dev/protocol"
@@ -943,6 +946,167 @@ func TestProvideOutgoingCalls(t *testing.T) {
 		// Should be empty
 		if len(badResult) != 0 {
 			t.Errorf("provideOutgoingCalls on garbage Item returned %d results, want 0", len(badResult))
+		}
+	})
+}
+
+// TestProvideIncomingCalls_LiveFreshness tests that incoming calls reflect the current index
+// after an incremental edit (Feature 18, T6 — Story 2, AC4).
+//
+// FR-ID: FR-49, Story 2, AC4:
+//
+//	AC4: "Incoming calls update to reflect newly-added callers after incremental re-analysis,
+//	     without requiring a server restart or manual index rebuild."
+//
+// This test proves the F7 snapshot reads the freshly-swapped (idx, res) after applyDocumentChange.
+//
+// Scenario:
+// - Initial index: CALLER.NSP (1 call to CALLEE), CALLER2.NSP (2 calls), CALLEE.NSN (target)
+// - Get incoming calls for CALLEE → 2 callers (CALLER, CALLER2)
+// - Simulate incremental edit: add CALLER3.NSP with a new CALLNAT 'CALLEE'
+// - Re-invoke incoming calls → 3 callers (CALLER, CALLER2, CALLER3)
+//
+// The edit is driven through applyDocumentChange (mirroring TestProvideCompletion_LiveFreshness),
+// which re-analyzes, idx.Add's, and swaps in a fresh (idx, res) under the write lock.
+// The provider snapshot under RLock must read the new state.
+func TestProvideIncomingCalls_LiveFreshness(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Arrange: build the initial index with CALLER.NSP, CALLER2.NSP, CALLEE.NSN
+	idx := &workspace.Index{}
+	cfg := config.Config{
+		Workspace: config.WorkspaceConfig{
+			Extensions: []string{".NSP", ".NSN", ".NSS", ".NSC", ".NSM", ".NSL", ".NSG", ".NSA", ".NSH", ".NSD"},
+		},
+	}
+	az := natural.New(nil)
+
+	files := []string{"CALLER.NSP", "CALLER2.NSP", "CALLEE.NSN"}
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute initial resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Create handler context (with store and analyzer for applyDocumentChange)
+	hctx := &handlerContext{
+		cfg:         cfg,
+		idx:         idx,
+		res:         resSet,
+		root:        root,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		store:       nil,
+		az:          az,
+		idxResMu:    sync.RWMutex{},
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	// Read CALLEE.NSN and build the target item
+	calleeAbsPath := filepath.Join(root, testdata, "CALLEE.NSN")
+	calleeContent, err := os.ReadFile(calleeAbsPath)
+	if err != nil {
+		t.Fatalf("failed to read CALLEE.NSN: %v", err)
+	}
+
+	calleeAnalysis, ok := idx.Get("testdata/callhierarchy/CALLEE.NSN")
+	if !ok {
+		t.Fatalf("CALLEE.NSN not in index")
+	}
+
+	if calleeAnalysis.Structure == nil {
+		t.Fatalf("CALLEE.NSN Structure is nil")
+	}
+
+	targetItem := buildCallHierarchyItem(root, "testdata/callhierarchy/CALLEE.NSN", calleeContent, calleeAnalysis.Structure, protocol.PositionEncodingKindUTF8)
+
+	// Act: get initial incoming calls (should be 2 callers: CALLER, CALLER2)
+	initialParams := protocol.CallHierarchyIncomingCallsParams{
+		Item: targetItem,
+	}
+
+	initialResult, err := provideIncomingCalls(hctx, initialParams)
+	if err != nil {
+		t.Fatalf("initial provideIncomingCalls returned error: %v", err)
+	}
+
+	if len(initialResult) != 2 {
+		t.Errorf("initial incoming calls length = %d, want 2 (CALLER + CALLER2)", len(initialResult))
+	}
+
+	// Act: simulate adding a new caller CALLER3 via incremental edit
+	// Read CALLER3.NSP from the fixture (which will be added to the index)
+	caller3Path := filepath.Join(testdata, "CALLER3.NSP")
+	caller3Content, err := os.ReadFile(caller3Path)
+	if err != nil {
+		t.Fatalf("failed to read CALLER3.NSP fixture: %v", err)
+	}
+
+	// Apply the document change (re-analyzes, idx.Add, and ResolveInto under write lock)
+	hctx.applyDocumentChange("testdata/callhierarchy/CALLER3.NSP", caller3Content)
+
+	// Verify CALLER3 is in the index after applyDocumentChange
+	hctx.idxResMu.RLock()
+	caller3FA, found := hctx.idx.Get("testdata/callhierarchy/CALLER3.NSP")
+	hctx.idxResMu.RUnlock()
+	if !found {
+		t.Fatalf("CALLER3.NSP not found in index after applyDocumentChange")
+	}
+	if len(caller3FA.Edges) == 0 {
+		t.Fatalf("CALLER3.NSP has no edges after applyDocumentChange; expected at least one CALLNAT 'CALLEE' edge")
+	}
+
+	// Act: re-invoke incoming calls (should now see 3 callers)
+	freshResult, err := provideIncomingCalls(hctx, initialParams)
+	if err != nil {
+		t.Fatalf("fresh provideIncomingCalls returned error: %v", err)
+	}
+
+	// Assert: the new caller is now present
+	t.Run("AC4: new caller appears after incremental re-analysis", func(t *testing.T) {
+		if len(freshResult) != 3 {
+			t.Errorf("fresh incoming calls length = %d, want 3 (CALLER + CALLER2 + CALLER3)", len(freshResult))
+			for i, call := range freshResult {
+				t.Logf("  [%d] %s", i, call.From.Name)
+			}
+			return
+		}
+
+		// Find CALLER3 in the results
+		var foundCaller3 *protocol.CallHierarchyIncomingCall
+		for i := range freshResult {
+			if freshResult[i].From.Name == "CALLER3" {
+				foundCaller3 = &freshResult[i]
+				break
+			}
+		}
+
+		if foundCaller3 == nil {
+			t.Errorf("CALLER3 not found in fresh incoming calls")
+			return
+		}
+
+		// Verify CALLER3 has one call site (the CALLNAT 'CALLEE')
+		if len(foundCaller3.FromRanges) != 1 {
+			t.Errorf("CALLER3.FromRanges length = %d, want 1", len(foundCaller3.FromRanges))
 		}
 	})
 }
