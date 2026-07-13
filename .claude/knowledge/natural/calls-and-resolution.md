@@ -92,6 +92,58 @@ FETCH [REPEAT] [RETURN] operand1 [operand2 [(parameter)]] ...
   program also sees the established GDA.
 - Target of FETCH is a cataloged program object (`.NSP`).
 
+### FETCH/RUN parameter passing — NO declared interface (verified 2026-07-13)
+
+Decision-critical for signature help. When a **program** is invoked by `FETCH` / `FETCH RETURN` /
+`FETCH REPEAT` / `RUN`, the caller passes data **positionally via the Natural stack**, NOT via a
+formal parameter block:
+
+- The FETCH doc: "The parameters are converted to a format suitable for a corresponding INPUT field.
+  All parameters are placed on the top of the Natural stack" — the fetched program reads them with a
+  plain `INPUT` statement (e.g. `INPUT #PERS-NR` into an ordinary LOCAL variable). System variable
+  `*DATA` reports how many parameters were passed; extras are ignored. (fetch.htm example)
+- Stack Processing doc: "The execution of a FETCH or RUN statement that contains parameters to be
+  passed to the invoked program will result in these parameters being placed on top of the stack";
+  the only documented read mechanism from the stack is `INPUT`.
+- **There is NO caller-visible, declared parameter interface for FETCH/RUN.** `DEFINE DATA PARAMETER`
+  is documented as the incoming-parameter interface for a **subprogram, external subroutine,
+  helproutine, or function** ONLY (defineda_pda.htm) — it is bound by `CALLNAT` / `PERFORM` /
+  function-call, whose operands map positionally onto the callee's PARAMETER block. FETCH/RUN do not
+  bind a PARAMETER block; the tech-community answer explicitly contrasts CALLNAT (PARAMETER) with
+  FETCH RETURN (stack/INPUT).
+
+### Can a PROGRAM (.NSP) contain DEFINE DATA PARAMETER? — nuanced (verified 2026-07-13)
+
+- **Syntactically, a program can carry a `DEFINE DATA`** (natls `NaturalFileType.canHaveDefineData()`
+  returns true for PROGRAM, SUBPROGRAM, SUBROUTINE, HELPROUTINE, FUNCTION, MAP + the data-area types).
+- But **PARAMETER scope in a program is NOT how FETCH/RUN pass data** — those never populate it. A
+  PARAMETER block only becomes meaningful when the object is invoked by a mechanism that binds
+  parameters positionally onto it (CALLNAT for subprograms; PERFORM for external subroutines;
+  function-call for functions). A program is the top of an invocation (started by FETCH/RUN, terminal
+  command, or menu) and is **not** invoked by CALLNAT, so a PARAMETER block in a program has no
+  caller to bind it. natls enforces per-file-type scope validity via `NPP050
+  INVALID_SCOPE_FOR_FILE_TYPE`; the authoritative receiving interface for a program is the stack +
+  `INPUT`, not PARAMETER.
+- **Bottom line for signature help:** FETCH/RUN have **no declared parameter interface** to display.
+  There is no analog of the subprogram PARAMETER block at a FETCH/RUN call site — parameters are
+  untyped, positional stack values consumed by whatever `INPUT` statements the target program happens
+  to execute. Rendering subprogram-style signature help for FETCH/RUN would be a category error.
+  Signature help is appropriate for CALLNAT (bind operands → callee PARAMETER), external PERFORM
+  (→ external-subroutine PARAMETER), and function-calls (→ function PARAMETER) only.
+
+**Sources (FETCH/RUN parameter passing):**
+- FETCH (parameters → stack, read by INPUT): https://documentation.softwareag.com/natural/nat911unx/sm/fetch.htm
+- Stack Processing (FETCH/RUN params placed on stack; INPUT reads stack):
+  https://documentation.softwareag.com/natural/nat911mf/pg/pg_furth_stack_process.htm
+- Defining Parameter Data (PARAMETER = subprogram / external subroutine / helproutine / function):
+  https://documentation.softwareag.com/natural/nat912unx/sm/defineda_pda.htm
+- CALLNAT (params must be defined in the subprogram's DEFINE DATA PARAMETER / PDA; contrast with FETCH):
+  https://documentation.softwareag.com/natural/nat911unx/sm/callnat.htm
+- Tech Community: "Defining Parameter while using FETCH RETURN" (FETCH RETURN uses stack/INPUT, not PARAMETER):
+  https://techcommunity.softwareag.com/t/defining-parameter-while-using-fetch-return/60857
+- natls `NaturalFileType` (PROGRAM canHaveDefineData; NPP050 scope-per-file-type):
+  https://github.com/MarkusAmshove/natls/blob/main/libs/natparse/src/main/java/org/amshove/natparse/natural/project/NaturalFileType.java
+
 `RUN` caveat — verified (verbatim diagram nat912unx + nat912mf, 2026-06-30):
 ```
 RUN [REPEAT] [program-name [library-id]]

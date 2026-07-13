@@ -110,6 +110,12 @@ Source: natls `ParserError.java` and `IUsingNode.java`; see natls-prior-art.md.
   useful for hover/signature features and for validating parameter counts.
 - Attributes `BY VALUE` / `BY VALUE RESULT` (vs default by reference) appear on parameter definitions
   and correspond to `AD=` on the call site.
+- **PARAMETER scope is documented only for subprogram / external subroutine / helproutine / function**
+  (defineda_pda.htm). It is bound positionally by `CALLNAT` / external `PERFORM` / function-call.
+  **FETCH/RUN do NOT bind a PARAMETER block** — a program receives FETCH/RUN data as untyped
+  positional values on the Natural stack, read by `INPUT` statements. So signature help / a declared
+  parameter interface applies to CALLNAT / external PERFORM / function-calls, NOT to FETCH/RUN. See
+  calls-and-resolution.md "FETCH/RUN parameter passing — NO declared interface" (verified 2026-07-13).
 
 ## Sources
 
