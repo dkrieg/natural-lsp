@@ -2,9 +2,11 @@ package server
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"unicode"
 
+	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/protocol"
 
 	"natural-lsp/internal/model"
@@ -124,7 +126,7 @@ func provideSignatureHelp(hctx *handlerContext, params protocol.SignatureHelpPar
 	}
 
 	// Detect signature context (pure function, never panics)
-	sigKind, _ := detectSignatureContext(line, cursorByteCol)
+	sigKind, argIndex := detectSignatureContext(line, cursorByteCol)
 
 	// Handle CALLNAT context
 	if sigKind == sigCallnat {
@@ -158,12 +160,11 @@ func provideSignatureHelp(hctx *handlerContext, params protocol.SignatureHelpPar
 		// Build signature information from the target's PARAMETER definitions
 		sigInfo := buildSignatureInformation(edge.TargetName, targetFA.Definitions)
 
+		// Set the active parameter with clamping
+		setActiveParameter(sigInfo, argIndex)
+
 		// Wrap in protocol.SignatureHelp with ActiveSignature = 0
-		activeSignature := uint32(0)
-		return &protocol.SignatureHelp{
-			Signatures:      []protocol.SignatureInformation{*sigInfo},
-			ActiveSignature: &activeSignature,
-		}, nil
+		return wrapSignatureHelp(sigInfo), nil
 	}
 
 	// Handle PERFORM context (FR-12: inline-before-external)
@@ -184,12 +185,11 @@ func provideSignatureHelp(hctx *handlerContext, params protocol.SignatureHelpPar
 					// Found inline subroutine; build signature from caller's PARAMETER definitions
 					sigInfo := buildSignatureInformation(edge.TargetName, sourceFA.Definitions)
 
+					// Set the active parameter with clamping
+					setActiveParameter(sigInfo, argIndex)
+
 					// Wrap in protocol.SignatureHelp with ActiveSignature = 0
-					activeSignature := uint32(0)
-					return &protocol.SignatureHelp{
-						Signatures:      []protocol.SignatureInformation{*sigInfo},
-						ActiveSignature: &activeSignature,
-					}, nil
+					return wrapSignatureHelp(sigInfo), nil
 				}
 			}
 		}
@@ -217,12 +217,11 @@ func provideSignatureHelp(hctx *handlerContext, params protocol.SignatureHelpPar
 		// Build signature information from the target's PARAMETER definitions
 		sigInfo := buildSignatureInformation(edge.TargetName, targetFA.Definitions)
 
+		// Set the active parameter with clamping
+		setActiveParameter(sigInfo, argIndex)
+
 		// Wrap in protocol.SignatureHelp with ActiveSignature = 0
-		activeSignature := uint32(0)
-		return &protocol.SignatureHelp{
-			Signatures:      []protocol.SignatureInformation{*sigInfo},
-			ActiveSignature: &activeSignature,
-		}, nil
+		return wrapSignatureHelp(sigInfo), nil
 	}
 
 	// For DDM and sigNone: return nil, nil (T6 handles these)
@@ -400,5 +399,47 @@ func buildSignatureInformation(name string, defs []model.DataDefinition) *protoc
 	return &protocol.SignatureInformation{
 		Label:      headerLabel,
 		Parameters: paramInfos, // Always non-nil, even if empty
+	}
+}
+
+// newNullableUint32 builds a protocol.Nullable[uint32] carrying v using only the
+// type's public API (it has unexported fields and no exported constructor).
+// Decoding a bare JSON number into the Nullable never fails; the error is ignored.
+func newNullableUint32(v uint32) protocol.Nullable[uint32] {
+	var n protocol.Nullable[uint32]
+	_ = n.UnmarshalJSONFrom(jsontext.NewDecoder(strings.NewReader(strconv.FormatUint(uint64(v), 10))))
+	return n
+}
+
+// setActiveParameter sets the ActiveParameter field on a SignatureInformation,
+// clamping argIndex to the valid range [0, len(parameters)-1].
+// If the signature has zero parameters, ActiveParameter is left unset (zero Nullable[uint32]{}).
+// This is a helper for signature help providers to avoid duplication.
+func setActiveParameter(sig *protocol.SignatureInformation, argIndex int) {
+	if sig == nil || len(sig.Parameters) == 0 {
+		// For param-less signatures, leave activeParameter unset (already zero in the struct)
+		return
+	}
+
+	// Clamp argIndex to the valid range [0, len(sig.Parameters)-1]
+	clamped := argIndex
+	if clamped < 0 {
+		clamped = 0
+	}
+	if clamped >= len(sig.Parameters) {
+		clamped = len(sig.Parameters) - 1
+	}
+
+	sig.ActiveParameter = newNullableUint32(uint32(clamped))
+}
+
+// wrapSignatureHelp wraps a SignatureInformation in a protocol.SignatureHelp
+// with ActiveSignature = 0 (only one signature per call context).
+// This is a helper to eliminate duplication when returning signature help.
+func wrapSignatureHelp(sig *protocol.SignatureInformation) *protocol.SignatureHelp {
+	activeSignature := uint32(0)
+	return &protocol.SignatureHelp{
+		Signatures:      []protocol.SignatureInformation{*sig},
+		ActiveSignature: &activeSignature,
 	}
 }

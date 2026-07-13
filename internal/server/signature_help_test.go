@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
@@ -919,5 +921,381 @@ func TestProvideSignatureHelp_PerformNoParams(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestProvideSignatureHelp_ActiveParameterTracking tests active-parameter tracking
+// (feature 17, T5, RED phase).
+//
+// Exercises:
+// - activeParameter index matches the cursor's argument position across the arg list
+// - Moving past the last declared parameter clamps to the last index (Story 3 AC2)
+// - Never panics on out-of-range indices
+// - A param-less signature omits activeParameter (unset field)
+//
+// FR-48, Story 3, AC#1–AC#2.
+func TestProvideSignatureHelp_ActiveParameterTracking(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the CALLNAT fixture (CALLER.NSP + SUBPRG.NSN)
+	// SUBPRG.NSN has 3 params: P-NUM, P-NAME, P-ARR
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index from fixtures
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"CALLER.NSP"},
+		{"SUBPRG.NSN"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	tests := []struct {
+		name                  string
+		cursorLine            int // 1-based
+		cursorColumn          int // 1-based
+		expectActiveParameter int // Expected activeParameter value (or -1 if omitted)
+		description           string
+	}{
+		{
+			name:                  "cursor on CALLNAT target (arg index 0)",
+			cursorLine:            13, // CALLNAT 'SUBPRG' #A #B
+			cursorColumn:          13, // On 'SUBPRG'
+			expectActiveParameter: 0,
+			description:           "cursor on target → activeParameter 0",
+		},
+		{
+			name:                  "cursor after target on first arg (#A)",
+			cursorLine:            13,
+			cursorColumn:          17, // On #A
+			expectActiveParameter: 0,
+			description:           "cursor on first arg → activeParameter 0",
+		},
+		{
+			name:                  "cursor after first arg, before second",
+			cursorLine:            13,
+			cursorColumn:          19, // After #A, before space
+			expectActiveParameter: 0,
+			description:           "arg token under construction → activeParameter 0",
+		},
+		{
+			name:                  "cursor on second arg (#B) with trailing space",
+			cursorLine:            13,
+			cursorColumn:          21, // After #B (within the token)
+			expectActiveParameter: 1,
+			description:           "cursor on second arg → activeParameter 1",
+		},
+		{
+			name:                  "cursor on third arg (#C) with trailing space",
+			cursorLine:            13,
+			cursorColumn:          24, // After #B #C (with space after #B)
+			expectActiveParameter: 2,
+			description:           "cursor on third arg → activeParameter 2",
+		},
+		{
+			name:                  "cursor past last parameter (would be arg 4, clamps to 2)",
+			cursorLine:            13,
+			cursorColumn:          26, // Past the 3 declared params (clamped)
+			expectActiveParameter: 2,
+			description:           "cursor past last param → activeParameter clamped to 2 (last index)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Convert 1-based cursor to 0-based protocol position
+			params := protocol.SignatureHelpParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(filepath.Join(fixtureRoot, "CALLER.NSP")),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine - 1),
+						Character: uint32(tc.cursorColumn - 1),
+					},
+				},
+			}
+
+			// Act: call the provider
+			result, err := provideSignatureHelp(hctx, params)
+
+			// Assert no error
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
+			// Assert signature is present
+			if result == nil {
+				t.Fatal("expected non-nil SignatureHelp")
+			}
+
+			if len(result.Signatures) != 1 {
+				t.Errorf("expected 1 signature, got %d", len(result.Signatures))
+				return
+			}
+
+			sig := result.Signatures[0]
+
+			// Assert activeParameter matches expectation
+			if tc.expectActiveParameter >= 0 {
+				// activeParameter should be set to this value
+				val, ok := sig.ActiveParameter.Get()
+				if !ok {
+					t.Errorf("expected ActiveParameter %d, got absent/unset", tc.expectActiveParameter)
+				} else if val != uint32(tc.expectActiveParameter) {
+					t.Errorf("expected ActiveParameter %d, got %d (%s)", tc.expectActiveParameter, val, tc.description)
+				}
+			} else {
+				// activeParameter should be omitted (unset)
+				_, ok := sig.ActiveParameter.Get()
+				if ok {
+					t.Errorf("expected ActiveParameter omitted, but it was set (%s)", tc.description)
+				}
+			}
+		})
+	}
+}
+
+// TestProvideSignatureHelp_ActiveParameterOmitted tests that activeParameter is omitted
+// for param-less signatures (feature 17, T5, RED phase).
+//
+// Exercises:
+// - A signature with zero parameters has no meaningful activeParameter
+// - The field is omitted (nil) per Story 2 AC4
+//
+// FR-48, Story 2, AC#4; Story 3 (no meaningful index when no params).
+func TestProvideSignatureHelp_ActiveParameterOmitted(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the no-params fixture (CALLNOPARM.NSP + NOPARM.NSS)
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index from fixtures
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"CALLNOPARM.NSP"},
+		{"NOPARM.NSS"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the CALLNOPARM target
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "CALLNOPARM.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(10), // 0-based line 10 = 1-based line 11 (CALLNAT NOPARM)
+				Character: uint32(10), // On NOPARM
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Assert signature is present
+	if result == nil {
+		t.Fatal("expected non-nil SignatureHelp")
+	}
+
+	if len(result.Signatures) != 1 {
+		t.Errorf("expected 1 signature, got %d", len(result.Signatures))
+		return
+	}
+
+	sig := result.Signatures[0]
+
+	// Assert zero parameters
+	if len(sig.Parameters) != 0 {
+		t.Errorf("expected 0 parameters, got %d", len(sig.Parameters))
+	}
+
+	// Assert activeParameter is omitted (unset) for param-less signature
+	_, ok := sig.ActiveParameter.Get()
+	if ok {
+		t.Errorf("expected ActiveParameter omitted (unset) for param-less signature, but it was set")
+	}
+}
+
+// TestProvideSignatureHelp_MarshaledActiveParameter tests that the serialized JSON
+// (via MarshalJSONTo) correctly represents activeParameter for a set case.
+// (feature 17, T5, RED phase).
+//
+// This guards the Nullable[uint32] marshaling path — the protocol encoder must emit
+// activeParameter in the JSON when it is set, and omit it when nil.
+func TestProvideSignatureHelp_MarshaledActiveParameter(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the CALLNAT fixture
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"CALLER.NSP"},
+		{"SUBPRG.NSN"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the second argument (#B) — should yield activeParameter 1
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "CALLER.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(12), // 0-based line 12 = 1-based line 13
+				Character: uint32(20), // On #B (second arg)
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Assert signature is present
+	if result == nil {
+		t.Fatal("expected non-nil SignatureHelp")
+	}
+
+	// Marshal to JSON via the protocol encoder
+	var buf bytes.Buffer
+	encoder := jsontext.NewEncoder(&buf)
+	if err := result.MarshalJSONTo(encoder); err != nil {
+		t.Fatalf("failed to marshal SignatureHelp: %v", err)
+	}
+
+	jsonStr := buf.String()
+
+	// Assert the JSON contains "activeParameter":1 (for the second arg)
+	if !strings.Contains(jsonStr, `"activeParameter":1`) {
+		t.Errorf("expected JSON to contain '\"activeParameter\":1', got: %s", jsonStr)
 	}
 }
