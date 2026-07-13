@@ -1,0 +1,13 @@
+* Caller with RUN (not a signature context per OQ-2)
+* Feature 17, T6, FR-17: RUN has no declared parameter interface → nil signature, no error
+PROGRAM RUN_CALLER
+
+DEFINE DATA
+  LOCAL
+    1 #I (I4)
+  END
+END
+
+RUN 'PROG' #I
+
+END

@@ -532,6 +532,7 @@ func TestInitialize(t *testing.T) {
 					"documentSymbolProvider",
 					"hoverProvider",
 					"codeLensProvider",
+					"signatureHelpProvider",
 				}
 				for _, providerFlag := range requiredProviders {
 					val, exists := caps[providerFlag]
@@ -578,6 +579,53 @@ func TestInitialize(t *testing.T) {
 					}
 				} else {
 					t.Errorf("completionProvider type = %T; want map[string]interface{} (CompletionOptions)", completionProviderVal)
+				}
+
+				// Assert: signatureHelpProvider is advertised with correct shape (feature 17, T1).
+				// signatureHelpProvider must be a SignatureHelpOptions object (not a boolean).
+				signatureHelpProviderVal, exists := caps["signatureHelpProvider"]
+				if !exists {
+					t.Errorf("signatureHelpProvider = %v; want present (required by feature 17, T1)", signatureHelpProviderVal)
+				} else if signatureHelpProvider, ok := signatureHelpProviderVal.(map[string]interface{}); ok {
+					// Assert: triggerCharacters is present and contains " " (space).
+					triggerChars, hasTriggerChars := signatureHelpProvider["triggerCharacters"]
+					if !hasTriggerChars {
+						t.Errorf("signatureHelpProvider.triggerCharacters = %v; want present", triggerChars)
+					} else if triggerCharsSlice, ok := triggerChars.([]interface{}); ok {
+						foundSpace := false
+						for _, char := range triggerCharsSlice {
+							if char == " " {
+								foundSpace = true
+								break
+							}
+						}
+						if !foundSpace {
+							t.Errorf("signatureHelpProvider.triggerCharacters = %v; want [\" \"]", triggerChars)
+						}
+					} else {
+						t.Errorf("signatureHelpProvider.triggerCharacters type = %T; want []interface{}", triggerChars)
+					}
+
+					// Assert: retriggerCharacters is present and contains " " (space).
+					retriggerChars, hasRetriggerChars := signatureHelpProvider["retriggerCharacters"]
+					if !hasRetriggerChars {
+						t.Errorf("signatureHelpProvider.retriggerCharacters = %v; want present", retriggerChars)
+					} else if retriggerCharsSlice, ok := retriggerChars.([]interface{}); ok {
+						foundSpace := false
+						for _, char := range retriggerCharsSlice {
+							if char == " " {
+								foundSpace = true
+								break
+							}
+						}
+						if !foundSpace {
+							t.Errorf("signatureHelpProvider.retriggerCharacters = %v; want [\" \"]", retriggerChars)
+						}
+					} else {
+						t.Errorf("signatureHelpProvider.retriggerCharacters type = %T; want []interface{}", retriggerChars)
+					}
+				} else {
+					t.Errorf("signatureHelpProvider type = %T; want map[string]interface{} (SignatureHelpOptions)", signatureHelpProviderVal)
 				}
 			}
 		})
@@ -3430,6 +3478,210 @@ func TestTextDocumentCompletionAfterInitialized(t *testing.T) {
 					if len(items) > 0 && !tc.expectNonEmpty {
 						t.Errorf("completion response has %d items during RED phase; expected empty array from stub", len(items))
 					}
+				}
+			}
+		})
+	}
+}
+
+// TestTextDocumentSignatureHelpBeforeInitialized pins the behavior when signature help is requested
+// before the server has reached the initialized state (feature 17, T1 RED phase).
+// The server must return JSON-RPC ServerNotInitialized error (not process the request).
+func TestTextDocumentSignatureHelpBeforeInitialized(t *testing.T) {
+	// Arrange: send signature help BEFORE initialize, then initialize → initialized → shutdown → exit
+	signatureHelpID := jsonrpc2.NewNumberID(1)
+	signatureHelpParams := `{
+		"textDocument": {"uri": "file:///workspace/test.NSP"},
+		"position": {"line": 0, "character": 5}
+	}`
+	signatureHelpCall := jsonrpc2.NewCall(signatureHelpID, "textDocument/signatureHelp", jsonrpc2.RawMessage(signatureHelpParams))
+
+	initID := jsonrpc2.NewNumberID(2)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+	// Write requests as Content-Length-framed messages
+	var inBuf bytes.Buffer
+	for i, msg := range []jsonrpc2.Message{signatureHelpCall, initCall, initNotif, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(&inBuf, msg); err != nil {
+			t.Fatalf("failed to write framed message %d: %v", i, err)
+		}
+	}
+
+	// Create output buffer and logger
+	var outBuf bytes.Buffer
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server
+	cfg := config.Defaults()
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&inBuf,
+		&outBuf,
+		"0.0.0-test",
+		"/workspace",
+		cfg,
+		az,
+		logger,
+	)
+
+	// Assert: Run should complete without fatal error
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Parse framed responses
+	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+	// Read signature help response (sent before initialize, should get ServerNotInitialized)
+	signatureHelpBody, err := parseFramedResponse(responseBuf)
+	if err != nil {
+		t.Fatalf("failed to parse signature help response: %v", err)
+	}
+	signatureHelpMsg, err := jsonrpc2.DecodeMessage(signatureHelpBody)
+	if err != nil {
+		t.Fatalf("failed to decode signature help response: %v", err)
+	}
+	signatureHelpResp, ok := signatureHelpMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response for signature help, got %T", signatureHelpMsg)
+	}
+
+	// Assert: response should have ServerNotInitialized error (code -32002)
+	if signatureHelpResp.ID() != signatureHelpID {
+		t.Errorf("signature help response id = %v, want %v", signatureHelpResp.ID(), signatureHelpID)
+	}
+	if signatureHelpResp.Err() == nil {
+		t.Errorf("signature help response has no error; want ServerNotInitialized, got result: %s", signatureHelpResp.Result())
+	} else {
+		errTyped, ok := signatureHelpResp.Err().(*jsonrpc2.Error)
+		if !ok {
+			t.Errorf("signature help response error is %T, not *jsonrpc2.Error: %v", signatureHelpResp.Err(), signatureHelpResp.Err())
+		} else if errTyped.Code != jsonrpc2.ServerNotInitialized {
+			t.Errorf("signature help response error code = %v, want %v (ServerNotInitialized)", errTyped.Code, jsonrpc2.ServerNotInitialized)
+		}
+	}
+}
+
+// TestTextDocumentSignatureHelpAfterInitialized pins the behavior when signature help is requested
+// after initialization (feature 17, T1 RED phase).
+// The server must route the request to a handler and return a SignatureHelp (or null) result.
+// The on-the-wire JSON result must be exactly "null" when the stub returns nil.
+func TestTextDocumentSignatureHelpAfterInitialized(t *testing.T) {
+	testCases := []struct {
+		name                string
+		signatureHelpParams string
+		expectNonNull       bool // whether we expect a non-null SignatureHelp result
+		description         string
+	}{
+		{
+			name: "SignatureHelpAtValidPosition",
+			signatureHelpParams: `{
+				"textDocument": {"uri": "file:///workspace/test.NSP"},
+				"position": {"line": 0, "character": 5}
+			}`,
+			expectNonNull: false, // RED phase: stub returns nil → JSON null
+			description:   "signature help should return null from stub during RED phase",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: send initialize → initialized → signature help → shutdown
+			initID := jsonrpc2.NewNumberID(1)
+			initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+			initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
+
+			initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+
+			signatureHelpID := jsonrpc2.NewNumberID(2)
+			signatureHelpCall := jsonrpc2.NewCall(signatureHelpID, "textDocument/signatureHelp", jsonrpc2.RawMessage(tc.signatureHelpParams))
+
+			shutdownID := jsonrpc2.NewNumberID(3)
+			shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
+
+			exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
+
+			// Write requests as Content-Length-framed messages
+			var inBuf bytes.Buffer
+			for i, msg := range []jsonrpc2.Message{initCall, initNotif, signatureHelpCall, shutdownCall, exitNotif} {
+				if err := writeFramedMessage(&inBuf, msg); err != nil {
+					t.Fatalf("failed to write framed message %d: %v", i, err)
+				}
+			}
+
+			// Create output buffer and logger
+			var outBuf bytes.Buffer
+			logBuf := &bytes.Buffer{}
+			logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+			// Act: run the server
+			cfg := config.Defaults()
+			az := &stubAnalyzer{}
+			err := Run(
+				context.Background(),
+				&inBuf,
+				&outBuf,
+				"0.0.0-test",
+				"/workspace",
+				cfg,
+				az,
+				logger,
+			)
+
+			// Assert: Run should complete without fatal error
+			if err != nil {
+				t.Fatalf("Run failed: %v", err)
+			}
+
+			// Parse framed responses
+			responseBuf := bytes.NewBuffer(outBuf.Bytes())
+
+			// Skip initialize response
+			_, err = parseFramedResponse(responseBuf)
+			if err != nil {
+				t.Fatalf("failed to parse initialize response: %v", err)
+			}
+
+			// Read signature help response
+			signatureHelpBody, err := parseFramedResponse(responseBuf)
+			if err != nil {
+				t.Fatalf("failed to parse signature help response: %v", err)
+			}
+			signatureHelpMsg, err := jsonrpc2.DecodeMessage(signatureHelpBody)
+			if err != nil {
+				t.Fatalf("failed to decode signature help response: %v", err)
+			}
+			signatureHelpResp, ok := signatureHelpMsg.(*jsonrpc2.Response)
+			if !ok {
+				t.Fatalf("expected *jsonrpc2.Response for signature help, got %T", signatureHelpMsg)
+			}
+
+			// Assert: response should have no error
+			if signatureHelpResp.ID() != signatureHelpID {
+				t.Errorf("signature help response id = %v, want %v", signatureHelpResp.ID(), signatureHelpID)
+			}
+			if signatureHelpResp.Err() != nil {
+				t.Errorf("signature help response has error: %v; want SignatureHelp result or null", signatureHelpResp.Err())
+			}
+
+			// Assert: the on-the-wire JSON is exactly "null" (the stub returns nil → JSON null).
+			// This verifies the marshaling path is correct per the divergence note (MarshalJSONTo, not json.Marshal).
+			if signatureHelpResp.Result() == nil {
+				t.Errorf("signature help response result is nil; want JSON bytes representing null")
+			} else {
+				resultStr := string(signatureHelpResp.Result())
+				if resultStr != "null" {
+					t.Errorf("signature help response result = %q; want JSON \"null\" (stub returns nil)", resultStr)
 				}
 			}
 		})

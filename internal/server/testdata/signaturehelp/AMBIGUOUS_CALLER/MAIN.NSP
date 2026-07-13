@@ -1,0 +1,13 @@
+* Ambiguous case: CALLNAT 'AMBIG' where AMBIG is defined in multiple libraries (flat namespace)
+* Feature 17, T6, FR-17: ambiguous → nil signature, no diagnostic
+PROGRAM MAIN
+
+DEFINE DATA
+  LOCAL
+    1 #A (N8)
+  END
+END
+
+CALLNAT 'AMBIG' #A
+
+END

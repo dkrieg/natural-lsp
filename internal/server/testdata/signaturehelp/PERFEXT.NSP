@@ -1,0 +1,14 @@
+* Caller with PERFORM EXTSUB (no inline definition)
+* EXTSUB.NSS exists in workspace and resolves externally
+* Feature 17, T4a, Story 2 AC1/AC2/AC3
+PROGRAM PERFEXT
+
+DEFINE DATA
+  LOCAL
+    1 #VAL (N4)
+  END
+END
+
+PERFORM EXTSUB
+
+END

@@ -136,6 +136,7 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	// Feature 12, T6: advertise hoverProvider.
 	// Feature 13, T6: advertise codeLensProvider.
 	// Feature 16, T3: advertise completionProvider with space-trigger and no resolve handler.
+	// Feature 17, T1: advertise signatureHelpProvider with space trigger and retrigger characters.
 	falseVal := false
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
@@ -150,6 +151,10 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 			CompletionProvider: &protocol.CompletionOptions{
 				TriggerCharacters: []string{" "},
 				ResolveProvider:   &falseVal,
+			},
+			SignatureHelpProvider: &protocol.SignatureHelpOptions{
+				TriggerCharacters:   []string{" "},
+				RetriggerCharacters: []string{" "},
 			},
 		},
 		ServerInfo: protocol.ServerInfo{
@@ -876,6 +881,42 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						return
 					}
 					respResult = itemsJSON
+				}
+
+			case "textDocument/signatureHelp":
+				// Feature 17, T1: signature help provider handler.
+				// Gate on stateInitialized; decode SignatureHelpParams; call provideSignatureHelp.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.SignatureHelpParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid signature help params: %v", err))
+					return
+				}
+				// Call the provider function.
+				sig, err := provideSignatureHelp(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: sig may be nil (no signature at that position).
+				// CRITICAL: SignatureHelp contains union/Nullable fields (ActiveParameter, ParameterInformation.Label).
+				// These MUST be marshaled via (*protocol.SignatureHelp).MarshalJSONTo(jsontext.NewEncoder(&buf)),
+				// NOT json.Marshal, or the union/nullable fields will be wrong/empty.
+				// See divergence note in tasks.md and the pattern in handleInitialize.
+				if sig == nil {
+					respResult = []byte(`null`)
+				} else {
+					var buf bytes.Buffer
+					enc := jsontext.NewEncoder(&buf)
+					if err := sig.MarshalJSONTo(enc); err != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal signature help: %v", err))
+						return
+					}
+					respResult = buf.Bytes()
 				}
 
 			default:

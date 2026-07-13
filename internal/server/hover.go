@@ -93,6 +93,80 @@ func buildSubroutineHover(name string, params []model.DataDefinition) string {
 	return strings.Join(lines, "\n")
 }
 
+// paramItem represents a single parameter (including group headers) with rendered
+// name and type strings for use by both hover and signature help.
+type paramItem struct {
+	name    string // parameter name (including sigils)
+	typeStr string // type + dimensions, or empty for group headers
+}
+
+// parameterInterface extracts the parameter interface from a list of definitions.
+// It filters to SectionKind=="parameter", flattens group nesting into a single list,
+// and renders each parameter as name + type/dims (matching hover's style).
+// Group headers are included with empty typeStr; their children are enumerated separately.
+// The result is in declaration order.
+//
+// This helper is shared by both hover (buildSubroutineHover) and signature help
+// (buildSignatureInformation) so they agree on the parameter interface.
+func parameterInterface(defs []model.DataDefinition) []paramItem {
+	var params []paramItem
+
+	// Filter to parameter-section definitions
+	var paramDefs []model.DataDefinition
+	for _, def := range defs {
+		if def.SectionKind == "parameter" {
+			paramDefs = append(paramDefs, def)
+		}
+	}
+
+	// Flatten the parameter tree, visiting group headers and their children in order
+	var visit func([]model.DataDefinition)
+	visit = func(defList []model.DataDefinition) {
+		for _, def := range defList {
+			if def.Type == "" {
+				// Group header (no type): add with empty typeStr
+				params = append(params, paramItem{name: def.Name, typeStr: ""})
+				// Recursively add children
+				if len(def.Children) > 0 {
+					visit(def.Children)
+				}
+			} else {
+				// Scalar or array: render name + type + dims
+				params = append(params, paramItem{
+					name:    def.Name,
+					typeStr: renderParamType(def),
+				})
+			}
+		}
+	}
+
+	visit(paramDefs)
+	return params
+}
+
+// renderParamType returns the "TYPE (dims)" string for a data-field definition.
+// For a leaf field with a type, it appends the dimension list in "(lower:upper,...)"
+// notation (unbounded upper renders as "*"). For a group header (Type == ""), it
+// returns "" — callers are responsible for the header-only rendering path.
+// No I/O, no locks — a pure function.
+func renderParamType(def model.DataDefinition) string {
+	if def.Type == "" {
+		return ""
+	}
+	if len(def.Dimensions) == 0 {
+		return def.Type
+	}
+	dims := make([]string, 0, len(def.Dimensions))
+	for _, d := range def.Dimensions {
+		if d.UpperUnbounded {
+			dims = append(dims, fmt.Sprintf("%d:*", d.Lower))
+		} else {
+			dims = append(dims, fmt.Sprintf("%d:%d", d.Lower, d.Upper))
+		}
+	}
+	return def.Type + " (" + strings.Join(dims, ",") + ")"
+}
+
 // buildParamLines recursively renders parameter definitions with indentation.
 // indent controls the nesting level (0 for top-level, 1+ for children).
 func buildParamLines(defs []model.DataDefinition, indent int) []string {
@@ -109,20 +183,8 @@ func buildParamLines(defs []model.DataDefinition, indent int) []string {
 			}
 		} else {
 			// Scalar or array field: render name, type, and dimensions
-			var dimStr string
-			if len(def.Dimensions) > 0 {
-				var dims []string
-				for _, d := range def.Dimensions {
-					if d.UpperUnbounded {
-						dims = append(dims, fmt.Sprintf("%d:*", d.Lower))
-					} else {
-						dims = append(dims, fmt.Sprintf("%d:%d", d.Lower, d.Upper))
-					}
-				}
-				dimStr = " (" + strings.Join(dims, ",") + ")"
-			}
 			lines = append(lines, fmt.Sprintf("%s%s", prefix, def.Name))
-			lines = append(lines, fmt.Sprintf("%s%s%s", prefix, def.Type, dimStr))
+			lines = append(lines, fmt.Sprintf("%s%s", prefix, renderParamType(def)))
 		}
 	}
 

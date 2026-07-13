@@ -1,0 +1,13 @@
+* Caller with PERFORM NOPARM (which has no parameters)
+* Feature 17, T4a, Story 2 AC4 (empty-signature case)
+PROGRAM CALLNOPARM
+
+DEFINE DATA
+  LOCAL
+    1 #X (N4)
+  END
+END
+
+PERFORM NOPARM
+
+END

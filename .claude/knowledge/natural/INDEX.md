@@ -37,6 +37,19 @@ holds verified facts with sources. Read this index first, then the relevant topi
 
 ## Changelog
 
+- 2026-07-13 — VERIFIED FETCH/RUN parameter-passing model for a **signature-help** design decision.
+  Key finding: a program invoked by `FETCH`/`FETCH RETURN`/`FETCH REPEAT`/`RUN` receives caller data
+  as **untyped positional values on the Natural stack, read via `INPUT`** — there is **NO declared
+  parameter interface** (no PARAMETER block is bound). `DEFINE DATA PARAMETER` is documented ONLY for
+  subprogram / external subroutine / helproutine / function (bound by CALLNAT / external PERFORM /
+  function-call). A PROGRAM (`.NSP`) *can* syntactically carry `DEFINE DATA` (natls
+  `canHaveDefineData()` = true for PROGRAM), but PARAMETER scope in a program has no caller to bind it
+  (a program is not CALLNAT'd) and is not populated by FETCH/RUN. **Decision: signature help for
+  FETCH/RUN is a category error — implement it for CALLNAT / external PERFORM / function-calls only.**
+  Updated calls-and-resolution.md (new "FETCH/RUN parameter passing" + "Can a PROGRAM contain
+  DEFINE DATA PARAMETER" sections, sources) and data-definition.md (PARAMETER-scope note). Sources:
+  fetch.htm, pg_furth_stack_process.htm, defineda_pda.htm, callnat.htm, techcommunity FETCH-RETURN
+  thread, natls NaturalFileType.java.
 - 2026-07-06 — ADDED topic `ddm-format.md` (for `.NSD` DDM field extraction → hover). VERIFIED the exact
   exported DDM file format byte-for-byte against the natls DDM parser (`parsing/ddm/FieldParser.java` +
   real `CompleteDdm.NSD` fixture, MIT) and the official Software AG DDM Editor column reference. Key

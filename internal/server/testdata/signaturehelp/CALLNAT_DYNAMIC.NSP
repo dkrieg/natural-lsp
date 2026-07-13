@@ -1,0 +1,14 @@
+* Caller with dynamic CALLNAT (variable operand)
+* Feature 17, T6, FR-17: dynamic target → nil signature, no diagnostic
+PROGRAM CALLNAT_DYNAMIC
+
+DEFINE DATA
+  LOCAL
+    1 #SUB-NAME (A20)
+    1 #A (N8)
+  END
+END
+
+CALLNAT #SUB-NAME #A
+
+END

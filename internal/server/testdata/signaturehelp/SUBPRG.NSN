@@ -1,0 +1,12 @@
+* Callee subprogram with DEFINE DATA PARAMETER (feature 17, T4, FR-48)
+* Exercises parameter rendering: basic types, arrays with dimensions
+DEFINE DATA
+PARAMETER
+  1 P-NUM (N8)
+  1 P-NAME (A50)
+  1 P-ARR (A10/1:5)
+END DEFINE
+
+WRITE 'Processing parameters'
+
+END
