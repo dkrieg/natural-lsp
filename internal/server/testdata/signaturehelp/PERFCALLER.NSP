@@ -1,0 +1,18 @@
+* Caller with inline DEFINE SUBROUTINE (no params) AND a PERFORM target
+* Also an external MY-SUB.NSS exists (with params) to prove inline wins (FR-12)
+* Feature 17, T4a, Story 2 AC1/AC2/AC4
+PROGRAM PERFCALLER
+
+DEFINE DATA
+  LOCAL
+    1 #X (N4)
+  END
+END
+
+DEFINE SUBROUTINE MY-SUB
+  WRITE 'Inline subroutine'
+END-SUBROUTINE
+
+PERFORM MY-SUB
+
+END

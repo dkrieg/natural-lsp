@@ -166,7 +166,66 @@ func provideSignatureHelp(hctx *handlerContext, params protocol.SignatureHelpPar
 		}, nil
 	}
 
-	// For PERFORM (sigPerform), DDM, and sigNone: return nil, nil for now (T4a/T6 handle these)
+	// Handle PERFORM context (FR-12: inline-before-external)
+	if sigKind == sigPerform {
+		// Find the enclosing PERFORM edge on this line
+		edge := enclosingCallEdge(sourceFA, modelLine0Based, model.EdgePerforms)
+		if edge == nil {
+			// No PERFORM edge on this line — no signature
+			return nil, nil
+		}
+
+		// Inline-before-external (FR-12, mirroring hover.go provideHover):
+		// Check for an inline DEFINE SUBROUTINE in the caller's own Structure.Children
+		targetName := strings.ToUpper(edge.TargetName)
+		if sourceFA.Structure != nil && sourceFA.Structure.Children != nil {
+			for _, child := range sourceFA.Structure.Children {
+				if child.Kind == model.SymbolSubroutine && strings.EqualFold(child.Name, targetName) {
+					// Found inline subroutine; build signature from caller's PARAMETER definitions
+					sigInfo := buildSignatureInformation(edge.TargetName, sourceFA.Definitions)
+
+					// Wrap in protocol.SignatureHelp with ActiveSignature = 0
+					activeSignature := uint32(0)
+					return &protocol.SignatureHelp{
+						Signatures:      []protocol.SignatureInformation{*sigInfo},
+						ActiveSignature: &activeSignature,
+					}, nil
+				}
+			}
+		}
+
+		// No inline match; resolve via the resolution set
+		resolution, ok := res.Get(relPath, edge.Source)
+		if !ok {
+			// Edge not found in resolution set — no signature
+			return nil, nil
+		}
+
+		// Handle resolved case
+		if !resolution.IsResolved() {
+			// Dynamic/unresolved/ambiguous — no signature (T6 handles these)
+			return nil, nil
+		}
+
+		// Read the target file's (external .NSS) analysis
+		targetFA, ok := idx.Get(resolution.Path)
+		if !ok {
+			// Target file not in index (shouldn't happen after successful resolution)
+			return nil, nil
+		}
+
+		// Build signature information from the target's PARAMETER definitions
+		sigInfo := buildSignatureInformation(edge.TargetName, targetFA.Definitions)
+
+		// Wrap in protocol.SignatureHelp with ActiveSignature = 0
+		activeSignature := uint32(0)
+		return &protocol.SignatureHelp{
+			Signatures:      []protocol.SignatureInformation{*sigInfo},
+			ActiveSignature: &activeSignature,
+		}, nil
+	}
+
+	// For DDM and sigNone: return nil, nil (T6 handles these)
 	return nil, nil
 }
 
