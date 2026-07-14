@@ -557,3 +557,43 @@ func TestProvideReferencesCompleteness_DDMFieldCrossFile(t *testing.T) {
 		t.Errorf("referenceSites returned DDM reference locations in non-deterministic order")
 	}
 }
+
+// TestProvideReferences_MarshaledEmptyCase (T4) pins the wire bytes for an empty
+// references result by driving the REAL dispatch path end-to-end against an empty
+// workspace. The provider returns nil, and the dispatch's nil-guard must emit "null".
+//
+// If the references nil-guard in server.go is dropped or flipped to "[]", the emitted
+// bytes change and this test goes red (Story 2 AC2).
+func TestProvideReferences_MarshaledEmptyCase(t *testing.T) {
+	got := dispatchResultBytes(t, "textDocument/references",
+		`{"textDocument":{"uri":"file:///nonexistent/NOPE.NSP"},"position":{"line":0,"character":0},"context":{"includeDeclaration":true}}`)
+
+	if string(got) != "null" {
+		t.Errorf("empty references result: got %q, want %q", string(got), "null")
+	}
+}
+
+// TestProvideReferences_MarshaledNonEmptyCase (T4) pins the exact wire bytes for a
+// non-empty references result via marshalResult — the EXACT function the references
+// dispatch calls in its non-nil branch. Pinning the full bytes (not a substring)
+// locks byte-for-byte preservation across the stdlib→gojson migration (Story 2 AC2).
+func TestProvideReferences_MarshaledNonEmptyCase(t *testing.T) {
+	// Setup: one location result
+	locations := []protocol.Location{
+		{
+			URI:   "file:///test/source.NSP",
+			Range: protocol.Range{Start: protocol.Position{Line: 5, Character: 10}, End: protocol.Position{Line: 5, Character: 15}},
+		},
+	}
+
+	// Marshal via the dispatch's exact marshaler.
+	got, err := marshalResult(locations)
+	if err != nil {
+		t.Fatalf("failed to marshal via marshalResult: %v", err)
+	}
+
+	want := `[{"uri":"file:///test/source.NSP","range":{"start":{"line":5,"character":10},"end":{"line":5,"character":15}}}]`
+	if string(got) != want {
+		t.Errorf("non-empty references wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
+	}
+}

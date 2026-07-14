@@ -1834,3 +1834,246 @@ func TestProvideSignatureHelp_NotInCallContext(t *testing.T) {
 		t.Errorf("expected nil SignatureHelp when not in call context, got %+v", result)
 	}
 }
+
+// TestProvideSignatureHelp_MarshaledParameterLabel tests that ParameterInformation.label
+// serializes as a JSON string (union carrier), not as an empty object or null.
+// (feature 19, T3: characterization/lock test for already-correct marshaling).
+//
+// Exercises:
+// - The label field is a union type in protocol.ParameterInformation
+// - It must serialize as a JSON string (e.g., "0:10" for a range), never as {} or null
+// - This verifies the gojson marshaling path respects the union's MarshalJSONTo
+//
+// Story 3 AC1: wire-bytes assertion on the exact dispatch marshaling path.
+func TestProvideSignatureHelp_MarshaledParameterLabel(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the CALLNAT fixture
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"CALLER.NSP"},
+		{"SUBPRG.NSN"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the second argument (#B) — should yield activeParameter 1
+	// and the signature should have parameters with label fields
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "CALLER.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(12), // 0-based line 12
+				Character: uint32(20), // On #B (second arg)
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assert signature is present
+	if result == nil {
+		t.Fatalf("expected non-nil SignatureHelp")
+	}
+
+	// Assert there is at least one signature with parameters
+	if len(result.Signatures) == 0 {
+		t.Fatalf("expected at least one signature")
+	}
+
+	sig := result.Signatures[0]
+	if len(sig.Parameters) == 0 {
+		t.Fatalf("expected signature to have parameters")
+	}
+
+	// Marshal to JSON via the protocol encoder (exact dispatch path)
+	var buf bytes.Buffer
+	encoder := jsontext.NewEncoder(&buf)
+	if err := result.MarshalJSONTo(encoder); err != nil {
+		t.Fatalf("failed to marshal SignatureHelp: %v", err)
+	}
+
+	jsonStr := buf.String()
+
+	// Assert the JSON contains a label field as a JSON string, not as {}
+	// The label should be present as a string value (e.g., "0:10" or similar range format)
+	if !strings.Contains(jsonStr, `"label":"`) {
+		t.Errorf("expected JSON to contain 'label' as a JSON string (e.g., '\"label\":\"...\"), got: %s", jsonStr)
+	}
+
+	// Assert the JSON does NOT contain "label":{} (would indicate union not marshaled)
+	if strings.Contains(jsonStr, `"label":{}`) {
+		t.Errorf("expected label to be a string, not an empty object; got: %s", jsonStr)
+	}
+}
+
+// TestProvideSignatureHelp_MarshaledActiveParameterOmitted tests that activeParameter
+// is OMITTED from the JSON when the signature has no parameters (Nullable omission).
+// (feature 19, T3: characterization/lock test for already-correct marshaling.)
+//
+// Per the feature-17 provider, a PERFORM to an inline DEFINE SUBROUTINE has no
+// PARAMETER block (shared scope), so buildSignatureInformation yields an empty
+// Parameters slice and setActiveParameter leaves ActiveParameter unset (the zero
+// Nullable[uint32]{}). This is a genuinely param-less, non-nil SignatureHelp — the
+// real case that must omit activeParameter on the wire, not a faked one.
+//
+// Marshaling goes through the EXACT dispatch path: (*protocol.SignatureHelp).MarshalJSONTo
+// via a jsontext encoder, as server.go's textDocument/signatureHelp case does. If the
+// Nullable[uint32] omission rule regresses (e.g. it emits "activeParameter":0 or null for
+// the zero value), this test goes red.
+//
+// Story 3 AC1: wire-bytes assertion proving Nullable omission for a param-less signature.
+func TestProvideSignatureHelp_MarshaledActiveParameterOmitted(t *testing.T) {
+	// Setup: position encoding, logger, and analyzer
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the inline-PERFORM fixture. PERFCALLER.NSP performs an inline
+	// DEFINE SUBROUTINE MY-SUB with no params; the external MY-SUB.NSS (with params)
+	// exists too but the inline definition wins (FR-12), yielding a param-less signature.
+	testdataDir := filepath.Join("testdata", "signaturehelp")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, testdataDir)
+
+	// Build the workspace index
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"PERFCALLER.NSP"},
+		{"MY-SUB.NSS"},
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fixtureRoot, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read fixture %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Cursor on the PERFORM MY-SUB site (line 16, on the inline subroutine name).
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(fixtureRoot, "PERFCALLER.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(15), // 0-based line 15 = 1-based line 16 (PERFORM MY-SUB)
+				Character: uint32(11), // 0-based, on MY-SUB
+			},
+		},
+	}
+
+	// Act: call the provider
+	result, err := provideSignatureHelp(hctx, params)
+
+	// Assert no error
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// This MUST be a real, non-nil, param-less signature (inline subroutine). We do
+	// not fake it or skip: if it is nil the fixture/cursor is wrong and the test fails
+	// loudly rather than silently passing.
+	if result == nil {
+		t.Fatal("expected non-nil param-less SignatureHelp for the inline PERFORM MY-SUB; got nil")
+	}
+	if len(result.Signatures) != 1 {
+		t.Fatalf("expected exactly one signature, got %d", len(result.Signatures))
+	}
+	if len(result.Signatures[0].Parameters) != 0 {
+		t.Fatalf("expected a param-less signature (inline subroutine has no PARAMETER block), got %d params",
+			len(result.Signatures[0].Parameters))
+	}
+
+	// Marshal to JSON via the EXACT dispatch path: MarshalJSONTo through a jsontext encoder.
+	var buf bytes.Buffer
+	encoder := jsontext.NewEncoder(&buf)
+	if err := result.MarshalJSONTo(encoder); err != nil {
+		t.Fatalf("failed to marshal SignatureHelp: %v", err)
+	}
+
+	jsonStr := buf.String()
+
+	// The core assertion: for a param-less signature, activeParameter must be ABSENT
+	// entirely from the emitted JSON — not present as a number and not as null.
+	if strings.Contains(jsonStr, `"activeParameter"`) {
+		t.Errorf("activeParameter must be OMITTED for a param-less signature; got: %s", jsonStr)
+	}
+}

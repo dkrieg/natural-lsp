@@ -1474,3 +1474,266 @@ func TestProvideCompletion_DDMField(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideCompletion_WireBytes_ModuleDetail tests that completion items for
+// module contexts (CALLNAT, FETCH, etc.) emit detail as a JSON string on the wire,
+// not as the corrupted {} value (feature 19, T1 RED).
+//
+// Story 1 AC1: The serialized JSON must contain "detail":"<string>" (e.g. "detail":"subprogram"),
+// never "detail":{}.
+//
+// Scenario:
+//   - CALLNAT prefix completing "MYSU" → matches MYSUB (subprogram) from the module fixture
+//   - The completion provider builds the item with detail = "subprogram"
+//   - When marshaled via stdlib json.Marshal (as the current dispatch does),
+//     the protocol.Optional[string] should NOT serialize to {}
+func TestProvideCompletion_WireBytes_ModuleDetail(t *testing.T) {
+	testdataDir := "testdata/completion/module"
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Arrange: build the index with the module fixture
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"CALLER.NSP"},
+		{"MYSUB.NSN"},
+		{"MYPROG.NSP"},
+		{"SHARED.NSC"},
+	}
+
+	az := natural.New(nil)
+	for _, f := range files {
+		filePath := filepath.Join(wd, testdataDir, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        filepath.Join(wd, testdataDir),
+		cfg:         cfg,
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	// Act: call the completion provider with a CALLNAT prefix on line 5
+	// (in the fixture CALLER.NSP, "CALLNAT MYSU" at line 5)
+	params := protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(wd, testdataDir, "CALLER.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(4),  // 0-based line 4 = 1-based line 5
+				Character: uint32(12), // at end of "MYSU"
+			},
+		},
+	}
+
+	result, err := provideCompletion(hctx, params)
+	if err != nil {
+		t.Fatalf("provideCompletion returned error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil completion result")
+	}
+
+	// Find the MYSUB item in the result
+	var found *protocol.CompletionItem
+	for i := range result {
+		if result[i].Label == "MYSUB" {
+			found = &result[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected MYSUB completion item not found in %d items", len(result))
+	}
+
+	// Assert: Detail is set via Optional (in-memory check first)
+	detail, ok := found.Detail.Get()
+	if !ok || detail != "subprogram" {
+		t.Fatalf("Detail not correctly set in memory: got %v, want 'subprogram'", detail)
+	}
+
+	// Marshal the result via marshalResult — the EXACT function the completion
+	// dispatch calls in server.go's non-nil branch (feature 19). Calling the
+	// dispatch marshaler (not a hard-coded gojson call) couples this test to the
+	// production code path, so a regression that reverts the dispatch to stdlib
+	// json.Marshal reproduces the {} corruption and turns this test red.
+	marshalledJSON, err := marshalResult(result)
+	if err != nil {
+		t.Fatalf("failed to marshal completion result: %v", err)
+	}
+
+	jsonStr := string(marshalledJSON)
+
+	// Assert: the emitted JSON contains "detail":"subprogram" as a string
+	if !strings.Contains(jsonStr, `"detail":"subprogram"`) {
+		t.Errorf("expected JSON to contain '\"detail\":\"subprogram\"', got: %s", jsonStr)
+	}
+
+	// Assert: the emitted JSON does NOT contain "detail":{} (the corruption)
+	if strings.Contains(jsonStr, `"detail":{}`) {
+		t.Errorf("detail field corrupted to empty object {} in JSON: %s", jsonStr)
+	}
+}
+
+// TestProvideCompletion_WireBytes_PerformSortText tests that completion items for
+// PERFORM contexts emit sortText as a JSON string on the wire with correct ordering
+// (inline before external), not corrupted as {} (feature 19, T1 RED, Story 1 AC3).
+//
+// Story 1 AC3: Inline subroutines must sort before external ones via "sortText":"0..." vs "sortText":"1...",
+// asserted at the wire level (marshaled JSON strings), not just on the Go struct.
+//
+// Scenario:
+//   - PERFORM MY: completes with both inline MY-INLINE (should have sortText="0...") and
+//     external MYEXT (should have sortText="1...")
+//   - When marshaled via stdlib json.Marshal, both sortText values must be JSON strings,
+//     never corrupted to {}
+func TestProvideCompletion_WireBytes_PerformSortText(t *testing.T) {
+	testdataDir := "testdata/completion/perform"
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Arrange: build the index with the perform fixture
+	idx := &workspace.Index{}
+	cfg := config.Defaults()
+
+	files := []struct {
+		relPath string
+	}{
+		{"CALLER.NSP"},
+		{"MYEXT.NSS"},
+	}
+
+	az := natural.New(nil)
+	for _, f := range files {
+		filePath := filepath.Join(wd, testdataDir, f.relPath)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", f.relPath, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", f.relPath, err)
+		}
+
+		idx.Add(f.relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        filepath.Join(wd, testdataDir),
+		cfg:         cfg,
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	// Act: call the completion provider with a PERFORM MY prefix on line 8
+	// (in the fixture CALLER.NSP, "PERFORM MY" at line 8)
+	params := protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(wd, testdataDir, "CALLER.NSP")),
+			},
+			Position: protocol.Position{
+				Line:      uint32(7),  // 0-based line 7 = 1-based line 8
+				Character: uint32(10), // at end of "MY"
+			},
+		},
+	}
+
+	result, err := provideCompletion(hctx, params)
+	if err != nil {
+		t.Fatalf("provideCompletion returned error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil completion result")
+	}
+
+	// Find the inline and external items
+	var foundInline, foundExternal *protocol.CompletionItem
+	for i := range result {
+		if strings.Contains(result[i].Label, "MY-INLINE") {
+			foundInline = &result[i]
+		}
+		if strings.Contains(result[i].Label, "MYEXT") {
+			foundExternal = &result[i]
+		}
+	}
+
+	if foundInline == nil {
+		t.Fatalf("expected inline MY-INLINE not found in %d items", len(result))
+	}
+	if foundExternal == nil {
+		t.Fatalf("expected external MYEXT not found in %d items", len(result))
+	}
+
+	// Verify in-memory: SortText is set via Optional
+	inlineSortText, ok := foundInline.SortText.Get()
+	if !ok || !strings.HasPrefix(inlineSortText, "0") {
+		t.Fatalf("inline SortText not correctly set in memory: got %v, want prefix '0'", inlineSortText)
+	}
+
+	externalSortText, ok := foundExternal.SortText.Get()
+	if !ok || !strings.HasPrefix(externalSortText, "1") {
+		t.Fatalf("external SortText not correctly set in memory: got %v, want prefix '1'", externalSortText)
+	}
+
+	// Marshal the result via marshalResult — the EXACT function the completion
+	// dispatch calls in server.go's non-nil branch (feature 19). Coupling to the
+	// dispatch marshaler means a regression that reverts to stdlib json.Marshal
+	// corrupts sortText to {} and turns this test red.
+	marshalledJSON, err := marshalResult(result)
+	if err != nil {
+		t.Fatalf("failed to marshal completion result: %v", err)
+	}
+
+	jsonStr := string(marshalledJSON)
+
+	// Assert: the emitted JSON contains "sortText":"0..." for inline (JSON string)
+	if !strings.Contains(jsonStr, `"sortText":"0`) {
+		t.Errorf("expected JSON to contain inline '\"sortText\":\"0...\"', got: %s", jsonStr)
+	}
+
+	// Assert: the emitted JSON contains "sortText":"1..." for external (JSON string)
+	if !strings.Contains(jsonStr, `"sortText":"1`) {
+		t.Errorf("expected JSON to contain external '\"sortText\":\"1...\"', got: %s", jsonStr)
+	}
+
+	// Assert: the emitted JSON does NOT contain "sortText":{} (the corruption)
+	if strings.Contains(jsonStr, `"sortText":{}`) {
+		t.Errorf("sortText field corrupted to empty object {} in JSON: %s", jsonStr)
+	}
+}
