@@ -1,6 +1,6 @@
 # Feature: Code lens
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #25)
 **PRD requirements:** FR-29
 **Priority / phase:** P2
 **Depends on:** [07](../07-call-dependency-resolution/plan.md),

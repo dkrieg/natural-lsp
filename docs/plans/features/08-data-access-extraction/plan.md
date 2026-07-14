@@ -1,6 +1,6 @@
 # Feature: Data-access extraction
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #19)
 **PRD requirements:** FR-19, FR-20, FR-21, FR-22
 **Priority / phase:** P0 (read relationships) · P1 (write relationships, data definitions) ·
 P2 (work files)

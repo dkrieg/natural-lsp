@@ -1,6 +1,6 @@
 # Feature: Program-structure extraction
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #21)
 **PRD requirements:** FR-23
 **Priority / phase:** P0
 **Depends on:** [00-parser-foundation](../00-parser-foundation/plan.md)

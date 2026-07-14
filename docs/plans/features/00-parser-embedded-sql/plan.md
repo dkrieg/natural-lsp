@@ -1,6 +1,6 @@
 # Feature: Parser — Embedded SQL
 
-**Status:** Planned  
+**Status:** Shipped — merged to main (PR #17)
 **PRD requirements:** FR-30 (syntax diagnostics), FR-43 (graceful degradation); NFR-15 (replaceable backend); M-5, M-6 (regression fixtures / no silent gaps)  
 **Priority / phase:** P0 (parser foundation extension; groundwork for data-access extraction)  
 **Depends on:** [00-parser-foundation](../00-parser-foundation/plan.md)  

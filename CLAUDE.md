@@ -6,6 +6,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Features 00–18 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
 
+**Assessment (2026-07-14) — known defects and remediation plan.** An independent full-project
+assessment (`docs/assessment-2026-07-14.md`: live wire probes, four specialist reviews, LSP-spec
+verification) confirmed the core is sound (lifecycle/encoding/capabilities spec-correct,
+robustness and the Analyzer seam PASS) but found five issues, re-planned as features **19–23**
+(all currently `Planned` under `docs/plans/features/`) — read the assessment before touching the
+affected areas: **(1)** `textDocument/completion` results are corrupted on the wire —
+`CompletionItem.detail`/`sortText` serialize as `{}` because `protocol.Optional[T]` only
+implements json/v2 `MarshalJSONTo` while the completion dispatch uses stdlib `json.Marshal`
+(`server.go:881`); struct-level tests miss it → **feature 19** (unify all provider marshaling on
+the json/v2 path + wire-bytes tests). **(2)** the server ignores
+`InitializeParams.workspaceFolders`/`rootUri` — root comes only from `os.Getwd()` sentinel
+walk-up (`cmd/natural-lsp/main.go`), so any client that doesn't set the process cwd to the
+workspace gets a silently empty index (VS Code works only via `vscode-languageclient`'s cwd
+default; the README's Neovim `root_dir` config is discarded) → **feature 20**. **(3)** FR-32
+(P0, indexing progress) was never implemented — `internal/server/progress.go` is a stub, `Build`
+runs with `onProgress: nil`; and **(4)** the cold index build runs synchronously inside the
+`initialized` handler, blocking all requests (NFR-5) → **feature 21** (background build +
+`$/progress` wiring). **(5)** NFR-1/2/3/4 performance claims have zero benchmarks; known hot
+spots: O(all-files) `LookupByName`, and `workspace/symbol` re-reads every file from disk per
+query → **feature 22**. Secondary: the README `go install` path contradicts the bare
+`natural-lsp` module path in `go.mod`, and `scripts/smoke.sh` mis-resolves its no-arg default
+binary → **feature 23**. Recommended order: 19 → 20 → 21 → 22 → 23.
+
 Feature 18 (call hierarchy) wires the **three call-hierarchy methods** (`textDocument/prepareCallHierarchy`,
 `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`, FR-49) — the LAST planned provider. **No
 `internal/model` change and no cache-format bump** (still `0.6.0`) — read-only queries over the existing

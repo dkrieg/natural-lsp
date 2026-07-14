@@ -1,6 +1,6 @@
 # Feature: Hover
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #24)
 **PRD requirements:** FR-28
 **Priority / phase:** P1
 **Depends on:** [07](../07-call-dependency-resolution/plan.md),

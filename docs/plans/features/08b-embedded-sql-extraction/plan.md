@@ -1,6 +1,6 @@
 # Feature: Embedded-SQL Extraction
 
-**Status:** Planned  
+**Status:** Shipped — merged to main (PR #20)
 **PRD requirements:** FR-19 (read relationships), FR-20 (write relationships), FR-21 (data definitions / host-var references); FR-10/FR-14 (call-like edge, for `CALLDBPROC`); FR-17, FR-18 (modeled gaps distinct from parse errors); FR-43 (graceful degradation); M-6 (no silent gaps)  
 **Priority / phase:** P1 (embedded SQL is a DBMS-interface add-on, less universal than Adabas-core data access)  
 **Depends on:** [00-parser-embedded-sql](../00-parser-embedded-sql/plan.md) (the SQL AST + opaque `<<…>>` span), [08-data-access-extraction](../08-data-access-extraction/plan.md) (the DDM read/write edge model this reuses), [06-call-dependency-extraction](../06-call-dependency-extraction/plan.md) (the edge model + extraction pattern)  

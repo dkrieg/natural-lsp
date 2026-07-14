@@ -1,6 +1,6 @@
 # Feature: Workspace & configuration
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #1)
 **PRD requirements:** FR-1, FR-2, FR-3, FR-4 (config portion), FR-6; CR-1–CR-6
 **Priority / phase:** P0 (root discovery, core config, defaults) · P1 (library map config)
 **Depends on:** none (foundation)

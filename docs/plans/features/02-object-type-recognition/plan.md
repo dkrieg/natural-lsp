@@ -1,6 +1,6 @@
 # Feature: Object-type recognition
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #3)
 **PRD requirements:** FR-7, FR-8, FR-9
 **Priority / phase:** P0 (core types) · P2 (extended types)
 **Depends on:** [01 Workspace & configuration](../01-workspace-and-configuration/plan.md)

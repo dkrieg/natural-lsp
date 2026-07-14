@@ -1,6 +1,6 @@
 # Feature: Call & Dependency Extraction
 
-**Status:** Planned  
+**Status:** Shipped — merged to main (PR #14)
 **PRD requirements:** FR-10, FR-11, FR-12, FR-13, FR-14, FR-15, FR-17, FR-18; NFR-6; M-3, M-4, M-6  
 **Priority / phase:** P0 (MVP)  
 **Depends on:** [00-parser-foundation](../00-parser-foundation/plan.md)  

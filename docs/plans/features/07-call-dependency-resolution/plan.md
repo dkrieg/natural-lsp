@@ -1,6 +1,6 @@
 # Feature: Call & Dependency Resolution
 
-**Status:** Planned  
+**Status:** Shipped — merged to main (PR #15)
 **PRD requirements:** FR-10, FR-11, FR-12, FR-13, FR-14, FR-15, FR-16, FR-17, FR-18; FR-5; NFR-6,
 NFR-7; M-3, M-4, M-6  
 **Priority / phase:** P0 (static calls, dynamic modeling, subroutine scope, INCLUDE) · P1 (steplib

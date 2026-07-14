@@ -1,6 +1,6 @@
 # Feature: Signature Help
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #29)
 **PRD requirements:** FR-48
 **Priority / phase:** P1
 **Depends on:** [07](../07-call-dependency-resolution/plan.md),

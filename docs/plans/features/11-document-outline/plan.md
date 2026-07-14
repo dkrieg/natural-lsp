@@ -1,6 +1,6 @@
 # Feature: Document outline
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #23)
 **PRD requirements:** FR-27
 **Priority / phase:** P0
 **Depends on:** [09](../09-program-structure-extraction/plan.md)
