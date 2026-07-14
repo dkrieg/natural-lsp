@@ -54,10 +54,10 @@ exported to files before it can be indexed.
 > (FR-30 parse errors, FR-31 ambiguous resolution), aggregating the parser's ranged syntax diagnostics
 > with the resolver's flat-namespace ambiguity warnings and tracking edits across
 > didOpen/didChange/didClose/watched-file changes (clearing via an empty array on fix, close, or delete).
-> Modeled gaps (dynamic/unresolved references) are never diagnostics (FR-17). The remaining
-> call-hierarchy LSP *provider* is not yet
-> wired — this README describes the **target** feature set. There are no published binaries. Implemented
-> behavior will be marked as it lands.
+> Modeled gaps (dynamic/unresolved references) are never diagnostics (FR-17). **All planned LSP
+> providers are now wired** (navigation, document outline, hover, code lens, diagnostics, completion,
+> signature help, call hierarchy). There are no published binaries yet; build from source or via the
+> VS Code extension.
 
 ---
 
@@ -114,7 +114,7 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/hover` — **shipped** (feature 12)
 - `textDocument/completion` (module names, subroutine names, DDM field names) — **shipped** (feature 16)
 - `textDocument/signatureHelp` (parameter interfaces at call sites) — **shipped** (feature 17)
-- `textDocument/callHierarchy` (incoming/outgoing call panels)
+- `textDocument/callHierarchy` (prepare + incoming/outgoing call panels) — **shipped** (feature 18)
 - `textDocument/documentSymbol` — **shipped** (feature 11)
 - `textDocument/codeLens` (call counts, table write summaries) — **shipped** (feature 13)
 - `textDocument/publishDiagnostics` (parse errors, ambiguous resolution) — **shipped** (feature 14)
