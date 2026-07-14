@@ -1,6 +1,6 @@
 # Feature: Parser Foundation
 
-**Status:** Planned  
+**Status:** Shipped — merged to main (PR #12)
 **PRD requirements:** NFR-15 (replaceable backend), FR-30 (syntax diagnostics), M-6 (no silent gaps)  
 **Priority / phase:** P0 (required for all subsequent features)  
 **Depends on:** None  

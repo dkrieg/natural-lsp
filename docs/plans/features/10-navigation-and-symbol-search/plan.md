@@ -1,6 +1,6 @@
 # Feature: Navigation & symbol search
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #22)
 **PRD requirements:** FR-24, FR-25, FR-26
 **Priority / phase:** P0
 **Depends on:** [05](../05-workspace-indexing-and-cache/plan.md),

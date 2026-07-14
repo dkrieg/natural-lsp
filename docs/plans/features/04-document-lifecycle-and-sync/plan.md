@@ -1,6 +1,6 @@
 # Feature: Document lifecycle & sync
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #7)
 **PRD requirements:** FR-33, FR-34
 **Priority / phase:** P0 (open document handling) · P1 (external file watching)
 **Depends on:** [03 Server lifecycle](../03-server-lifecycle-and-protocol/plan.md)

@@ -1,6 +1,6 @@
 # Feature: Editor clients
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #27)
 **PRD requirements:** FR-44, FR-45, FR-46; NFR-10, NFR-12, NFR-13
 **Priority / phase:** P0 (VS Code) · P1 (JetBrains, documented configs for other editors)
 **Depends on:** [03](../03-server-lifecycle-and-protocol/plan.md)

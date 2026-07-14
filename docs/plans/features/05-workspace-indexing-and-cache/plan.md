@@ -1,6 +1,6 @@
 # Feature: Workspace indexing & cache
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #8). **Caveat (2026-07-14 assessment):** the FR-32 progress-reporting story was NOT delivered (task 05-I02 unimplemented) — re-planned as [feature 21](../21-async-indexing-and-progress/plan.md).
 **PRD requirements:** FR-32, FR-35, FR-36, FR-37, FR-38, FR-39, FR-40; NFR-1–5, NFR-8
 **Priority / phase:** P0 (build, incremental, progress) · P1 (persistent cache)
 **Depends on:** [01](../01-workspace-and-configuration/plan.md), [02](../02-object-type-recognition/plan.md),

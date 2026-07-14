@@ -1,6 +1,6 @@
 # Feature: Completion
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #28). **Caveat (2026-07-14 assessment):** `CompletionItem.detail`/`sortText` serialize as `{}` on the wire (stdlib-marshal of `protocol.Optional`) — fix planned as [feature 19](../19-protocol-marshaling-unification/plan.md).
 **PRD requirements:** FR-47
 **Priority / phase:** P1
 **Depends on:** [05](../05-workspace-indexing-and-cache/plan.md),

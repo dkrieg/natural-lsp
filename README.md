@@ -58,6 +58,11 @@ exported to files before it can be indexed.
 > providers are now wired** (navigation, document outline, hover, code lens, diagnostics, completion,
 > signature help, call hierarchy). There are no published binaries yet; build from source or via the
 > VS Code extension.
+>
+> **A full independent assessment (2026-07-14) — [`docs/assessment-2026-07-14.md`](docs/assessment-2026-07-14.md) —
+> confirmed the core is solid but identified five known issues, re-planned as features 19–23.**
+> See [Known issues](#known-issues-2026-07-14-assessment) below before relying on completion details,
+> non-VS-Code editors, or large-workspace performance.
 
 ---
 
@@ -112,13 +117,46 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/references` — **shipped** (feature 10)
 - `workspace/symbol` — **shipped** (feature 10)
 - `textDocument/hover` — **shipped** (feature 12)
-- `textDocument/completion` (module names, subroutine names, DDM field names) — **shipped** (feature 16)
+- `textDocument/completion` (module names, subroutine names, DDM field names) — **shipped** (feature 16;
+  known wire defect: `detail`/`sortText` serialize as `{}` — fix planned, [feature 19](docs/plans/features/19-protocol-marshaling-unification/plan.md))
 - `textDocument/signatureHelp` (parameter interfaces at call sites) — **shipped** (feature 17)
 - `textDocument/callHierarchy` (prepare + incoming/outgoing call panels) — **shipped** (feature 18)
 - `textDocument/documentSymbol` — **shipped** (feature 11)
 - `textDocument/codeLens` (call counts, table write summaries) — **shipped** (feature 13)
 - `textDocument/publishDiagnostics` (parse errors, ambiguous resolution) — **shipped** (feature 14)
-- `window/workDoneProgress` (indexing progress on first run)
+- `window/workDoneProgress` (indexing progress on first run) — **not yet implemented** (FR-32, P0;
+  planned as [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md))
+
+---
+
+## Known issues (2026-07-14 assessment)
+
+An independent full-project assessment — live stdio wire probes, four specialist reviews, and
+LSP 3.17 spec verification — is recorded in
+[`docs/assessment-2026-07-14.md`](docs/assessment-2026-07-14.md). The lifecycle, position
+encoding, capability set, diagnostics semantics, robustness (FR-43), and the Analyzer seam all
+verified clean. Five issues were confirmed and re-planned:
+
+1. **Completion results are corrupted on the wire** — `CompletionItem.detail` and `sortText`
+   reach the client as `{}` instead of strings (a stdlib-vs-json/v2 marshaling divergence), so
+   the detail label is lost and inline-before-external ordering silently breaks.
+   Fix: [feature 19](docs/plans/features/19-protocol-marshaling-unification/plan.md).
+2. **The server ignores `rootUri`/`workspaceFolders`** — the workspace root is derived only from
+   the server process's working directory (sentinel walk-up). VS Code works because
+   `vscode-languageclient` sets the child cwd to the workspace folder; **other editors must be
+   started from (or launch the server in) the workspace root**, or every index-backed feature
+   silently returns nothing. Fix: [feature 20](docs/plans/features/20-workspace-root-handshake/plan.md).
+3. **No indexing progress reporting** (FR-32, P0) — no `$/progress` is ever sent.
+   Fix: [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md).
+4. **The cold index build blocks all requests** — it runs synchronously in the `initialized`
+   handler (NFR-5). Fix: also [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md).
+5. **Performance/scale claims are unmeasured** (NFR-1/2/3/4) — no benchmarks exist; known hot
+   spots at scale include `workspace/symbol` re-reading files per query.
+   Fix: [feature 22](docs/plans/features/22-performance-and-scale-verification/plan.md).
+
+Secondary: the `go install` path below does not match the module path in `go.mod` (install from
+a clone for now), and `scripts/smoke.sh` needs an explicit binary path — both addressed by
+[feature 23](docs/plans/features/23-distribution-hardening/plan.md).
 
 ---
 
@@ -192,11 +230,16 @@ go build -o natural-lsp ./cmd/natural-lsp
 
 ### go install
 
+> **Known issue:** the command below does not currently work — `go.mod` declares the module as
+> bare `natural-lsp`, not `github.com/dkrieg/natural-lsp`, so the remote install path cannot
+> resolve. Until [feature 23](docs/plans/features/23-distribution-hardening/plan.md) reconciles
+> the module path, install from a clone: `git clone … && go build -o natural-lsp ./cmd/natural-lsp`.
+
 ```bash
 go install github.com/dkrieg/natural-lsp/cmd/natural-lsp@latest
 ```
 
-`go install` is the current package-style install path. A native OS
+`go install` is the intended package-style install path. A native OS
 package-manager channel (Homebrew tap, Scoop) is **future work** and not yet
 provided.
 
@@ -216,6 +259,15 @@ which must start and exit cleanly on EOF.)
 ---
 
 ## Editor setup
+
+> **Workspace-root caveat (all editors except VS Code):** the server currently derives the
+> workspace root from **its own working directory** (walking up to the `.natural-lsp.toml`
+> sentinel) and ignores the `rootUri`/`workspaceFolders` your editor sends. Make sure the editor
+> (and therefore the spawned `natural-lsp` process) is started **inside the workspace** — e.g.
+> `cd` to the project before launching Neovim/Helix/Zed — or navigation will silently come up
+> empty. VS Code is unaffected because its client library launches the server with the workspace
+> folder as cwd. Proper `rootUri` handling is planned as
+> [feature 20](docs/plans/features/20-workspace-root-handshake/plan.md).
 
 ### VS Code
 
@@ -249,6 +301,11 @@ The extension version tracks the server's release line. See
 Neovim needs two things: a `natural` **filetype** for `.NSx` files (Neovim has no
 built-in detection for them) and an LSP client that launches `natural-lsp --stdio`
 for that filetype. Root detection uses the `.natural-lsp.toml` sentinel.
+
+> Note: the `root_markers`/`root_dir` settings below shape the `rootUri` Neovim sends — which
+> the server **currently ignores** (see the workspace-root caveat above). Until
+> [feature 20](docs/plans/features/20-workspace-root-handshake/plan.md) ships, start Neovim from
+> inside the workspace so the server's own sentinel walk-up finds the root.
 
 **1. Associate `.NSx` files with the `natural` filetype** (required for either LSP
 form below — without it the `filetypes`/`filetype` gate never matches):

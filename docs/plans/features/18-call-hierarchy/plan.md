@@ -1,6 +1,6 @@
 # Feature: Call Hierarchy
 
-**Status:** Planned
+**Status:** Shipped — merged to main (PR #30)
 **PRD requirements:** FR-49
 **Priority / phase:** P1
 **Depends on:** [05](../05-workspace-indexing-and-cache/plan.md),
