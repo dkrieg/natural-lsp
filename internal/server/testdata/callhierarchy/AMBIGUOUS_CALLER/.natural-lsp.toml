@@ -1,0 +1,3 @@
+# Ambiguous fixture: no library map, so flat namespace.
+# MAIN calls AMBIG which is defined in both LIBA/AMBIG.NSN and LIBB/AMBIG.NSN.
+# Expected: resolution is Ambiguous, prepare returns one item per candidate (OQ-4).

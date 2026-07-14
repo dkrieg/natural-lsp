@@ -1,0 +1,13 @@
+* A third caller program added for live freshness testing
+PROGRAM CALLER3
+
+DEFINE DATA
+  LOCAL
+    1 #PARAM (A10)
+  END
+END
+
+* Call CALLEE
+CALLNAT 'CALLEE' #PARAM
+
+END

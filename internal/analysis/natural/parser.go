@@ -436,6 +436,10 @@ func (p *Parser) parseSubroutine(ast *Program, startPos model.Position) {
 	// Parse the subroutine name (should be an identifier).
 	if p.matches(TokenIdentifier) {
 		sub.Name = p.current.Literal
+		// Capture the name range for SelectionRange (feature 18, T6a)
+		nameStartPos := model.Position{Line: p.current.Line, Column: p.current.Column}
+		nameEndPos := model.Position{Line: p.current.Line, Column: p.current.Column + len(p.current.Literal) - 1}
+		sub.NameRange = model.Range{Start: nameStartPos, End: nameEndPos}
 		p.advance()
 	}
 

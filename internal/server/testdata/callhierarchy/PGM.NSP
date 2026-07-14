@@ -1,0 +1,12 @@
+* A program for FETCH to resolve to
+PROGRAM PGM
+
+DEFINE DATA
+  LOCAL
+    1 #X (N8)
+  END
+END
+
+WRITE 'PGM executed'
+
+END

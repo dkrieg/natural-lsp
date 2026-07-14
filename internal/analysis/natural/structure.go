@@ -131,10 +131,7 @@ func extractStructure(path string, prog *Program, defs []model.DataDefinition, a
 				Start: sub.StartPos,
 				End:   sub.EndPos,
 			},
-			SelectionRange: model.Range{
-				Start: sub.StartPos,
-				End:   sub.StartPos,
-			},
+			SelectionRange: sub.NameRange, // Use the captured name range (feature 18, T6a)
 		}
 		childrenToSort = append(childrenToSort, subSym)
 	}
