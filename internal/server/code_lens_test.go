@@ -746,3 +746,50 @@ func TestProvideCodeLens_IncrementalFreshness(t *testing.T) {
 		t.Errorf("updated lens title = %q, want %q", updatedTitle, "2 references")
 	}
 }
+
+// TestProvideCodeLens_MarshaledEmptyCase (T4) pins the wire bytes for an empty
+// codeLens result by driving the REAL dispatch path end-to-end against an empty
+// workspace. The provider returns nil for a document with no lenses, and the
+// dispatch's nil-guard must emit "null".
+//
+// If the codeLens nil-guard in server.go is dropped or flipped to "[]", the emitted
+// bytes change and this test goes red (Story 2 AC2).
+func TestProvideCodeLens_MarshaledEmptyCase(t *testing.T) {
+	got := dispatchResultBytes(t, "textDocument/codeLens",
+		`{"textDocument":{"uri":"file:///nonexistent/NOPE.NSP"}}`)
+
+	if string(got) != "null" {
+		t.Errorf("empty codeLens result: got %q, want %q", string(got), "null")
+	}
+}
+
+// TestProvideCodeLens_MarshaledNonEmptyCase (T4) pins the exact wire bytes for a
+// non-empty codeLens result via marshalResult — the EXACT function the codeLens
+// dispatch calls in its non-nil branch. Pinning the full bytes locks byte-for-byte
+// preservation across the stdlib→gojson migration (Story 2 AC2).
+func TestProvideCodeLens_MarshaledNonEmptyCase(t *testing.T) {
+	// Setup: one code lens result
+	lenses := []protocol.CodeLens{
+		{
+			Range: protocol.Range{
+				Start: protocol.Position{Line: 0, Character: 0},
+				End:   protocol.Position{Line: 0, Character: 10},
+			},
+			Command: protocol.Command{
+				Title:   "3 references",
+				Command: "editor.action.showReferences",
+			},
+		},
+	}
+
+	// Marshal via the dispatch's exact marshaler.
+	got, err := marshalResult(lenses)
+	if err != nil {
+		t.Fatalf("failed to marshal via marshalResult: %v", err)
+	}
+
+	want := `[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":10}},"command":{"title":"3 references","command":"editor.action.showReferences"}}]`
+	if string(got) != want {
+		t.Errorf("non-empty codeLens wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
+	}
+}

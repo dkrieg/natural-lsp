@@ -914,3 +914,46 @@ func buildTestWorkspaceIndexFromFixture(testdataDir string, az *natural.Analyzer
 
 	return idx, nil
 }
+
+// TestProvideDocumentSymbols_MarshaledEmptyCase (T4) pins the wire bytes for an empty
+// documentSymbol result by driving the REAL dispatch path end-to-end against an empty
+// workspace. The provider returns nil for a document with no structure, and the
+// dispatch's nil-guard must emit "null".
+//
+// If the documentSymbol nil-guard in server.go is dropped or flipped to "[]", the
+// emitted bytes change and this test goes red (Story 2 AC2).
+func TestProvideDocumentSymbols_MarshaledEmptyCase(t *testing.T) {
+	got := dispatchResultBytes(t, "textDocument/documentSymbol",
+		`{"textDocument":{"uri":"file:///nonexistent/NOPE.NSP"}}`)
+
+	if string(got) != "null" {
+		t.Errorf("empty documentSymbol result: got %q, want %q", string(got), "null")
+	}
+}
+
+// TestProvideDocumentSymbols_MarshaledNonEmptyCase (T4) pins the exact wire bytes for a
+// non-empty documentSymbol result via marshalResult — the EXACT function the
+// documentSymbol dispatch calls in its non-nil branch. Pinning the full bytes locks
+// byte-for-byte preservation across the stdlib→gojson migration (Story 2 AC2).
+func TestProvideDocumentSymbols_MarshaledNonEmptyCase(t *testing.T) {
+	// Setup: one symbol result
+	docSymbols := []protocol.DocumentSymbol{
+		{
+			Name:           "MYPROG",
+			Kind:           protocol.SymbolKindModule,
+			Range:          protocol.Range{Start: protocol.Position{Line: 0, Character: 0}, End: protocol.Position{Line: 10, Character: 0}},
+			SelectionRange: protocol.Range{Start: protocol.Position{Line: 0, Character: 0}, End: protocol.Position{Line: 0, Character: 6}},
+		},
+	}
+
+	// Marshal via the dispatch's exact marshaler.
+	got, err := marshalResult(docSymbols)
+	if err != nil {
+		t.Fatalf("failed to marshal via marshalResult: %v", err)
+	}
+
+	want := `[{"name":"MYPROG","kind":2,"range":{"start":{"line":0,"character":0},"end":{"line":10,"character":0}},"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}}}]`
+	if string(got) != want {
+		t.Errorf("non-empty documentSymbol wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
+	}
+}

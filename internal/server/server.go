@@ -6,7 +6,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -98,6 +97,19 @@ func buildWatchedFilesRegisterOptions(extensions []string) (protocol.LSPAny, err
 		return nil, fmt.Errorf("marshal DidChangeWatchedFilesRegistrationOptions: %w", err)
 	}
 	return protocol.LSPAny(buf.Bytes()), nil
+}
+
+// marshalResult marshals v as a JSON LSP response result via the json/v2 path
+// (gojson), so that protocol types carrying Optional/Nullable/union fields (e.g.
+// protocol.CompletionItem.Detail, protocol.CallHierarchyItem.Data) are encoded
+// correctly via their MarshalJSONTo implementations.
+//
+// Callers are responsible for the nil check and must call marshalResult only
+// when v is provably non-nil. The per-method empty-result sentinel ("null" or
+// "[]") is assigned by the caller before this is invoked — see the dispatch
+// switch in Run for the pattern.
+func marshalResult(v any) ([]byte, error) {
+	return gojson.Marshal(v)
 }
 
 // handleInitialize processes an LSP "initialize" request, negotiates
@@ -688,13 +700,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if locations == nil {
 					respResult = []byte(`null`)
 				} else {
-					// Marshal the location slice as JSON.
-					locationJSON, marshalErr := json.Marshal(locations)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(locations)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal locations: %v", marshalErr))
 						return
 					}
-					respResult = locationJSON
 				}
 
 			case "textDocument/references":
@@ -720,13 +731,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if locations == nil {
 					respResult = []byte(`null`)
 				} else {
-					// Marshal the location slice as JSON.
-					locationJSON, marshalErr := json.Marshal(locations)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(locations)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal locations: %v", marshalErr))
 						return
 					}
-					respResult = locationJSON
 				}
 
 			case "workspace/symbol":
@@ -748,13 +758,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if symbols == nil {
 					respResult = []byte(`[]`)
 				} else {
-					// Marshal the symbol information slice as JSON.
-					symbolJSON, marshalErr := json.Marshal(symbols)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(symbols)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal symbols: %v", marshalErr))
 						return
 					}
-					respResult = symbolJSON
 				}
 
 			case "textDocument/documentSymbol":
@@ -780,13 +789,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if docSymbols == nil {
 					respResult = []byte(`null`)
 				} else {
-					// Marshal the document symbol slice as JSON.
-					docSymbolJSON, marshalErr := json.Marshal(docSymbols)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(docSymbols)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal document symbols: %v", marshalErr))
 						return
 					}
-					respResult = docSymbolJSON
 				}
 
 			case "textDocument/hover":
@@ -812,13 +820,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if hover == nil {
 					respResult = []byte(`null`)
 				} else {
-					// Marshal the hover object as JSON.
-					hoverJSON, marshalErr := json.Marshal(hover)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(hover)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal hover: %v", marshalErr))
 						return
 					}
-					respResult = hoverJSON
 				}
 
 			case "textDocument/codeLens":
@@ -844,13 +851,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if lenses == nil {
 					respResult = []byte(`null`)
 				} else {
-					// Marshal the code lens slice as JSON.
-					lensesJSON, marshalErr := json.Marshal(lenses)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(lenses)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal code lenses: %v", marshalErr))
 						return
 					}
-					respResult = lensesJSON
 				}
 
 			case "textDocument/completion":
@@ -877,13 +883,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if items == nil {
 					respResult = []byte(`[]`)
 				} else {
-					// Marshal the completion items slice as JSON.
-					itemsJSON, marshalErr := json.Marshal(items)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(items)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal completion items: %v", marshalErr))
 						return
 					}
-					respResult = itemsJSON
 				}
 
 			case "textDocument/signatureHelp":
@@ -946,13 +951,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if items == nil {
 					respResult = []byte(`[]`)
 				} else {
-					// Marshal the items slice as JSON using gojson to honor MarshalerTo.
-					itemsJSON, marshalErr := gojson.Marshal(items)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(items)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal prepare items: %v", marshalErr))
 						return
 					}
-					respResult = itemsJSON
 				}
 
 			case "callHierarchy/incomingCalls":
@@ -979,13 +983,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if calls == nil {
 					respResult = []byte(`[]`)
 				} else {
-					// Marshal the calls slice as JSON using gojson to honor MarshalerTo.
-					callsJSON, marshalErr := gojson.Marshal(calls)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(calls)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal incoming calls: %v", marshalErr))
 						return
 					}
-					respResult = callsJSON
 				}
 
 			case "callHierarchy/outgoingCalls":
@@ -1012,13 +1015,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if calls == nil {
 					respResult = []byte(`[]`)
 				} else {
-					// Marshal the calls slice as JSON using gojson to honor MarshalerTo.
-					callsJSON, marshalErr := gojson.Marshal(calls)
+					var marshalErr error
+					respResult, marshalErr = marshalResult(calls)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal outgoing calls: %v", marshalErr))
 						return
 					}
-					respResult = callsJSON
 				}
 
 			default:

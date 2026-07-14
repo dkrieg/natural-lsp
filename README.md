@@ -118,7 +118,7 @@ The capabilities below define the **target** feature set for the first stable re
 - `workspace/symbol` — **shipped** (feature 10)
 - `textDocument/hover` — **shipped** (feature 12)
 - `textDocument/completion` (module names, subroutine names, DDM field names) — **shipped** (feature 16;
-  known wire defect: `detail`/`sortText` serialize as `{}` — fix planned, [feature 19](docs/plans/features/19-protocol-marshaling-unification/plan.md))
+  the `detail`/`sortText` wire defect was **fixed in [feature 19](docs/plans/features/19-protocol-marshaling-unification/plan.md)**)
 - `textDocument/signatureHelp` (parameter interfaces at call sites) — **shipped** (feature 17)
 - `textDocument/callHierarchy` (prepare + incoming/outgoing call panels) — **shipped** (feature 18)
 - `textDocument/documentSymbol` — **shipped** (feature 11)
@@ -137,10 +137,11 @@ LSP 3.17 spec verification — is recorded in
 encoding, capability set, diagnostics semantics, robustness (FR-43), and the Analyzer seam all
 verified clean. Five issues were confirmed and re-planned:
 
-1. **Completion results are corrupted on the wire** — `CompletionItem.detail` and `sortText`
-   reach the client as `{}` instead of strings (a stdlib-vs-json/v2 marshaling divergence), so
-   the detail label is lost and inline-before-external ordering silently breaks.
-   Fix: [feature 19](docs/plans/features/19-protocol-marshaling-unification/plan.md).
+1. ~~**Completion results are corrupted on the wire**~~ — **FIXED in
+   [feature 19](docs/plans/features/19-protocol-marshaling-unification/plan.md).**
+   `CompletionItem.detail`/`sortText` no longer serialize as `{}`; all provider results now marshal
+   via the json/v2 path (`gojson.Marshal`/`MarshalJSONTo`), guarded by wire-bytes tests and a
+   regression check against reintroducing stdlib `json.Marshal`.
 2. **The server ignores `rootUri`/`workspaceFolders`** — the workspace root is derived only from
    the server process's working directory (sentinel walk-up). VS Code works because
    `vscode-languageclient` sets the child cwd to the workspace folder; **other editors must be

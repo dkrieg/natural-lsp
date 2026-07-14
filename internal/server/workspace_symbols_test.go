@@ -247,3 +247,46 @@ func buildTestWorkspaceIndex(testdataDir string) (*workspace.Index, error) {
 
 	return idx, nil
 }
+
+// TestProvideWorkspaceSymbols_MarshaledEmptyCase (T4) pins the wire bytes for an empty
+// workspace/symbol result by driving the REAL dispatch path end-to-end against an empty
+// workspace. Unlike definition/references (which emit "null"), workspace/symbol's
+// nil-guard emits "[]" for empty — a completion list / symbol array is always an array.
+//
+// If the workspace/symbol nil-guard in server.go is dropped or flipped to "null", the
+// emitted bytes change and this test goes red (Story 2 AC2).
+func TestProvideWorkspaceSymbols_MarshaledEmptyCase(t *testing.T) {
+	got := dispatchResultBytes(t, "workspace/symbol", `{"query":"NOMATCH"}`)
+
+	if string(got) != "[]" {
+		t.Errorf("empty workspace/symbol result: got %q, want %q", string(got), "[]")
+	}
+}
+
+// TestProvideWorkspaceSymbols_MarshaledNonEmptyCase (T4) pins the exact wire bytes for
+// a non-empty workspace/symbol result via marshalResult — the EXACT function the
+// workspace/symbol dispatch calls in its non-nil branch. Pinning the full bytes locks
+// byte-for-byte preservation across the stdlib→gojson migration (Story 2 AC2).
+func TestProvideWorkspaceSymbols_MarshaledNonEmptyCase(t *testing.T) {
+	// Setup: one symbol result
+	symbols := []protocol.SymbolInformation{
+		{
+			BaseSymbolInformation: protocol.BaseSymbolInformation{
+				Name: "MYPROG",
+				Kind: protocol.SymbolKindModule,
+			},
+			Location: protocol.Location{URI: "file:///test/MYPROG.NSP", Range: protocol.Range{Start: protocol.Position{Line: 0, Character: 0}, End: protocol.Position{Line: 0, Character: 6}}},
+		},
+	}
+
+	// Marshal via the dispatch's exact marshaler.
+	got, err := marshalResult(symbols)
+	if err != nil {
+		t.Fatalf("failed to marshal via marshalResult: %v", err)
+	}
+
+	want := `[{"name":"MYPROG","kind":2,"location":{"uri":"file:///test/MYPROG.NSP","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}}}}]`
+	if string(got) != want {
+		t.Errorf("non-empty workspace/symbol wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
+	}
+}

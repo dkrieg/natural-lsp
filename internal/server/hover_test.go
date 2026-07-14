@@ -1477,3 +1477,48 @@ func TestProvideHoverInboundCountIncremental(t *testing.T) {
 		t.Errorf("inbound count after adding a second caller = %d, want 2", after)
 	}
 }
+
+// TestProvideHover_MarshaledEmptyCase (T4) pins the wire bytes for an empty hover
+// result by driving the REAL dispatch path end-to-end against an empty workspace.
+// The provider returns a nil *protocol.Hover, and the dispatch's nil-guard must
+// emit "null".
+//
+// If the hover nil-guard in server.go is dropped or flipped, the emitted bytes change
+// and this test goes red (Story 2 AC2).
+func TestProvideHover_MarshaledEmptyCase(t *testing.T) {
+	got := dispatchResultBytes(t, "textDocument/hover",
+		`{"textDocument":{"uri":"file:///nonexistent/NOPE.NSP"},"position":{"line":0,"character":0}}`)
+
+	if string(got) != "null" {
+		t.Errorf("empty hover result: got %q, want %q", string(got), "null")
+	}
+}
+
+// TestProvideHover_MarshaledNonEmptyCase (T4) pins the exact wire bytes for a
+// non-empty hover result via marshalResult — the EXACT function the hover dispatch
+// calls in server.go's non-nil branch. Pinning the full bytes (not a substring)
+// locks byte-for-byte preservation across the stdlib→gojson migration (Story 2 AC2).
+func TestProvideHover_MarshaledNonEmptyCase(t *testing.T) {
+	// Setup: one hover result with content
+	hover := &protocol.Hover{
+		Contents: &protocol.MarkupContent{
+			Kind:  "markdown",
+			Value: "# Test Hover",
+		},
+		Range: &protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 0, Character: 5},
+		},
+	}
+
+	// Marshal via the dispatch's exact marshaler.
+	got, err := marshalResult(hover)
+	if err != nil {
+		t.Fatalf("failed to marshal via marshalResult: %v", err)
+	}
+
+	want := `{"contents":{"kind":"markdown","value":"# Test Hover"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":5}}}`
+	if string(got) != want {
+		t.Errorf("non-empty hover wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
+	}
+}

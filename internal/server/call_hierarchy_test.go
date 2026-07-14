@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	gojson "github.com/go-json-experiment/json"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
@@ -1293,4 +1294,505 @@ func TestProvideOutgoingCalls_InlinePerform(t *testing.T) {
 			t.Errorf("expected at least 3 distinct callees (CALLEE, PGM, SUB-A), got %d", distinctCallees)
 		}
 	})
+}
+
+// TestProvidePrepareCallHierarchy_MarshaledData tests that the wire-level JSON
+// from prepareCallHierarchy contains the CallHierarchyItem.data field as a JSON OBJECT
+// (the {path,name,kind} identity), marshaled via gojson.Marshal as the dispatch does.
+// (feature 19, T3: characterization/lock test for already-correct marshaling).
+//
+// Story 3 AC1: wire-bytes assertion that data is present and is an object.
+func TestProvidePrepareCallHierarchy_MarshaledData(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index by analyzing all files in the fixture
+	idx := &workspace.Index{}
+	cfg := config.Config{} // Empty config for flat-namespace resolution
+
+	files := []string{"CALLER.NSP", "CALLEE.NSN"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	// Compute the resolution set
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Create handler context
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Read CALLER.NSP to find cursor positions
+	callerPath := filepath.Join(testdata, "CALLER.NSP")
+	callerContent, err := os.ReadFile(callerPath)
+	if err != nil {
+		t.Fatalf("failed to read CALLER.NSP: %v", err)
+	}
+	callerContentStr := string(callerContent)
+
+	// Find the CALLNAT 'CALLEE' call site
+	idx_pos := strings.Index(callerContentStr, "CALLNAT 'CALLEE'")
+	if idx_pos < 0 {
+		t.Fatalf("could not find 'CALLNAT 'CALLEE'' in CALLER.NSP")
+	}
+
+	// Convert byte offset to line/char
+	line := 0
+	char := 0
+	for i := 0; i < idx_pos; i++ {
+		if callerContentStr[i] == '\n' {
+			line++
+			char = 0
+		} else {
+			char++
+		}
+	}
+
+	// Call providePrepareCallHierarchy
+	params := protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(root, "testdata", "callhierarchy", "CALLER.NSP")),
+			},
+			Position: protocol.Position{Line: uint32(line), Character: uint32(char)},
+		},
+	}
+
+	items, err := providePrepareCallHierarchy(hctx, params)
+	if err != nil {
+		t.Fatalf("providePrepareCallHierarchy returned error: %v", err)
+	}
+
+	// Assert we got an item
+	if len(items) == 0 {
+		t.Fatalf("expected at least one item, got 0")
+	}
+
+	// Marshal via gojson (exact dispatch path) — see server.go line 950
+	itemsJSON, marshalErr := gojson.Marshal(items)
+	if marshalErr != nil {
+		t.Fatalf("failed to marshal items via gojson: %v", marshalErr)
+	}
+
+	jsonStr := string(itemsJSON)
+
+	// Assert the JSON contains "data":{...} (object, not null or {})
+	if !strings.Contains(jsonStr, `"data":{`) {
+		t.Errorf("expected JSON to contain 'data' as an object (e.g., '\"data\":{{...}}'), got: %s", jsonStr)
+	}
+
+	// Assert the JSON is an array (starts with [)
+	if !strings.HasPrefix(jsonStr, "[") {
+		t.Errorf("expected result to marshal as a JSON array, got: %s", jsonStr)
+	}
+}
+
+// TestProvidePrepareCallHierarchy_MarshaledEmpty tests that an EMPTY result
+// from prepareCallHierarchy marshals to [] (never null).
+// (feature 19, T3: characterization/lock test for already-correct marshaling).
+//
+// Story 2 AC2: empty result → [] (pins the wire behavior).
+func TestProvidePrepareCallHierarchy_MarshaledEmpty(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	files := []string{"CALLER.NSP", "CALLEE.NSN"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Cursor on a comment (non-callable position)
+	params := protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(filepath.Join(root, "testdata", "callhierarchy", "CALLER.NSP")),
+			},
+			Position: protocol.Position{Line: uint32(0), Character: uint32(0)},
+		},
+	}
+
+	items, err := providePrepareCallHierarchy(hctx, params)
+	if err != nil {
+		t.Fatalf("providePrepareCallHierarchy returned error: %v", err)
+	}
+
+	// Marshal via gojson (exact dispatch path)
+	itemsJSON, marshalErr := gojson.Marshal(items)
+	if marshalErr != nil {
+		t.Fatalf("failed to marshal items via gojson: %v", marshalErr)
+	}
+
+	jsonStr := string(itemsJSON)
+
+	// Assert the JSON is exactly "[]" (never "null")
+	if jsonStr != "[]" {
+		t.Errorf("expected empty result to marshal as '[]', got: %s", jsonStr)
+	}
+}
+
+// TestProvideIncomingCalls_MarshaledFromRanges tests that the wire-level JSON
+// from incomingCalls contains the fromRanges field as a JSON ARRAY,
+// marshaled via gojson.Marshal as the dispatch does.
+// (feature 19, T3: characterization/lock test for already-correct marshaling).
+//
+// Story 3 AC1: wire-bytes assertion that fromRanges is an array.
+func TestProvideIncomingCalls_MarshaledFromRanges(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	files := []string{"CALLER.NSP", "CALLEE.NSN"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Build a CallHierarchyItem for CALLEE
+	calleeRelPath := "testdata/callhierarchy/CALLEE.NSN"
+	calleeAnalysis, _ := idx.Get(calleeRelPath)
+
+	item := buildCallHierarchyItem(root, calleeRelPath, nil, calleeAnalysis.Structure, protocol.PositionEncodingKindUTF8)
+
+	// Call provideIncomingCalls
+	params := protocol.CallHierarchyIncomingCallsParams{
+		Item: item,
+	}
+
+	calls, err := provideIncomingCalls(hctx, params)
+	if err != nil {
+		t.Fatalf("provideIncomingCalls returned error: %v", err)
+	}
+
+	if len(calls) == 0 {
+		t.Fatalf("expected at least one incoming call")
+	}
+
+	// Marshal via gojson (exact dispatch path) — see server.go line 983
+	callsJSON, marshalErr := gojson.Marshal(calls)
+	if marshalErr != nil {
+		t.Fatalf("failed to marshal calls via gojson: %v", marshalErr)
+	}
+
+	jsonStr := string(callsJSON)
+
+	// Assert the JSON contains "fromRanges":[...] (array)
+	if !strings.Contains(jsonStr, `"fromRanges":[`) {
+		t.Errorf("expected JSON to contain 'fromRanges' as an array (e.g., '\"fromRanges\":[...]), got: %s", jsonStr)
+	}
+
+	// Assert the result is an array
+	if !strings.HasPrefix(jsonStr, "[") {
+		t.Errorf("expected result to marshal as a JSON array, got: %s", jsonStr)
+	}
+}
+
+// TestProvideIncomingCalls_MarshaledEmpty tests that an EMPTY result
+// from incomingCalls marshals to [] (never null).
+// (feature 19, T3: characterization/lock test for already-correct marshaling).
+//
+// Story 2 AC2: empty result → [] (pins the wire behavior).
+func TestProvideIncomingCalls_MarshaledEmpty(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build a minimal index with only a single file (no callers)
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	// Use only CALLEE.NSN which has no incoming calls (CALLER is not in the index)
+	az := natural.New(nil)
+	filePath := filepath.Join(testdata, "CALLEE.NSN")
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read CALLEE.NSN: %v", err)
+	}
+
+	analysis, err := az.Analyze(filePath, content)
+	if err != nil {
+		t.Fatalf("failed to analyze CALLEE.NSN: %v", err)
+	}
+
+	calleeRelPath := "testdata/callhierarchy/CALLEE.NSN"
+	idx.Add(calleeRelPath, analysis)
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Build a CallHierarchyItem for CALLEE
+	calleeAnalysis, _ := idx.Get(calleeRelPath)
+	item := buildCallHierarchyItem(root, calleeRelPath, nil, calleeAnalysis.Structure, protocol.PositionEncodingKindUTF8)
+
+	// Call provideIncomingCalls
+	params := protocol.CallHierarchyIncomingCallsParams{
+		Item: item,
+	}
+
+	calls, err := provideIncomingCalls(hctx, params)
+	if err != nil {
+		t.Fatalf("provideIncomingCalls returned error: %v", err)
+	}
+
+	// Marshal via gojson (exact dispatch path)
+	callsJSON, marshalErr := gojson.Marshal(calls)
+	if marshalErr != nil {
+		t.Fatalf("failed to marshal calls via gojson: %v", marshalErr)
+	}
+
+	jsonStr := string(callsJSON)
+
+	// Assert the JSON is exactly "[]" (never "null")
+	if jsonStr != "[]" {
+		t.Errorf("expected empty result to marshal as '[]', got: %s", jsonStr)
+	}
+}
+
+// TestProvideOutgoingCalls_MarshaledFromRanges tests that the wire-level JSON
+// from outgoingCalls contains the fromRanges field as a JSON ARRAY,
+// marshaled via gojson.Marshal as the dispatch does.
+// (feature 19, T3: characterization/lock test for already-correct marshaling).
+//
+// Story 3 AC1: wire-bytes assertion that fromRanges is an array.
+func TestProvideOutgoingCalls_MarshaledFromRanges(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	files := []string{"CALLER.NSP", "CALLEE.NSN"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Build a CallHierarchyItem for CALLER which has outgoing calls
+	callerRelPath := "testdata/callhierarchy/CALLER.NSP"
+	callerAnalysis, _ := idx.Get(callerRelPath)
+
+	item := buildCallHierarchyItem(root, callerRelPath, nil, callerAnalysis.Structure, protocol.PositionEncodingKindUTF8)
+
+	// Call provideOutgoingCalls
+	params := protocol.CallHierarchyOutgoingCallsParams{
+		Item: item,
+	}
+
+	calls, err := provideOutgoingCalls(hctx, params)
+	if err != nil {
+		t.Fatalf("provideOutgoingCalls returned error: %v", err)
+	}
+
+	if len(calls) == 0 {
+		t.Fatalf("expected at least one outgoing call")
+	}
+
+	// Marshal via gojson (exact dispatch path) — see server.go line 1016
+	callsJSON, marshalErr := gojson.Marshal(calls)
+	if marshalErr != nil {
+		t.Fatalf("failed to marshal calls via gojson: %v", marshalErr)
+	}
+
+	jsonStr := string(callsJSON)
+
+	// Assert the JSON contains "fromRanges":[...] (array)
+	if !strings.Contains(jsonStr, `"fromRanges":[`) {
+		t.Errorf("expected JSON to contain 'fromRanges' as an array, got: %s", jsonStr)
+	}
+
+	// Assert the result is an array
+	if !strings.HasPrefix(jsonStr, "[") {
+		t.Errorf("expected result to marshal as a JSON array, got: %s", jsonStr)
+	}
+}
+
+// TestProvideOutgoingCalls_MarshaledEmpty tests that an EMPTY result
+// from outgoingCalls marshals to [] (never null).
+// (feature 19, T3: characterization/lock test for already-correct marshaling).
+//
+// Story 2 AC2: empty result → [] (pins the wire behavior).
+func TestProvideOutgoingCalls_MarshaledEmpty(t *testing.T) {
+	testdata := filepath.Join("testdata", "callhierarchy")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// Build the index
+	idx := &workspace.Index{}
+	cfg := config.Config{}
+
+	files := []string{"CALLER.NSP", "CALLEE.NSN"}
+	az := natural.New(nil)
+
+	for _, filename := range files {
+		filePath := filepath.Join(testdata, filename)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", filename, err)
+		}
+
+		analysis, err := az.Analyze(filePath, content)
+		if err != nil {
+			t.Fatalf("failed to analyze %s: %v", filename, err)
+		}
+
+		relPath := filepath.Join("testdata", "callhierarchy", filename)
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		idx.Add(relPath, analysis)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		root:        root,
+	}
+
+	// Build a CallHierarchyItem for CALLEE which has no outgoing calls
+	calleeRelPath := "testdata/callhierarchy/CALLEE.NSN"
+	calleeAnalysis, _ := idx.Get(calleeRelPath)
+
+	item := buildCallHierarchyItem(root, calleeRelPath, nil, calleeAnalysis.Structure, protocol.PositionEncodingKindUTF8)
+
+	// Call provideOutgoingCalls
+	params := protocol.CallHierarchyOutgoingCallsParams{
+		Item: item,
+	}
+
+	calls, err := provideOutgoingCalls(hctx, params)
+	if err != nil {
+		t.Fatalf("provideOutgoingCalls returned error: %v", err)
+	}
+
+	// Marshal via gojson (exact dispatch path)
+	callsJSON, marshalErr := gojson.Marshal(calls)
+	if marshalErr != nil {
+		t.Fatalf("failed to marshal calls via gojson: %v", marshalErr)
+	}
+
+	jsonStr := string(callsJSON)
+
+	// Assert the JSON is exactly "[]" (never "null")
+	if jsonStr != "[]" {
+		t.Errorf("expected empty result to marshal as '[]', got: %s", jsonStr)
+	}
 }

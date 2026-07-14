@@ -31,6 +31,82 @@ func (sa *stubAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis
 	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
 }
 
+// dispatchResultBytes drives the full server lifecycle end-to-end (initialize →
+// initialized → the request under test) against an empty temp-dir workspace and
+// returns the JSON-RPC "result" bytes the dispatch actually wrote for that request.
+//
+// Unlike a direct gojson.Marshal in a test, this exercises the REAL dispatch path
+// in Run — including each method's per-case nil-guard (the `if x == nil { respResult
+// = []byte("null"|"[]") }` branch). A pin test built on this therefore goes red if
+// someone drops or flips a nil-guard sentinel in server.go, which is the whole point
+// of the empty-case pins (feature 19, Story 2 AC2).
+//
+// The workspace is an empty temp dir, so every navigation/outline/hover/codeLens
+// provider returns an empty/nil result — the empty case each pin locks. paramsJSON
+// is the raw JSON for the request params; method is the LSP method name.
+func dispatchResultBytes(t *testing.T, method string, paramsJSON string) []byte {
+	t.Helper()
+
+	root := t.TempDir()
+
+	var reqBuf bytes.Buffer
+
+	// 1) initialize (UTF-8 offered so the encoding is deterministic).
+	initCall := jsonrpc2.NewCall(
+		jsonrpc2.NewNumberID(1),
+		"initialize",
+		jsonrpc2.RawMessage(`{"processId":1,"rootUri":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}`),
+	)
+	if err := writeFramedMessage(&reqBuf, initCall); err != nil {
+		t.Fatalf("write initialize: %v", err)
+	}
+
+	// 2) initialized notification (triggers index build over the empty workspace).
+	initializedNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
+	if err := writeFramedMessage(&reqBuf, initializedNotif); err != nil {
+		t.Fatalf("write initialized: %v", err)
+	}
+
+	// 3) the request under test.
+	reqCall := jsonrpc2.NewCall(jsonrpc2.NewNumberID(2), method, jsonrpc2.RawMessage(paramsJSON))
+	if err := writeFramedMessage(&reqBuf, reqCall); err != nil {
+		t.Fatalf("write %s: %v", method, err)
+	}
+
+	var outBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// EOF after the buffered messages returns Run cleanly.
+	if err := Run(context.Background(), &reqBuf, &outBuf, "0.0.0-test", root, config.Defaults(), &stubAnalyzer{}, logger); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	// Consume responses until we find the one for id=2 (skipping the initialize
+	// response id=1 and any publishDiagnostics notifications).
+	work := bytes.NewBufferString(outBuf.String())
+	for {
+		body, err := parseFramedResponse(work)
+		if err != nil {
+			t.Fatalf("no response for %s (id=2) found: %v", method, err)
+		}
+		msg, decErr := jsonrpc2.DecodeMessage(body)
+		if decErr != nil {
+			t.Fatalf("decode response: %v", decErr)
+		}
+		resp, ok := msg.(*jsonrpc2.Response)
+		if !ok {
+			continue
+		}
+		if resp.ID() != jsonrpc2.NewNumberID(2) {
+			continue
+		}
+		if resp.Err() != nil {
+			t.Fatalf("%s returned JSON-RPC error: %v", method, resp.Err())
+		}
+		return []byte(resp.Result())
+	}
+}
+
 // TestFramedTransport tests that the server reads and writes LSP Content-Length
 // framed messages (FR-43, R1 remediation). Real LSP clients send messages with
 // Content-Length headers per the LSP specification; the server must parse and

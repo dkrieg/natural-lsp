@@ -644,3 +644,45 @@ func TestProvideDefinition_UnresolvedReturnsEmpty(t *testing.T) {
 		}
 	})
 }
+
+// TestProvideDefinition_MarshaledEmptyCase (T4) pins the wire bytes for an empty
+// definition result by driving the REAL dispatch path end-to-end (initialize →
+// initialized → textDocument/definition) against an empty workspace. The provider
+// returns nil there, and the dispatch's nil-guard must emit "null" as the result.
+//
+// This is not a tautology: if someone drops the nil-guard in server.go's definition
+// case (letting the json/v2 marshaler run on the nil slice, which yields "[]") or flips
+// the sentinel to "[]", the emitted bytes change and this test goes red (Story 2 AC2).
+func TestProvideDefinition_MarshaledEmptyCase(t *testing.T) {
+	got := dispatchResultBytes(t, "textDocument/definition",
+		`{"textDocument":{"uri":"file:///nonexistent/NOPE.NSP"},"position":{"line":0,"character":0}}`)
+
+	if string(got) != "null" {
+		t.Errorf("empty definition result: got %q, want %q", string(got), "null")
+	}
+}
+
+// TestProvideDefinition_MarshaledNonEmptyCase (T4) pins the exact wire bytes for a
+// non-empty definition result via marshalResult — the EXACT function the definition
+// dispatch calls in its non-nil branch. Pinning the full bytes (not a substring)
+// locks byte-for-byte preservation across the stdlib→gojson migration (Story 2 AC2).
+func TestProvideDefinition_MarshaledNonEmptyCase(t *testing.T) {
+	// Setup: one location result
+	locations := []protocol.Location{
+		{
+			URI:   "file:///test/target.NSN",
+			Range: protocol.Range{Start: protocol.Position{Line: 0, Character: 0}, End: protocol.Position{Line: 0, Character: 5}},
+		},
+	}
+
+	// Marshal via the dispatch's exact marshaler.
+	got, err := marshalResult(locations)
+	if err != nil {
+		t.Fatalf("failed to marshal via marshalResult: %v", err)
+	}
+
+	want := `[{"uri":"file:///test/target.NSN","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":5}}}]`
+	if string(got) != want {
+		t.Errorf("non-empty definition wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
+	}
+}
