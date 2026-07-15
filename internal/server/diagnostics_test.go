@@ -1103,7 +1103,6 @@ func TestLifecycleDiagnosticPublishing_DidOpen(t *testing.T) {
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	cfg := config.Defaults()
 	az := natural.New(nil)
 
 	err := Run(
@@ -1112,7 +1111,6 @@ func TestLifecycleDiagnosticPublishing_DidOpen(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		tmpDir,
-		cfg,
 		az,
 		logger,
 	)
@@ -1234,10 +1232,9 @@ func TestLifecycleDiagnosticPublishing_Clean(t *testing.T) {
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	cfg := config.Defaults()
 	az := natural.New(nil)
 
-	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, cfg, az, logger)
+	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1345,10 +1342,9 @@ END`)
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	cfg := config.Defaults()
 	az := natural.New(nil)
 
-	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, cfg, az, logger)
+	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1512,10 +1508,9 @@ func TestLifecycleDiagnosticPublishing_DidClose(t *testing.T) {
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	cfg := config.Defaults()
 	az := natural.New(nil)
 
-	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, cfg, az, logger)
+	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1638,10 +1633,9 @@ func TestLifecycleDiagnosticPublishing_DidChangeWatchedFiles_Change(t *testing.T
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	cfg := config.Defaults()
 	az := natural.New(nil)
 
-	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, cfg, az, logger)
+	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1753,10 +1747,9 @@ func TestLifecycleDiagnosticPublishing_DidChangeWatchedFiles_Delete(t *testing.T
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	cfg := config.Defaults()
 	az := natural.New(nil)
 
-	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, cfg, az, logger)
+	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1899,10 +1892,9 @@ func TestLifecycleDiagnosticPublishing_FlatNamespaceAmbiguity(t *testing.T) {
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	cfg := config.Defaults()
 	az := natural.New(nil)
 
-	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, cfg, az, logger)
+	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -2194,7 +2186,7 @@ func TestLifecycleDiagnosticPublishing_LibraryMapDisambiguates(t *testing.T) {
 
 	az := natural.New(nil)
 
-	if err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, cfg, az, logger); err != nil {
+	if err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
 
@@ -2309,10 +2301,9 @@ func TestLifecycleDiagnosticPublishing_DidChangeFixesError(t *testing.T) {
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	cfg := config.Defaults()
 	az := natural.New(nil)
 
-	if err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, cfg, az, logger); err != nil {
+	if err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
 

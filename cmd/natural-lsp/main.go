@@ -45,14 +45,17 @@ func runWithIO(args []string, r io.Reader, w io.Writer, logger *slog.Logger) int
 			fmt.Print(config.Sample())
 			return 0
 		case "--stdio":
-			// Resolve the workspace root and load config from the sentinel.
-			// Bootstrap never hard-fails (CR-6): a missing sentinel or bad
-			// config degrades to usable defaults, and the result is logged.
-			start, err := os.Getwd()
+			// Feature 20 (Variant A): the workspace root and config are no longer
+			// resolved at process startup. The server negotiates the root from the
+			// LSP "initialize" params (workspaceFolders → rootUri → this cwd
+			// fallback) and runs config.Bootstrap from that path inside the
+			// initialize handler. Here we only compute the cwd fallback — the
+			// lowest-precedence discovery start point, used when the client sends
+			// no root.
+			cwdFallback, err := os.Getwd()
 			if err != nil {
-				start = "."
+				cwdFallback = "."
 			}
-			root, cfg, _ := config.Bootstrap(start, "", logger)
 
 			az := natural.New(nil)
 
@@ -62,7 +65,7 @@ func runWithIO(args []string, r io.Reader, w io.Writer, logger *slog.Logger) int
 			defer cancel()
 
 			// nil error = clean shutdown → 0; non-nil = protocol violation → 1.
-			if err := server.Run(ctx, r, w, version, root, cfg, az, logger); err != nil {
+			if err := server.Run(ctx, r, w, version, cwdFallback, az, logger); err != nil {
 				return 1
 			}
 			return 0

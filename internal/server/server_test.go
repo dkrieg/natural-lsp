@@ -77,7 +77,7 @@ func dispatchResultBytes(t *testing.T, method string, paramsJSON string) []byte 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	// EOF after the buffered messages returns Run cleanly.
-	if err := Run(context.Background(), &reqBuf, &outBuf, "0.0.0-test", root, config.Defaults(), &stubAnalyzer{}, logger); err != nil {
+	if err := Run(context.Background(), &reqBuf, &outBuf, "0.0.0-test", root, &stubAnalyzer{}, logger); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -153,7 +153,6 @@ func TestFramedTransport(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server with the in-memory streams
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err = Run(
 		context.Background(),
@@ -161,7 +160,6 @@ func TestFramedTransport(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -379,7 +377,6 @@ func TestServerRunReadsRequestAndWritesResponse(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 			// Act: run the server with the in-memory streams.
-			cfg := config.Defaults()
 			az := &stubAnalyzer{}
 			// Run takes separate Reader and Writer, not ReadWriteCloser.
 			err := Run(
@@ -388,7 +385,6 @@ func TestServerRunReadsRequestAndWritesResponse(t *testing.T) {
 				&outBuf,
 				"0.0.0-test",
 				"/workspace",
-				cfg,
 				az,
 				logger,
 			)
@@ -508,7 +504,6 @@ func TestInitialize(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 			// Act: run the server.
-			cfg := config.Defaults()
 			az := &stubAnalyzer{}
 			err := Run(
 				context.Background(),
@@ -516,7 +511,6 @@ func TestInitialize(t *testing.T) {
 				&outBuf,
 				"0.1.0-test", // injected version
 				"/workspace",
-				cfg,
 				az,
 				logger,
 			)
@@ -835,7 +829,6 @@ END
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server with the message sequence
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -843,7 +836,6 @@ END
 		&outBuf,
 		"0.0.0-test",
 		tmpDir,
-		cfg,
 		az,
 		logger,
 	)
@@ -1060,7 +1052,6 @@ func TestLifecycle(t *testing.T) {
 			// Act: call Run (which currently handles one message and returns)
 			// T4 will replace this with a loop that processes all messages
 			go func() {
-				cfg := config.Defaults()
 				az := &stubAnalyzer{}
 				err := Run(
 					runCtx,
@@ -1068,7 +1059,6 @@ func TestLifecycle(t *testing.T) {
 					&outBuf,
 					"0.0.0-test",
 					"/workspace",
-					cfg,
 					az,
 					logger,
 				)
@@ -1247,7 +1237,6 @@ func TestShutdownCancelsBgContext(t *testing.T) {
 	// Act: run the server in a goroutine (it will block after processing shutdown)
 	runDone := make(chan error, 1)
 	go func() {
-		cfg := config.Defaults()
 		az := &stubAnalyzer{}
 		runDone <- Run(
 			context.Background(),
@@ -1255,7 +1244,6 @@ func TestShutdownCancelsBgContext(t *testing.T) {
 			&outBuf,
 			"0.0.0-test",
 			"/workspace",
-			cfg,
 			az,
 			logger,
 		)
@@ -1341,7 +1329,6 @@ func TestContextCancellationExitsCleanly(t *testing.T) {
 
 	// Act: start Run in a goroutine
 	go func() {
-		cfg := config.Defaults()
 		az := &stubAnalyzer{}
 		runErrChan <- Run(
 			ctx,
@@ -1349,7 +1336,6 @@ func TestContextCancellationExitsCleanly(t *testing.T) {
 			&outBuf,
 			"0.0.0-test",
 			"/workspace",
-			cfg,
 			az,
 			logger,
 		)
@@ -1432,7 +1418,6 @@ func TestRequestPanicRecovery(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server with all requests
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -1440,7 +1425,6 @@ func TestRequestPanicRecovery(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -1645,14 +1629,12 @@ func TestTextDocumentDidOpen(t *testing.T) {
 			spy := &spyAnalyzer{}
 
 			// Act: run the server with the message sequence
-			cfg := config.Defaults()
 			err = Run(
 				context.Background(),
 				&inBuf,
 				&outBuf,
 				"0.0.0-test",
 				"/workspace",
-				cfg,
 				spy,
 				logger,
 			)
@@ -1819,14 +1801,12 @@ func TestTextDocumentDidChange(t *testing.T) {
 			spy := &spyAnalyzer{}
 
 			// Act: run the server with the message sequence
-			cfg := config.Defaults()
 			err = Run(
 				context.Background(),
 				&inBuf,
 				&outBuf,
 				"0.0.0-test",
 				"/workspace",
-				cfg,
 				spy,
 				logger,
 			)
@@ -1931,7 +1911,6 @@ func TestNotificationPanicRecovery(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server with all requests
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -1939,7 +1918,6 @@ func TestNotificationPanicRecovery(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -2110,14 +2088,12 @@ func TestFR33DocumentLifecycle(t *testing.T) {
 	spy := &spyAnalyzer{}
 
 	// Act: run the server with the message sequence
-	cfg := config.Defaults()
 	err = Run(
 		context.Background(),
 		&inBuf,
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		spy,
 		logger,
 	)
@@ -2261,7 +2237,6 @@ func TestTextDocumentDidClose(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server with the message sequence
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err = Run(
 		context.Background(),
@@ -2269,7 +2244,6 @@ func TestTextDocumentDidClose(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -2426,7 +2400,6 @@ END
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server with the message sequence
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -2434,7 +2407,6 @@ END
 		&outBuf,
 		"0.0.0-test",
 		tmpDir,
-		cfg,
 		az,
 		logger,
 	)
@@ -2898,7 +2870,6 @@ END
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server with the message sequence
-	cfg := config.Defaults()
 	az := natural.New(nil)
 	err = Run(
 		context.Background(),
@@ -2906,7 +2877,6 @@ END
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -3073,7 +3043,6 @@ func TestTextDocumentHoverBeforeInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -3081,7 +3050,6 @@ func TestTextDocumentHoverBeforeInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -3161,7 +3129,6 @@ func TestTextDocumentHoverInvalidParams(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -3169,7 +3136,6 @@ func TestTextDocumentHoverInvalidParams(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -3273,7 +3239,6 @@ func TestTextDocumentHoverAfterInitialized(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 			// Act: run the server
-			cfg := config.Defaults()
 			az := &stubAnalyzer{}
 			err := Run(
 				context.Background(),
@@ -3281,7 +3246,6 @@ func TestTextDocumentHoverAfterInitialized(t *testing.T) {
 				&outBuf,
 				"0.0.0-test",
 				"/workspace",
-				cfg,
 				az,
 				logger,
 			)
@@ -3378,7 +3342,6 @@ func TestTextDocumentCompletionBeforeInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -3386,7 +3349,6 @@ func TestTextDocumentCompletionBeforeInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -3489,7 +3451,6 @@ func TestTextDocumentCompletionAfterInitialized(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 			// Act: run the server
-			cfg := config.Defaults()
 			az := &stubAnalyzer{}
 			err := Run(
 				context.Background(),
@@ -3497,7 +3458,6 @@ func TestTextDocumentCompletionAfterInitialized(t *testing.T) {
 				&outBuf,
 				"0.0.0-test",
 				"/workspace",
-				cfg,
 				az,
 				logger,
 			)
@@ -3598,7 +3558,6 @@ func TestTextDocumentSignatureHelpBeforeInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -3606,7 +3565,6 @@ func TestTextDocumentSignatureHelpBeforeInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -3702,7 +3660,6 @@ func TestTextDocumentSignatureHelpAfterInitialized(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 			// Act: run the server
-			cfg := config.Defaults()
 			az := &stubAnalyzer{}
 			err := Run(
 				context.Background(),
@@ -3710,7 +3667,6 @@ func TestTextDocumentSignatureHelpAfterInitialized(t *testing.T) {
 				&outBuf,
 				"0.0.0-test",
 				"/workspace",
-				cfg,
 				az,
 				logger,
 			)
@@ -3802,7 +3758,6 @@ func TestTextDocumentPrepareCallHierarchyBeforeInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -3810,7 +3765,6 @@ func TestTextDocumentPrepareCallHierarchyBeforeInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -3895,7 +3849,6 @@ func TestCallHierarchyIncomingCallsBeforeInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -3903,7 +3856,6 @@ func TestCallHierarchyIncomingCallsBeforeInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -3988,7 +3940,6 @@ func TestCallHierarchyOutgoingCallsBeforeInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -3996,7 +3947,6 @@ func TestCallHierarchyOutgoingCallsBeforeInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -4076,7 +4026,6 @@ func TestTextDocumentPrepareCallHierarchyAfterInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -4084,7 +4033,6 @@ func TestTextDocumentPrepareCallHierarchyAfterInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -4178,7 +4126,6 @@ func TestCallHierarchyIncomingCallsAfterInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -4186,7 +4133,6 @@ func TestCallHierarchyIncomingCallsAfterInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -4280,7 +4226,6 @@ func TestCallHierarchyOutgoingCallsAfterInitialized(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := config.Defaults()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -4288,7 +4233,6 @@ func TestCallHierarchyOutgoingCallsAfterInitialized(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)

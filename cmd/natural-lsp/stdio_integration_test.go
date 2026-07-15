@@ -125,22 +125,15 @@ func TestStdioHandshake(t *testing.T) {
 		t.Fatalf("failed to write initialize request body: %v", err)
 	}
 
-	// Read initialize response (Content-Length-framed, with timeout)
-	initRespBody, err := readFramedMessageWithTimeout(stdout, 5*time.Second)
-	if err != nil {
-		t.Fatalf("failed to read initialize response: %v", err)
-	}
+	// A single persistent framed reader over stdout — a fresh bufio.Reader per
+	// call could over-read and drop a buffered frame once notifications are
+	// interleaved with responses.
+	fr := newFramedReader(stdout)
 
-	// Parse the response
-	initRespMsg, err := jsonrpc2.DecodeMessage(initRespBody)
-	if err != nil {
-		t.Fatalf("failed to decode initialize response: %v (response: %s)", err, string(initRespBody))
-	}
-
-	initRespCall, ok := initRespMsg.(*jsonrpc2.Response)
-	if !ok {
-		t.Fatalf("expected *jsonrpc2.Response for initialize, got %T", initRespMsg)
-	}
+	// Read initialize response (Content-Length-framed, with timeout).
+	// Skip any interleaved server→client notifications (window/showMessage,
+	// publishDiagnostics) while awaiting the response to initID.
+	initRespCall := fr.readResponseSkippingNotifications(t, &initID, 5*time.Second)
 
 	// Assert: response id matches
 	if initRespCall.ID() != initID {
@@ -264,21 +257,11 @@ func TestStdioHandshake(t *testing.T) {
 		t.Fatalf("failed to write shutdown request body: %v", err)
 	}
 
-	// Read shutdown response (Content-Length-framed)
-	shutdownRespBody, err := readFramedMessageWithTimeout(stdout, 5*time.Second)
-	if err != nil {
-		t.Fatalf("failed to read shutdown response: %v", err)
-	}
-
-	shutdownRespMsg, err := jsonrpc2.DecodeMessage(shutdownRespBody)
-	if err != nil {
-		t.Fatalf("failed to decode shutdown response: %v (response: %s)", err, string(shutdownRespBody))
-	}
-
-	shutdownRespCall, ok := shutdownRespMsg.(*jsonrpc2.Response)
-	if !ok {
-		t.Fatalf("expected *jsonrpc2.Response for shutdown, got %T", shutdownRespMsg)
-	}
+	// Read shutdown response (Content-Length-framed). The empty-root
+	// window/showMessage Warning (Story 3 AC1(b)) is emitted during the
+	// deferred bootstrap at `initialized`, so it may arrive in the stream
+	// before the shutdown response — skip any interleaved notifications.
+	shutdownRespCall := fr.readResponseSkippingNotifications(t, &shutdownID, 5*time.Second)
 
 	// Assert: shutdown response id matches
 	if shutdownRespCall.ID() != shutdownID {
@@ -324,10 +307,61 @@ func TestStdioHandshake(t *testing.T) {
 	}
 }
 
+// framedReader reads Content-Length-framed JSON-RPC messages from an underlying
+// stream. It wraps the stream in a SINGLE persistent *bufio.Reader so that any
+// bytes buffered past one message boundary (a bufio.Reader can over-read on a
+// single underlying Read) are retained for the next read rather than discarded.
+// Constructing a fresh bufio.Reader per message (the earlier approach) could drop
+// a frame that happened to be buffered alongside the one being returned — a
+// hazard amplified once the server interleaves notifications with responses.
+type framedReader struct {
+	r *bufio.Reader
+}
+
+func newFramedReader(r io.Reader) *framedReader {
+	return &framedReader{r: bufio.NewReader(r)}
+}
+
+// readResponseSkippingNotifications reads framed JSON-RPC messages until it
+// observes a *jsonrpc2.Response, draining (skipping) any server→client
+// notifications (e.g. window/showMessage, textDocument/publishDiagnostics) that
+// arrive interleaved in the stream. This mirrors what a real LSP client does:
+// notifications are unilateral and may arrive at any time while awaiting the
+// response to a request id.
+//
+// If wantID is non-nil, only a Response whose id equals *wantID is accepted;
+// other Responses are treated as unexpected and fail the test. If wantID is nil,
+// the first Response of any id is returned.
+func (fr *framedReader) readResponseSkippingNotifications(t *testing.T, wantID *jsonrpc2.ID, timeout time.Duration) *jsonrpc2.Response {
+	t.Helper()
+	for {
+		body, err := fr.readFramedMessageWithTimeout(timeout)
+		if err != nil {
+			t.Fatalf("failed to read framed message: %v", err)
+		}
+		msg, err := jsonrpc2.DecodeMessage(body)
+		if err != nil {
+			t.Fatalf("failed to decode framed message: %v (message: %s)", err, string(body))
+		}
+		switch m := msg.(type) {
+		case *jsonrpc2.Notification:
+			// Drain server→client notifications and keep reading.
+			continue
+		case *jsonrpc2.Response:
+			if wantID != nil && m.ID() != *wantID {
+				t.Fatalf("expected *jsonrpc2.Response with id %v, got id %v", *wantID, m.ID())
+			}
+			return m
+		default:
+			t.Fatalf("expected *jsonrpc2.Response, got %T", msg)
+		}
+	}
+}
+
 // readFramedMessageWithTimeout reads one Content-Length-framed JSON-RPC message
-// from r with a timeout. It parses the "Content-Length: N\r\n\r\n" header,
-// then reads exactly N bytes of the JSON body.
-func readFramedMessageWithTimeout(r io.Reader, timeout time.Duration) ([]byte, error) {
+// from the persistent reader with a timeout. It parses the "Content-Length:
+// N\r\n\r\n" header, then reads exactly N bytes of the JSON body.
+func (fr *framedReader) readFramedMessageWithTimeout(timeout time.Duration) ([]byte, error) {
 	type result struct {
 		data []byte
 		err  error
@@ -335,7 +369,7 @@ func readFramedMessageWithTimeout(r io.Reader, timeout time.Duration) ([]byte, e
 
 	resultChan := make(chan result, 1)
 	go func() {
-		data, err := readFramedMessage(r)
+		data, err := fr.readFramedMessage()
 		resultChan <- result{data, err}
 	}()
 
@@ -347,11 +381,11 @@ func readFramedMessageWithTimeout(r io.Reader, timeout time.Duration) ([]byte, e
 	}
 }
 
-// readFramedMessage reads one Content-Length-framed JSON-RPC message.
-// It returns just the JSON body (not the header).
-func readFramedMessage(r io.Reader) ([]byte, error) {
+// readFramedMessage reads one Content-Length-framed JSON-RPC message from the
+// persistent reader. It returns just the JSON body (not the header).
+func (fr *framedReader) readFramedMessage() ([]byte, error) {
 	// Read the header line: "Content-Length: N\r\n"
-	reader := bufio.NewReader(r)
+	reader := fr.r
 	headerLine, err := reader.ReadString('\n')
 	if err != nil {
 		return nil, fmt.Errorf("read header line: %w", err)
@@ -389,6 +423,338 @@ func readFramedMessage(r io.Reader) ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+// TestCrossWorkdirRootUri is the integration regression test (Feature 20, Task T4).
+// It reproduces the 2026-07-14 assessment defect #2: the server resolves workspace
+// root from initialize's rootUri even when the process cwd is OUTSIDE the workspace.
+//
+// Scenario:
+// 1. Build the natural-lsp binary
+// 2. Create a WORKSPACE temp dir with a .natural-lsp.toml sentinel + HELLO.NSP caller
+//   - CALLGREET.NSN callee
+//     3. Create a SEPARATE CDIR temp dir (NO Natural files, NO sentinel) — the process cwd
+//     4. Launch the binary with cmd.Dir = cdir (so os.Getwd() returns cdir, not workspace)
+//     5. Send initialize with rootUri = workspace (the feature-20 fix: deferred bootstrap
+//     must use rootUri, not cwd)
+//     6. Drive initialized → didOpen → definition → shutdown → exit
+//     7. Assert definition resolves to the callee file in the workspace
+//
+// On main before feature 20, the index is built from cwd at startup, misses the
+// workspace, and definition returns null/empty. After feature 20, the index is
+// built from the negotiated rootUri at initialize time, and definition resolves.
+func TestCrossWorkdirRootUri(t *testing.T) {
+	// Step 1: Build the binary to a temp directory
+	tempDir := t.TempDir()
+	binaryPath := filepath.Join(tempDir, "natural-lsp")
+
+	moduleRoot, err := func() (string, error) {
+		dir, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		for {
+			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+				return dir, nil
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return "", fmt.Errorf("go.mod not found")
+			}
+			dir = parent
+		}
+	}()
+	if err != nil {
+		t.Fatalf("could not locate module root: %v", err)
+	}
+
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/natural-lsp")
+	buildCmd.Dir = moduleRoot
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build binary: %v\noutput: %s", err, output)
+	}
+
+	// Step 2: Create workspace temp dir WITH a .natural-lsp.toml sentinel + sample files
+	workspaceDir := t.TempDir()
+	sentinelPath := filepath.Join(workspaceDir, ".natural-lsp.toml")
+	if err := os.WriteFile(sentinelPath, nil, 0o644); err != nil {
+		t.Fatalf("failed to write sentinel: %v", err)
+	}
+
+	// Copy sample workspace files (HELLO.NSP, CALLGREET.NSN, SAYHELLO.NSS)
+	sampleDir := filepath.Join(moduleRoot, "docs/plans/features/15-editor-clients/sample-workspace")
+	for _, filename := range []string{"HELLO.NSP", "CALLGREET.NSN", "SAYHELLO.NSS"} {
+		srcPath := filepath.Join(sampleDir, filename)
+		content, err := os.ReadFile(srcPath)
+		if err != nil {
+			t.Fatalf("failed to read sample file %s: %v", filename, err)
+		}
+		dstPath := filepath.Join(workspaceDir, filename)
+		if err := os.WriteFile(dstPath, content, 0o644); err != nil {
+			t.Fatalf("failed to write %s to workspace: %v", filename, err)
+		}
+	}
+
+	// Step 3: Create a separate cwd temp dir (NO Natural files, NO sentinel)
+	cwdDir := t.TempDir()
+
+	// Assert: cwd and workspace are distinct and neither is an ancestor of the other
+	{
+		cwdAbs, err := filepath.Abs(cwdDir)
+		if err != nil {
+			t.Fatalf("failed to abs cwd: %v", err)
+		}
+		wsAbs, err := filepath.Abs(workspaceDir)
+		if err != nil {
+			t.Fatalf("failed to abs workspace: %v", err)
+		}
+		if cwdAbs == wsAbs {
+			t.Fatalf("cwd and workspace must be distinct; both are %s", cwdAbs)
+		}
+		// Check neither is an ancestor of the other
+		if strings.HasPrefix(wsAbs, cwdAbs+string(filepath.Separator)) ||
+			strings.HasPrefix(cwdAbs, wsAbs+string(filepath.Separator)) {
+			t.Fatalf("cwd (%s) and workspace (%s) must not have ancestor relationship", cwdAbs, wsAbs)
+		}
+	}
+
+	// Step 4: Launch binary with cmd.Dir = cwdDir (so os.Getwd() != workspace)
+	cmd := exec.Command(binaryPath, "--stdio")
+	cmd.Dir = cwdDir // THE CRITICAL DIFFERENCE: cwd is outside workspace
+	cmd.Stderr = os.Stderr
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("failed to create stdin pipe: %v", err)
+	}
+	defer stdin.Close()
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("failed to create stdout pipe: %v", err)
+	}
+	defer stdout.Close()
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start binary: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	// Step 5: Send initialize with rootUri = workspaceDir
+	// (NOT rootPath; the rootUri is the deferred-bootstrap trigger)
+	initID := jsonrpc2.NewNumberID(1)
+	initParamsJSON := jsonrpc2.RawMessage(`{
+		"processId": 1234,
+		"rootUri": "file://` + workspaceDir + `",
+		"capabilities": {
+			"general": {
+				"positionEncodings": ["utf-8", "utf-16"]
+			}
+		}
+	}`)
+
+	initCall := jsonrpc2.NewCall(initID, "initialize", initParamsJSON)
+	initMsg, err := jsonrpc2.EncodeMessage(initCall)
+	if err != nil {
+		t.Fatalf("failed to encode initialize request: %v", err)
+	}
+	framedInitRequest := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(initMsg))
+	if _, err := stdin.Write([]byte(framedInitRequest)); err != nil {
+		t.Fatalf("failed to write initialize request header: %v", err)
+	}
+	if _, err := stdin.Write(initMsg); err != nil {
+		t.Fatalf("failed to write initialize request body: %v", err)
+	}
+
+	// A single persistent framed reader over stdout (see framedReader).
+	fr := newFramedReader(stdout)
+
+	// Read initialize response, skipping any interleaved notifications.
+	initRespCall := fr.readResponseSkippingNotifications(t, &initID, 5*time.Second)
+
+	if initRespCall.Err() != nil {
+		t.Fatalf("initialize response has error: %v", initRespCall.Err())
+	}
+
+	// Step 6: Send initialized notification
+	initNotif := jsonrpc2.NewNotification("initialized", nil)
+	initNotifMsg, err := jsonrpc2.EncodeMessage(initNotif)
+	if err != nil {
+		t.Fatalf("failed to encode initialized notification: %v", err)
+	}
+	framedInitNotif := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(initNotifMsg))
+	if _, err := stdin.Write([]byte(framedInitNotif)); err != nil {
+		t.Fatalf("failed to write initialized notification header: %v", err)
+	}
+	if _, err := stdin.Write(initNotifMsg); err != nil {
+		t.Fatalf("failed to write initialized notification body: %v", err)
+	}
+
+	// Step 7: Send didOpen for HELLO.NSP
+	helloURI := "file://" + filepath.Join(workspaceDir, "HELLO.NSP")
+	helloContent, err := os.ReadFile(filepath.Join(workspaceDir, "HELLO.NSP"))
+	if err != nil {
+		t.Fatalf("failed to read HELLO.NSP: %v", err)
+	}
+
+	didOpenNotif := jsonrpc2.NewNotification("textDocument/didOpen", jsonrpc2.RawMessage(`{
+		"textDocument": {
+			"uri": "`+helloURI+`",
+			"languageId": "natural",
+			"version": 1,
+			"text": "`+escapeJSONString(string(helloContent))+`"
+		}
+	}`))
+
+	didOpenMsg, err := jsonrpc2.EncodeMessage(didOpenNotif)
+	if err != nil {
+		t.Fatalf("failed to encode didOpen: %v", err)
+	}
+	framedDidOpen := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(didOpenMsg))
+	if _, err := stdin.Write([]byte(framedDidOpen)); err != nil {
+		t.Fatalf("failed to write didOpen header: %v", err)
+	}
+	if _, err := stdin.Write(didOpenMsg); err != nil {
+		t.Fatalf("failed to write didOpen body: %v", err)
+	}
+
+	// Step 8: Send definition request at the CALLGREET call site
+	// HELLO.NSP line 12 (0-indexed: line 11): CALLNAT 'CALLGREET' #NAME
+	// The identifier CALLGREET is at character 10 (inside the quotes, after CALLNAT ')
+	defID := jsonrpc2.NewNumberID(2)
+	defCall := jsonrpc2.NewCall(defID, "textDocument/definition", jsonrpc2.RawMessage(`{
+		"textDocument": {
+			"uri": "`+helloURI+`"
+		},
+		"position": {
+			"line": 11,
+			"character": 10
+		}
+	}`))
+
+	defMsg, err := jsonrpc2.EncodeMessage(defCall)
+	if err != nil {
+		t.Fatalf("failed to encode definition request: %v", err)
+	}
+	framedDefRequest := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(defMsg))
+	if _, err := stdin.Write([]byte(framedDefRequest)); err != nil {
+		t.Fatalf("failed to write definition request header: %v", err)
+	}
+	if _, err := stdin.Write(defMsg); err != nil {
+		t.Fatalf("failed to write definition request body: %v", err)
+	}
+
+	// Read definition response, skipping any interleaved notifications
+	// (e.g. publishDiagnostics, window/showMessage).
+	defRespCall := fr.readResponseSkippingNotifications(t, &defID, 5*time.Second)
+
+	if defRespCall.Err() != nil {
+		t.Fatalf("definition response has error: %v", defRespCall.Err())
+	}
+
+	// Step 9: Assert definition result is non-empty and points to CALLGREET.NSN in workspace
+	if defRespCall.Result() == nil {
+		t.Fatalf("definition response result is nil (definition not resolved); this proves the bug is not fixed")
+	}
+
+	// Parse result as a Location or Location[] (location.go's handler returns []Location)
+	var locations []interface{}
+	if err := json.Unmarshal(defRespCall.Result(), &locations); err != nil {
+		// Try parsing as a single Location
+		var singleLoc interface{}
+		if err := json.Unmarshal(defRespCall.Result(), &singleLoc); err != nil {
+			t.Fatalf("failed to unmarshal definition result: %v (result: %s)", err, string(defRespCall.Result()))
+		}
+		locations = []interface{}{singleLoc}
+	}
+
+	if len(locations) == 0 {
+		t.Fatalf("definition returned empty Location[]; the index did not resolve from rootUri")
+	}
+
+	// Assert the first location's URI contains CALLGREET.NSN and is in the workspace
+	firstLoc, ok := locations[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected first location to be a map, got %T", locations[0])
+	}
+
+	uriVal, ok := firstLoc["uri"].(string)
+	if !ok {
+		t.Fatalf("expected location.uri to be a string, got %T", firstLoc["uri"])
+	}
+
+	if !strings.Contains(uriVal, "CALLGREET.NSN") {
+		t.Errorf("definition URI = %q, want to contain CALLGREET.NSN", uriVal)
+	}
+
+	if !strings.HasPrefix(uriVal, "file://"+workspaceDir) {
+		t.Errorf("definition URI = %q, want to be in workspace %s", uriVal, workspaceDir)
+	}
+
+	// Step 10: Send shutdown request
+	shutdownID := jsonrpc2.NewNumberID(3)
+	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", nil)
+	shutdownMsg, err := jsonrpc2.EncodeMessage(shutdownCall)
+	if err != nil {
+		t.Fatalf("failed to encode shutdown request: %v", err)
+	}
+	framedShutdownRequest := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(shutdownMsg))
+	if _, err := stdin.Write([]byte(framedShutdownRequest)); err != nil {
+		t.Fatalf("failed to write shutdown request header: %v", err)
+	}
+	if _, err := stdin.Write(shutdownMsg); err != nil {
+		t.Fatalf("failed to write shutdown request body: %v", err)
+	}
+
+	// Read shutdown response, skipping any interleaved notifications.
+	shutdownRespCall := fr.readResponseSkippingNotifications(t, &shutdownID, 5*time.Second)
+
+	if shutdownRespCall.Err() != nil {
+		t.Errorf("shutdown response has error: %v", shutdownRespCall.Err())
+	}
+
+	// Step 11: Send exit notification
+	exitNotif := jsonrpc2.NewNotification("exit", nil)
+	exitMsg, err := jsonrpc2.EncodeMessage(exitNotif)
+	if err != nil {
+		t.Fatalf("failed to encode exit notification: %v", err)
+	}
+	framedExitNotif := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(exitMsg))
+	if _, err := stdin.Write([]byte(framedExitNotif)); err != nil {
+		t.Fatalf("failed to write exit notification header: %v", err)
+	}
+	if _, err := stdin.Write(exitMsg); err != nil {
+		t.Fatalf("failed to write exit notification body: %v", err)
+	}
+
+	// Close stdin and wait for exit
+	stdin.Close()
+
+	exitDone := make(chan error, 1)
+	go func() {
+		exitDone <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-exitDone:
+		if err != nil {
+			t.Errorf("process exit error: %v; want nil (exit 0)", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timeout waiting for process to exit")
+	}
+
+	t.Logf("SUCCESS: definition resolved to %s from workspace root negotiated via rootUri (not cwd)", uriVal)
+}
+
+// escapeJSONString escapes a string for embedding in JSON.
+func escapeJSONString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b[1 : len(b)-1]) // Strip the quotes added by json.Marshal
 }
 
 // ErrReadTimeout is the timeout error type for readFramedMessageWithTimeout.

@@ -258,6 +258,43 @@ were non-obvious:
 (https://code.visualstudio.com/docs/languages/identifiers) and contribution-points reference
 (https://code.visualstudio.com/api/references/contribution-points#contributes.languages), verified 2026-07-12.
 
+## ADR-019 — Workspace root negotiated at `initialize`, not process startup (feature 20, Variant A) (2026-07-14)
+
+**Status:** verified (2026-07-14) (feature-20 tasks.md OQ-1/OQ-4 RESOLVED; implemented in T2).
+
+**Decision.** Root/config discovery is deferred off process startup into the LSP `initialize` request
+handler. `server.Run` no longer takes a finished `root string, cfg config.Config`; its signature is now
+`Run(ctx, r, w, version, cwdFallback string, az analysis.Analyzer, logger)`. Inside the `initialize`
+dispatch case, after decoding params, the server computes `start := resolveRootStart(params, cwdFallback)`
+(precedence: first `workspaceFolders` → `rootUri` → `cwdFallback`; `internal/server/root.go`) and runs
+`config.Bootstrap(start, "", logger)` **from the client-supplied path** (OQ-4: the client path is the sole
+discovery origin — the launch cwd's own sentinel is not consulted when a client root is present). The
+negotiated `root`/`cfg` are stored on `handlerContext`; the `document.Store`, the `document.Watcher`, and
+the `workspace.Build`/`Resolve` index build all read `hctx.root`/`hctx.cfg` instead of former startup
+closure vars. The store/watcher are constructed **in the initialize handler** (no didOpen/didChange can
+arrive before `initialized`, so nothing needs them earlier); the watcher is closed via a deferred closure
+in `Run` that reads the possibly-updated `hctx.watcher`.
+
+**Rationale.** The prior design fixed root/config at `os.Getwd()` before the handshake, so a client
+launching the server from an arbitrary cwd (the common editor case) indexed the wrong tree and cross-file
+navigation silently failed (assessment defect #2). `initialize` params (`workspaceFolders`/`rootUri`) are
+the LSP-authoritative source of the workspace root and must drive discovery.
+
+**Observable-lifecycle invariant.** No capability added; `initialize`→`initialized` ordering and the
+response shape are byte-compatible with before (`handleInitialize` stays a pure encoding/capability
+negotiator with no I/O). CR-6 preserved: `config.Bootstrap` never hard-fails, so a malformed
+`.natural-lsp.toml` at the negotiated root logs a Warn and still returns a successful `initialize` result.
+EOF-before-`initialize` runs no bootstrap and exits 0 (smoke `--stdio < /dev/null`).
+
+**Alternatives considered.** Variant B (keep `Run(root,cfg)` and re-target the store/watcher/index lazily
+after `initialize`) was rejected in favor of the cleaner deferred-resolution seam despite the wider
+test-caller edit (every `Run` caller drops its `cfg` arg). Consulting the launch-cwd sentinel *in addition*
+to the client path was rejected (OQ-4) — a stray sentinel in the launch dir must not override an explicit
+client root.
+
+**Source:** feature-20 `docs/plans/features/20-workspace-root-handshake/tasks.md` (T1/T2, OQ-1/OQ-4);
+LSP 3.17 `initialize` (`workspaceFolders`/`rootUri`), see `lsp-protocol.md`.
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.
