@@ -44,6 +44,17 @@ var (
 	indexReadyHookMu sync.Mutex
 )
 
+// initializeReadyHook is a test-only hook called in the "initialize" handler
+// immediately after config.Bootstrap resolves the workspace root and config from
+// the client's initialize params (feature 20, deferred bootstrap). It lets tests
+// observe the NEGOTIATED root/cfg — the values that drive the store, watcher, and
+// index build — without needing to reach the index build.
+// Set only in tests; nil in production.
+var (
+	initializeReadyHook   func(root string, cfg config.Config)
+	initializeReadyHookMu sync.Mutex
+)
+
 // readWriteCloser wraps separate Reader and Writer into an io.ReadWriteCloser
 // for use with jsonrpc2.NewHeaderStream.
 type readWriteCloser struct {
@@ -117,6 +128,12 @@ func marshalResult(v any) ([]byte, error) {
 // the marshalled InitializeResult bytes, the negotiated PositionEncodingKind
 // (for direct retention — no JSON round-trip), and a flag indicating whether
 // the client supports dynamic registration for workspace/didChangeWatchedFiles.
+//
+// Note (feature 20): root/config discovery is NOT performed here — it happens in
+// the "initialize" dispatch case (see Run), which computes the discovery start
+// point via resolveRootStart(params, cwdFallback) and runs config.Bootstrap from
+// that client-supplied path before storing root/cfg onto handlerContext. This
+// keeps handleInitialize a pure capabilities/encoding negotiator with no I/O.
 //
 // Capabilities advertised here form a deliberately locked allow-list enforced
 // by TestInitialize. Feature 10 (T3) adds the three navigation providers:
@@ -205,11 +222,17 @@ type handlerContext struct {
 	idx         *workspace.Index              // workspace index; nil until "initialized"
 	res         *workspace.ResolutionSet      // resolution set (feature 10, T7); computed after index build in initialized handler
 	posEncoding protocol.PositionEncodingKind // negotiated in "initialize"; used by all position converters (T1)
-	store       *document.Store               // in-memory open-document view (didOpen/didChange/didClose)
-	root        string                        // absolute workspace root path
-	cfg         config.Config                 // workspace configuration
+	store       *document.Store               // in-memory open-document view; nil until "initialize" negotiates the root (feature 20)
+	root        string                        // negotiated absolute workspace root path; set in "initialize" (feature 20)
+	cfg         config.Config                 // workspace configuration; loaded in "initialize" via config.Bootstrap (feature 20)
 	az          analysis.Analyzer             // the analyzer (needed for applyDocumentChange re-analysis)
 	logger      *slog.Logger                  // structured logger; MUST NOT write to the protocol stream
+	watcher     *document.Watcher             // fsnotify watcher; started in "initialize" against the negotiated root (feature 20)
+
+	// probe captures the root-discovery inputs (client paths, cwd fallback,
+	// sentinel-found) recorded at "initialize" so the no-usable-root condition
+	// can be evaluated ONCE at index-build time (feature 20, Story 3, T5/T6).
+	probe rootProbe
 }
 
 // Run serves a JSON-RPC connection from an in-memory or stdio reader/writer.
@@ -221,15 +244,18 @@ type handlerContext struct {
 //   - r: input reader (stdin in production, bytes.Buffer in tests)
 //   - w: output writer (stdout in production, bytes.Buffer in tests)
 //   - version: the server version string (from main's build var, reported in serverInfo)
-//   - root: the workspace root path (from config.Bootstrap)
-//   - cfg: the parsed configuration (from config.Bootstrap)
+//   - cwdFallback: the process working directory (os.Getwd) used as the
+//     lowest-precedence root-discovery start point when the client sends no
+//     workspaceFolders/rootUri (feature 20, Variant A). Root and config are NOT
+//     resolved here — they are resolved in the "initialize" handler from the
+//     client-supplied path (see resolveRootStart + config.Bootstrap below).
 //   - az: the analyzer backend (from analysis/natural or a stub in tests)
 //   - logger: structured logger directed at stderr; MUST NOT write to w
 //
 // Run returns nil on a clean shutdown sequence or on a recoverable input error
 // (malformed message). It returns a non-nil error only for unrecoverable failures
 // such as being unable to write a response or context cancellation.
-func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cfg config.Config, az analysis.Analyzer, logger *slog.Logger) error {
+func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback string, az analysis.Analyzer, logger *slog.Logger) error {
 	// Lifecycle state machine
 	state := statePreInit
 
@@ -256,36 +282,27 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 	}
 
 	// hctx bundles all state that request handlers need (feature 10, T2).
-	// Fields are filled incrementally: posEncoding is set when "initialize" is
-	// processed; idx is set when "initialized" is processed and the index build
-	// completes. Until then, hctx.idx is nil and hctx.posEncoding is the zero
+	// Fields are filled incrementally: root/cfg/store/watcher are set when
+	// "initialize" is processed (feature 20 — deferred bootstrap: the root is
+	// negotiated from the client's workspaceFolders/rootUri, so it cannot be known
+	// at Run start); posEncoding is also set at "initialize"; idx is set when
+	// "initialized" is processed and the index build completes. Until "initialize"
+	// runs, hctx.store is nil (no didOpen/didChange arrives before "initialized",
+	// so nothing needs it), hctx.idx is nil, and hctx.posEncoding is the zero
 	// string (which equals PositionEncodingKindUTF16 — safe default, ADR-008).
-	//
-	// The document store (in-memory view of open documents) is constructed here
-	// and wired to re-analyze content on Open/Update with graceful degradation (FR-43).
 	hctx := &handlerContext{
-		store: document.New(root, func(relPath string, content []byte) model.FileAnalysis {
-			result := analyzeOne(cfg, az, relPath, content, logger)
-			return result.FileAnalysis
-		}, logger),
-		root:   root,
-		cfg:    cfg,
 		az:     az,
 		logger: logger,
 	}
 
-	// Start the filesystem watcher (FR-34) to detect externally-changed files.
-	// The watcher runs in a background goroutine and dispatches re-analysis via
-	// analyzeOne. Non-fatal failures are logged but don't abort the server (FR-43).
-	watcher, watchErr := document.NewWatcher(bgCtx, root, &cfg, func(relPath string, content []byte) model.FileAnalysis {
-		result := analyzeOne(cfg, az, relPath, content, logger)
-		return result.FileAnalysis
-	}, logger)
-	if watchErr != nil {
-		logger.Error("failed to start file watcher", "err", watchErr) // FR-43: non-fatal
-	} else {
-		defer watcher.Close()
-	}
+	// The filesystem watcher is started in the "initialize" handler (against the
+	// negotiated root), so it may be nil here and set later. Closing it on exit is
+	// deferred via this closure, which reads the (possibly-updated) hctx.watcher.
+	defer func() {
+		if hctx.watcher != nil {
+			hctx.watcher.Close()
+		}
+	}()
 
 	// Wrap the reader and writer into a ReadWriteCloser for jsonrpc2.NewHeaderStream.
 	conn := &readWriteCloser{r: r, w: w}
@@ -396,7 +413,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						// Errors are logged but don't abort the server (FR-43: graceful degradation).
 						// onProgress is nil for MVP (no work-done progress yet).
 						if hctx.idx == nil {
-							builtIdx, buildErr := workspace.Build(root, cfg, az, logger, nil)
+							builtIdx, buildErr := workspace.Build(hctx.root, hctx.cfg, az, logger, nil)
 							if buildErr != nil {
 								logger.Error("failed to build workspace index", "err", buildErr)
 								// Leave hctx.idx nil; handlers guard with hctx.idx != nil
@@ -408,8 +425,16 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						// Feature 10, T7: compute the resolution set after index build.
 						// This binds call/dependency/data-access edges to their definitions.
 						if hctx.idx != nil {
-							hctx.res = workspace.Resolve(hctx.idx, &cfg)
+							hctx.res = workspace.Resolve(hctx.idx, &hctx.cfg)
 						}
+
+						// Feature 20 (Story 3, T5/T6): report the no-usable-root
+						// condition ONCE here (not per-request), naming the paths
+						// tried. Emits a Warn on stderr and a window/showMessage
+						// Warning notification to the client when the root could not
+						// be established or the index is empty. A healthy, populated
+						// root emits nothing.
+						hctx.reportNoUsableRoot(ctx, stream)
 
 						// Test hook: if set, call it with the index and encoding (feature 10, T2).
 						// This allows tests to verify the index is populated after initialization.
@@ -426,7 +451,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 						if clientSupportsWatchedFilesReg {
 							// Build registration options: one watcher per indexed extension so the
 							// client notifies the server of create/change/delete events for those files.
-							regOpts, optsErr := buildWatchedFilesRegisterOptions(cfg.Workspace.Extensions)
+							regOpts, optsErr := buildWatchedFilesRegisterOptions(hctx.cfg.Workspace.Extensions)
 							if optsErr != nil {
 								logger.Error("failed to build watchedFiles register options", "err", optsErr)
 								break
@@ -504,7 +529,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 									// Feature 10, T14: update the workspace index and resolution set
 									// Convert URI to relative path for index update
 									absPath := u.FsPath()
-									relPath, pathErr := filepath.Rel(root, absPath)
+									relPath, pathErr := filepath.Rel(hctx.root, absPath)
 									if pathErr != nil {
 										logger.Error("failed to compute relative path for didChange", "uri", u, "err", pathErr)
 										continue
@@ -554,9 +579,9 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 								// Get the file path from the URI.
 								absPath := event.URI.FsPath()
 								// Derive the relative path.
-								relPath, err := filepath.Rel(root, absPath)
+								relPath, err := filepath.Rel(hctx.root, absPath)
 								if err != nil {
-									logger.Error("failed to compute relative path", "absPath", absPath, "root", root, "err", err)
+									logger.Error("failed to compute relative path", "absPath", absPath, "root", hctx.root, "err", err)
 									continue
 								}
 								relPath = strings.ReplaceAll(relPath, "\\", "/")
@@ -565,7 +590,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 								// - FileChangeTypeDeleted (3): pass nil content to signal removal
 								// - Others: read the file and analyze (if it exists and is not too large)
 								if event.Type == protocol.FileChangeTypeDeleted {
-									analyzeOne(cfg, az, relPath, nil, logger)
+									analyzeOne(hctx.cfg, hctx.az, relPath, nil, logger)
 									// Feature 10, T14: update index/resolution for deletion
 									hctx.applyDocumentChange(relPath, nil)
 									// T7: publish empty diagnostics to clear on delete (S3-AC1).
@@ -581,7 +606,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 									logger.Error("failed to read file for re-analysis", "path", relPath, "err", err)
 									continue
 								}
-								analyzeOne(cfg, az, relPath, content, logger)
+								analyzeOne(hctx.cfg, hctx.az, relPath, content, logger)
 								// Feature 10, T14: update index/resolution
 								hctx.applyDocumentChange(relPath, content)
 								// T7: publish diagnostics after change (S3-AC1)
@@ -655,6 +680,63 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				if err != nil {
 					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
 					return
+				}
+
+				// Feature 20 (Variant A): resolve the workspace root from the client's
+				// initialize params (workspaceFolders → rootUri → cwdFallback) and load
+				// config from that path via config.Bootstrap. The sentinel walk-up runs
+				// FROM the client-supplied path (OQ-4), so a stray sentinel in the launch
+				// cwd never influences discovery when the client sends a root.
+				//
+				// CR-6: Bootstrap never hard-fails — a missing sentinel or a bad config
+				// degrades to usable defaults and logs Problems; the returned error is
+				// always nil, so a config problem must NOT fail the initialize response.
+				start := resolveRootStart(params, cwdFallback)
+				root, cfg, _ := config.Bootstrap(start, "", logger)
+				hctx.root = root
+				hctx.cfg = cfg
+
+				// Feature 20 (Story 3, T5/T6): record the root-discovery inputs so
+				// the no-usable-root condition can be evaluated ONCE after the index
+				// build (in "initialized"), naming every path tried. FindRoot is pure
+				// and cheap; Bootstrap already ran it internally, so re-deriving the
+				// sentinel-found signal here is a negligible second walk-up.
+				_, sentinelFound := config.FindRoot(start)
+				hctx.probe = rootProbe{
+					clientPaths:   clientRootPaths(params),
+					cwdFallback:   cwdFallback,
+					sentinelFound: sentinelFound,
+					resolvedRoot:  root,
+				}
+
+				// Test hook: observe the negotiated root/cfg (feature 20, T2).
+				initializeReadyHookMu.Lock()
+				initHook := initializeReadyHook
+				initializeReadyHookMu.Unlock()
+				if initHook != nil {
+					initHook(root, cfg)
+				}
+
+				// Construct the document store now that the negotiated root is known
+				// (the store keys URI→relPath on the root). No didOpen/didChange can
+				// arrive before "initialized", so nothing needs the store earlier.
+				hctx.store = document.New(root, func(relPath string, content []byte) model.FileAnalysis {
+					result := analyzeOne(hctx.cfg, hctx.az, relPath, content, logger)
+					return result.FileAnalysis
+				}, logger)
+
+				// Start the filesystem watcher (FR-34) against the negotiated root.
+				// Watcher-start failure is non-fatal (FR-43): the server keeps running
+				// without external-change detection. It is closed on exit via the
+				// deferred closure at the top of Run (which reads hctx.watcher).
+				watcher, watchErr := document.NewWatcher(bgCtx, root, &hctx.cfg, func(relPath string, content []byte) model.FileAnalysis {
+					result := analyzeOne(hctx.cfg, hctx.az, relPath, content, logger)
+					return result.FileAnalysis
+				}, logger)
+				if watchErr != nil {
+					logger.Error("failed to start file watcher", "err", watchErr) // FR-43: non-fatal
+				} else {
+					hctx.watcher = watcher
 				}
 
 			case "shutdown":
@@ -1040,6 +1122,65 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, root string, cf
 				return fmt.Errorf("write response: %w", err)
 			}
 		}
+	}
+}
+
+// reportNoUsableRoot evaluates the no-usable-root condition (feature 20, Story 3,
+// T5/T6) after the index build and, when it holds, emits an actionable signal
+// ONCE: a Warn line on the server's stderr logger (naming every path tried) and
+// a window/showMessage Warning notification to the client. A healthy, populated
+// root emits nothing.
+//
+// This is deliberately called from the "initialized" handler (once), not from
+// any per-request path, so there is no log spam. The index-file count is read
+// under the idxResMu read lock (a nil index counts as 0 files → empty).
+//
+// FR-43: a window/showMessage write failure is logged, never fatal — the server
+// keeps serving. Requests against files outside the root still degrade to
+// null/empty via the providers' existing graceful-degradation paths (unchanged).
+func (hctx *handlerContext) reportNoUsableRoot(ctx context.Context, stream jsonrpc2.Stream) {
+	hctx.idxResMu.RLock()
+	fileCount := 0
+	if hctx.idx != nil {
+		fileCount = len(hctx.idx.Keys())
+	}
+	hctx.idxResMu.RUnlock()
+
+	msg, warn := noUsableRootMessage(hctx.probe, fileCount)
+	if !warn {
+		return
+	}
+
+	// (1) Mandatory actionable stderr signal (T5).
+	hctx.logger.Warn(msg,
+		"clientPaths", hctx.probe.clientPaths,
+		"cwdFallback", hctx.probe.cwdFallback,
+		"sentinelFound", hctx.probe.sentinelFound,
+		"resolvedRoot", hctx.probe.resolvedRoot,
+		"indexFileCount", fileCount,
+	)
+
+	// (2) window/showMessage Warning notification (T6, OQ-3). Unilateral
+	// server→client notification — no capability required, always safe to send.
+	hctx.sendShowMessage(ctx, stream, protocol.MessageTypeWarning, msg)
+}
+
+// sendShowMessage writes a window/showMessage notification to the client
+// (feature 20, T6). It is the codebase's first window/showMessage sender.
+// The params are marshaled via (ShowMessageParams).MarshalJSONTo through a
+// jsontext.Encoder — the same json/v2 path used for client/registerCapability
+// params — and written as a framed JSON-RPC notification. A write/marshal
+// failure is logged (FR-43), never fatal.
+func (hctx *handlerContext) sendShowMessage(ctx context.Context, stream jsonrpc2.Stream, typ protocol.MessageType, message string) {
+	params := protocol.ShowMessageParams{Type: typ, Message: message}
+	var buf bytes.Buffer
+	if err := params.MarshalJSONTo(jsontext.NewEncoder(&buf)); err != nil {
+		hctx.logger.Error("failed to marshal window/showMessage params", "err", err)
+		return
+	}
+	notif := jsonrpc2.NewNotification("window/showMessage", jsonrpc2.RawMessage(buf.Bytes()))
+	if _, err := stream.Write(ctx, notif); err != nil {
+		hctx.logger.Error("failed to send window/showMessage", "err", err) // FR-43: non-fatal
 	}
 }
 

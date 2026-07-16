@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"go.lsp.dev/jsonrpc2"
+	"go.lsp.dev/uri"
 )
 
 const sentinelName = ".natural-lsp.toml"
@@ -65,96 +66,89 @@ func TestVersionFlag(t *testing.T) {
 	}
 }
 
-// TestRunStdioCallsBootstrap verifies that the real entry point wires
-// config.Bootstrap into the --stdio path: invoking run with --stdio against a
-// workspace that has a .natural-lsp.toml sentinel must resolve the workspace
-// root via Bootstrap and emit its logging contract ("sentinel found: true")
-// on the injected logger.
+// TestRunStdioCallsBootstrap verifies that the --stdio path wires config.Bootstrap
+// into the "initialize" request handler (feature 20, Variant A: deferred bootstrap):
+// driving a full initialize→initialized→shutdown→exit lifecycle with a rootUri that
+// points at a workspace containing a .natural-lsp.toml sentinel must resolve the
+// workspace root via Bootstrap FROM THE CLIENT PATH and emit its logging contract
+// ("sentinel found: true") on the injected logger.
 //
-// Remediation R3 of 01-workspace-and-configuration: T9 DoD requires Bootstrap
-// to be called from the --stdio path, not only from its unit test.
-// (FR-1 Story 1 criterion 3, CR-6.)
+// Before feature 20, Bootstrap ran at process startup from os.Getwd; it now runs
+// from the client-negotiated root inside the initialize handler. This test drives
+// the handshake (rather than relying on EOF-immediately) so Bootstrap actually runs.
+// (FR-1 Story 1 criterion 3, CR-6; feature 20 FR-46/NFR-14.)
 func TestRunStdioCallsBootstrap(t *testing.T) {
-	// Arrange: a temp dir with a sentinel, made the process working directory
-	// so run's bootstrap start ("." / os.Getwd) resolves to it.
+	// Arrange: a temp workspace with a sentinel, referenced via rootUri. The
+	// process working directory is deliberately NOT this dir (feature 20: the
+	// client path, not the cwd, drives discovery).
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, sentinelName), nil, 0o644); err != nil {
 		t.Fatalf("WriteFile sentinel: %v", err)
 	}
-	// Resolve symlinks: macOS t.TempDir() is under /var -> /private/var, and
-	// Getwd reports the resolved path, so compare against the resolved dir.
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
 
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
+	rootURI := uri.File(resolved)
+	initParams := fmt.Sprintf(`{"processId":1234,"rootUri":%q,"capabilities":{}}`, string(rootURI))
+	var inBuf bytes.Buffer
+	msgs := []jsonrpc2.Message{
+		jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), "initialize", jsonrpc2.RawMessage(initParams)),
+		jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`)),
+		jsonrpc2.NewCall(jsonrpc2.NewNumberID(2), "shutdown", jsonrpc2.RawMessage(`{}`)),
+		jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`)),
 	}
-	t.Cleanup(func() { _ = os.Chdir(origWd) })
-	if err := os.Chdir(resolved); err != nil {
-		t.Fatalf("Chdir: %v", err)
+	for i, m := range msgs {
+		if err := writeFramedMessage(&inBuf, m); err != nil {
+			t.Fatalf("writeFramedMessage %d: %v", i, err)
+		}
 	}
 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	// Act: use runWithIO with an empty reader so the server hits EOF immediately
-	// and returns without blocking on os.Stdin (which may be a terminal in local dev).
-	// Bootstrap is called before server.Run, so the sentinel log fires regardless.
-	runWithIO([]string{"--stdio"}, &bytes.Buffer{}, &bytes.Buffer{}, logger)
+	// Act: drive the handshake so the deferred Bootstrap runs from rootUri.
+	exit := runWithIO([]string{"--stdio"}, &inBuf, &bytes.Buffer{}, logger)
+	if exit != 0 {
+		t.Fatalf("runWithIO([--stdio]) exit = %d, want 0", exit)
+	}
 
-	// Assert: Bootstrap's logging contract surfaced on the injected logger.
+	// Assert: Bootstrap's logging contract surfaced, and it resolved the sentinel
+	// from the client's rootUri (not the cwd).
 	got := logBuf.String()
 	if !strings.Contains(got, "sentinel found: true") {
-		t.Errorf("run(--stdio) log = %q, want substring %q (Bootstrap not wired into --stdio)", got, "sentinel found: true")
+		t.Errorf("run(--stdio) log = %q, want substring %q (Bootstrap not wired into initialize)", got, "sentinel found: true")
+	}
+	if !strings.Contains(got, resolved) {
+		t.Errorf("run(--stdio) log = %q, want it to name the client root %q", got, resolved)
 	}
 }
 
 // TestStdioExitCodes_cleansShutdown pins the exit-code mapping behavior for
 // FR-41 Story 4 (T10): the --stdio path must not print "not yet implemented"
-// once server.Run is wired. RED: the current stub prints it, so this fails.
+// and must exit 0 on a clean EOF.
+//
+// Feature 20 (T7): with EOF-before-initialize the deferred Bootstrap never runs
+// (no client params to resolve a root from) — the server must still exit 0 without
+// panicking. Bootstrap-wiring into the initialize handler is covered separately by
+// TestRunStdioCallsBootstrap, which drives a full handshake.
 func TestStdioExitCodes_cleansShutdown(t *testing.T) {
-	// Arrange: a temp workspace with a sentinel, so Bootstrap succeeds.
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, sentinelName), nil, 0o644); err != nil {
-		t.Fatalf("WriteFile sentinel: %v", err)
-	}
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(origWd) })
-	if err := os.Chdir(resolved); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
-
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	// Act: use runWithIO with an empty reader so the server hits EOF and returns
-	// without blocking on os.Stdin (which may be a terminal in local dev). The
-	// "not yet implemented" stub wrote to os.Stderr, so capture via the logger
-	// instead of piping os.Stderr — both approaches detect the stub; this is simpler.
+	// without blocking on os.Stdin (which may be a terminal in local dev).
 	var outBuf bytes.Buffer
 	exitCode := runWithIO([]string{"--stdio"}, &bytes.Buffer{}, &outBuf, logger)
 
-	// Assert: once T10 wires server.Run the stub message must be gone.
+	// Assert: the stub message must be gone and the clean EOF exits 0.
 	logOut := logBuf.String()
 	if strings.Contains(logOut, "not yet implemented") {
-		t.Errorf("--stdio still logs stub message; T10 must replace it with server.Run: %q", logOut)
+		t.Errorf("--stdio still logs stub message; expected server.Run: %q", logOut)
 	}
 	if exitCode != 0 {
 		t.Errorf("runWithIO([--stdio]) = %d, want 0", exitCode)
-	}
-	// Regression: Bootstrap must still be called.
-	if !strings.Contains(logOut, "sentinel found: true") {
-		t.Errorf("Bootstrap not called; log = %q", logOut)
 	}
 }
 
@@ -196,5 +190,74 @@ func TestStdioExitCodes_protocolViolation(t *testing.T) {
 	// Assert: a protocol violation must produce exit code 1.
 	if exitCode == 0 {
 		t.Errorf("runWithIO([--stdio]) with exit-without-shutdown = 0, want non-zero (FR-41 Story 4)")
+	}
+}
+
+// TestSmokeLifecycleNullRootUri verifies that the deferred bootstrap (feature 20)
+// tolerates the exact smoke-script parameters: initialize with rootUri:null,
+// complete the full lifecycle (initialized → shutdown → exit), and exit cleanly.
+// This pins feature 20 T7 (lifecycle/smoke guard): the server must not panic
+// when root params are absent and must complete the LSP lifecycle successfully.
+//
+// The smoke script (scripts/smoke.sh) uses `{"processId":null,"rootUri":null,"capabilities":{}}`
+// as the strongest lifecycle test before editors can use a binary. This test
+// pins that exact scenario as a regression guard.
+//
+// Note: With rootUri:null and (in a temp, empty cwd) no sentinel, the
+// no-usable-root condition from feature 20 T5/T6 fires. The test must assert
+// the lifecycle STILL completes cleanly despite window/showMessage notifications
+// being emitted (i.e. they are non-fatal).
+func TestSmokeLifecycleNullRootUri(t *testing.T) {
+	// Arrange: use an empty temp dir as the cwd (no sentinel, no Natural files).
+	// This triggers the no-usable-root condition from T5/T6, which may emit
+	// window/showMessage, but the lifecycle must still complete.
+	cwdDir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(cwdDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	// Build the exact smoke-script message sequence:
+	// initialize with processId:null, rootUri:null, capabilities:{}
+	// followed by initialized → shutdown → exit.
+	var inBuf bytes.Buffer
+	msgs := []jsonrpc2.Message{
+		jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), "initialize", jsonrpc2.RawMessage(`{"processId":null,"rootUri":null,"capabilities":{}}`)),
+		jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`)),
+		jsonrpc2.NewCall(jsonrpc2.NewNumberID(2), "shutdown", jsonrpc2.RawMessage(`null`)),
+		jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`null`)),
+	}
+	for i, m := range msgs {
+		if err := writeFramedMessage(&inBuf, m); err != nil {
+			t.Fatalf("writeFramedMessage %d: %v", i, err)
+		}
+	}
+
+	var outBuf bytes.Buffer
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	// Act: run the full lifecycle with the smoke params.
+	exitCode := runWithIO([]string{"--stdio"}, &inBuf, &outBuf, logger)
+
+	// Assert: the process must exit 0 (clean shutdown).
+	if exitCode != 0 {
+		t.Errorf("runWithIO([--stdio]) exit = %d, want 0 (clean exit); log: %s", exitCode, logBuf.String())
+	}
+
+	// Assert: the server output contains an initialize response (proof of capabilities).
+	outStr := outBuf.String()
+	if !strings.Contains(outStr, "capabilities") {
+		t.Errorf("server output does not contain 'capabilities'; output: %q", outStr)
+	}
+
+	// Assert: no panic or JSON-RPC error in the output.
+	logStr := logBuf.String()
+	if strings.Contains(logStr, "panic") {
+		t.Errorf("log contains panic: %s", logStr)
 	}
 }

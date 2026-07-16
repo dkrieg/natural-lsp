@@ -142,11 +142,12 @@ verified clean. Five issues were confirmed and re-planned:
    `CompletionItem.detail`/`sortText` no longer serialize as `{}`; all provider results now marshal
    via the json/v2 path (`gojson.Marshal`/`MarshalJSONTo`), guarded by wire-bytes tests and a
    regression check against reintroducing stdlib `json.Marshal`.
-2. **The server ignores `rootUri`/`workspaceFolders`** — the workspace root is derived only from
-   the server process's working directory (sentinel walk-up). VS Code works because
-   `vscode-languageclient` sets the child cwd to the workspace folder; **other editors must be
-   started from (or launch the server in) the workspace root**, or every index-backed feature
-   silently returns nothing. Fix: [feature 20](docs/plans/features/20-workspace-root-handshake/plan.md).
+2. ~~**The server ignores `rootUri`/`workspaceFolders`**~~ — **FIXED in
+   [feature 20](docs/plans/features/20-workspace-root-handshake/plan.md).** The server now
+   negotiates the workspace root from the `initialize` handshake (`workspaceFolders` → `rootUri` →
+   cwd sentinel walk-up), so any LSP client works regardless of the server's launch directory. An
+   empty or unresolved workspace is surfaced via an stderr warning and a `window/showMessage`
+   notification rather than silently returning nothing.
 3. **No indexing progress reporting** (FR-32, P0) — no `$/progress` is ever sent.
    Fix: [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md).
 4. **The cold index build blocks all requests** — it runs synchronously in the `initialized`
@@ -261,14 +262,13 @@ which must start and exit cleanly on EOF.)
 
 ## Editor setup
 
-> **Workspace-root caveat (all editors except VS Code):** the server currently derives the
-> workspace root from **its own working directory** (walking up to the `.natural-lsp.toml`
-> sentinel) and ignores the `rootUri`/`workspaceFolders` your editor sends. Make sure the editor
-> (and therefore the spawned `natural-lsp` process) is started **inside the workspace** — e.g.
-> `cd` to the project before launching Neovim/Helix/Zed — or navigation will silently come up
-> empty. VS Code is unaffected because its client library launches the server with the workspace
-> folder as cwd. Proper `rootUri` handling is planned as
-> [feature 20](docs/plans/features/20-workspace-root-handshake/plan.md).
+> **Workspace root:** the server negotiates the workspace root from the `initialize` handshake —
+> `workspaceFolders` first, then the (deprecated) `rootUri`, then a `.natural-lsp.toml` sentinel
+> walk-up from the server's working directory as a fallback. Any LSP client that opens a folder
+> (VS Code, Neovim, Zed, Helix, JetBrains) works regardless of where the `natural-lsp` process is
+> launched from. If no root can be established or the workspace has no indexable Natural files, the
+> server logs an actionable warning and sends a `window/showMessage` notification rather than
+> silently indexing nothing.
 
 ### VS Code
 
@@ -301,12 +301,9 @@ The extension version tracks the server's release line. See
 
 Neovim needs two things: a `natural` **filetype** for `.NSx` files (Neovim has no
 built-in detection for them) and an LSP client that launches `natural-lsp --stdio`
-for that filetype. Root detection uses the `.natural-lsp.toml` sentinel.
-
-> Note: the `root_markers`/`root_dir` settings below shape the `rootUri` Neovim sends — which
-> the server **currently ignores** (see the workspace-root caveat above). Until
-> [feature 20](docs/plans/features/20-workspace-root-handshake/plan.md) ships, start Neovim from
-> inside the workspace so the server's own sentinel walk-up finds the root.
+for that filetype. The `root_markers`/`root_dir` settings below set the workspace root the
+server honors (via `workspaceFolders`/`rootUri`), with the `.natural-lsp.toml` sentinel as the
+marker.
 
 **1. Associate `.NSx` files with the `natural` filetype** (required for either LSP
 form below — without it the `filetypes`/`filetype` gate never matches):

@@ -45,7 +45,6 @@ func TestMalformedDefinitionParams(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := defaultTestConfig()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -53,7 +52,6 @@ func TestMalformedDefinitionParams(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -161,7 +159,6 @@ func TestMalformedReferenceParams(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := defaultTestConfig()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -169,7 +166,6 @@ func TestMalformedReferenceParams(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)
@@ -276,7 +272,6 @@ func TestMalformedWorkspaceSymbolParams(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	// Act: run the server
-	cfg := defaultTestConfig()
 	az := &stubAnalyzer{}
 	err := Run(
 		context.Background(),
@@ -284,7 +279,6 @@ func TestMalformedWorkspaceSymbolParams(t *testing.T) {
 		&outBuf,
 		"0.0.0-test",
 		"/workspace",
-		cfg,
 		az,
 		logger,
 	)

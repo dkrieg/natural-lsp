@@ -4,23 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–19 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
+**Features 00–20 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
 
 **Assessment (2026-07-14) — known defects and remediation plan.** An independent full-project
 assessment (`docs/assessment-2026-07-14.md`: live wire probes, four specialist reviews, LSP-spec
 verification) confirmed the core is sound (lifecycle/encoding/capabilities spec-correct,
 robustness and the Analyzer seam PASS) but found five issues, re-planned as features **19–23**
-(feature 19 is **shipped**; 20–23 are `Planned` under `docs/plans/features/`) — read the
+(features 19 and 20 are **shipped**; 21–23 are `Planned` under `docs/plans/features/`) — read the
 assessment before touching the affected areas: **(1) — FIXED by feature 19.**
 `textDocument/completion` results were corrupted on the wire —
 `CompletionItem.detail`/`sortText` serialized as `{}` because `protocol.Optional[T]` only
 implements json/v2 `MarshalJSONTo` while the completion dispatch used stdlib `json.Marshal`;
 struct-level tests missed it. Feature 19 unified all provider result marshaling on the json/v2
-path and added wire-bytes tests (see the feature-19 note below). **(2)** the server ignores
-`InitializeParams.workspaceFolders`/`rootUri` — root comes only from `os.Getwd()` sentinel
-walk-up (`cmd/natural-lsp/main.go`), so any client that doesn't set the process cwd to the
-workspace gets a silently empty index (VS Code works only via `vscode-languageclient`'s cwd
-default; the README's Neovim `root_dir` config is discarded) → **feature 20**. **(3)** FR-32
+path and added wire-bytes tests (see the feature-19 note below). **(2) — FIXED by feature 20.**
+The server ignored `InitializeParams.workspaceFolders`/`rootUri` — root came only from
+`os.Getwd()` sentinel walk-up, so any client that didn't set the process cwd to the workspace got
+a silently empty index. Feature 20 negotiates the root from the handshake (workspaceFolders →
+rootUri → cwd fallback) and surfaces an empty/unresolved workspace via stderr + `window/showMessage`
+(see the feature-20 note below). **(3)** FR-32
 (P0, indexing progress) was never implemented — `internal/server/progress.go` is a stub, `Build`
 runs with `onProgress: nil`; and **(4)** the cold index build runs synchronously inside the
 `initialized` handler, blocking all requests (NFR-5) → **feature 21** (background build +
@@ -29,6 +30,38 @@ spots: O(all-files) `LookupByName`, and `workspace/symbol` re-reads every file f
 query → **feature 22**. Secondary: the README `go install` path contradicts the bare
 `natural-lsp` module path in `go.mod`, and `scripts/smoke.sh` mis-resolves its no-arg default
 binary → **feature 23**. Recommended order: 19 → 20 → 21 → 22 → 23.
+
+Feature 20 (workspace root handshake) fixes the assessment's defect #2. **No `internal/model`
+change and no cache-format bump** (still `0.6.0`) — server-wiring + config-plumbing only, entirely
+on the LSP-facing side of the Analyzer seam. Previously root/config were resolved at process
+startup from `os.Getwd()` and fixed *before* the handshake; `initialize`'s
+`workspaceFolders`/`rootUri` were decoded but never consulted, so any client that didn't launch
+the server with cwd == workspace got a silently empty index. **The root is now negotiated from the
+`initialize` request** via the pure `resolveRootStart(params, cwdFallback)` (`internal/server/root.go`):
+precedence is **first `workspaceFolders` entry → `rootUri` → cwd fallback** (LSP-spec-aligned —
+workspaceFolders authoritative, rootUri deprecated-but-honored; non-file/empty URIs fall through;
+`uri.URI.IsFile()`/`.FsPath()` do the conversion). **`server.Run`'s signature changed** (ADR-019,
+approved decision **Variant A**): it no longer takes a finished `root`/`cfg`; it takes a
+`cwdFallback` and performs `config.Bootstrap(resolveRootStart(params, cwdFallback), "", logger)`
+**inside the `initialize` handler**, so the sentinel walk-up (`config.FindRoot`) runs **from the
+client-provided path** (a stray `.natural-lsp.toml` in the launch cwd is no longer consulted when
+the client sends a root — approved OQ-4). The `document.Store`, fsnotify `Watcher`, and the
+`initialized` index build are all constructed against the negotiated `hctx.root`/`hctx.cfg` (moved
+out of `Run` startup; the dispatch loop stays serial so the eager→deferred construction is
+race-free — concurrency review PASS). **Observable lifecycle is unchanged**: `initialize`
+response shape, `positionEncoding`, `serverInfo`, and the locked `TestInitialize` capability
+allow-list are byte-identical; **no capability added** (CR-6 config degradation is preserved — a
+malformed `.natural-lsp.toml` logs a Warn and falls back to defaults without failing `initialize`).
+**No-usable-root legibility (NFR-14):** when no root can be established (no client root + no cwd
+sentinel) or the negotiated root has **no indexable files**, the server logs one actionable stderr
+Warn naming the paths tried **and** sends a `window/showMessage` Warning notification (the first
+`window/showMessage` sender — a unilateral server→client notification, marshaled via the json/v2
+`MarshalJSONTo` path, adds no capability; emitted once at index-build time, never on a healthy
+populated root). Out-of-root requests still degrade to null/empty, never an error (FR-43). The
+headline regression `TestCrossWorkdirRootUri` (integration) launches the binary with cwd **outside**
+the workspace + `rootUri` set and proves `textDocument/definition` resolves cross-file — the exact
+assessment failure. `FuzzResolveRootStart`/`FuzzNoUsableRootMessage` guard the new entry points.
+Fixtures live under `internal/server/testdata/roothandshake/`.
 
 Feature 19 (protocol marshaling unification) fixes the assessment's defect #1 and eliminates its
 systemic cause. **No `internal/model` change and no cache-format bump** (still `0.6.0`) — this is
