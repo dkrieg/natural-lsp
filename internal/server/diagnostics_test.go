@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/jsonrpc2"
@@ -905,7 +906,7 @@ func TestPublishFileDiagnostics(t *testing.T) {
 			az := natural.New(nil)
 			logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 
-			idx, err := workspace.Build(tmpDir, cfg, az, logger, nil)
+			idx, err := workspace.Build(context.Background(), tmpDir, cfg, az, logger, nil)
 			if err != nil {
 				t.Fatalf("failed to build index: %v", err)
 			}
@@ -1621,27 +1622,59 @@ func TestLifecycleDiagnosticPublishing_DidChangeWatchedFiles_Change(t *testing.T
 	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
 	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
 
-	var inBuf bytes.Buffer
-	for _, msg := range []jsonrpc2.Message{initCall, initNotif, didChangeWatchedNotif, shutdownCall, exitNotif} {
-		if err := writeFramedMessage(&inBuf, msg); err != nil {
-			t.Fatalf("failed to write framed message: %v", err)
-		}
-	}
+	// Act. Feature 21 (T4) made the initial index build asynchronous, so the
+	// index is NOT guaranteed to be published the instant "initialized" is
+	// processed. The Changed-event diagnostics path reads through the index
+	// (publishFileDiagnostics resolution order 2), so we must NOT pre-feed
+	// didChangeWatchedFiles into a single buffer — it would race the background
+	// build and observe a not-yet-published (nil) index. Instead, drive over a
+	// pipe: send initialize+initialized, WAIT on the index-ready gate, then send
+	// the watched-file change and shutdown. (didOpen-based sibling tests are
+	// store-first and so are unaffected; only this index/disk path must gate.)
+	ready := indexReadyGate(t)
 
-	// Act
-	var outBuf bytes.Buffer
+	pr, pw := io.Pipe()
+	var out lockedBuffer
 	logBuf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
 	az := natural.New(nil)
 
-	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger)
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
+	runDone := make(chan error, 1)
+	go func() { runDone <- Run(context.Background(), pr, &out, "0.0.0-test", tmpDir, az, logger) }()
+
+	if err := writeFramedMessage(pw, initCall); err != nil {
+		t.Fatalf("failed to write initialize: %v", err)
+	}
+	if err := writeFramedMessage(pw, initNotif); err != nil {
+		t.Fatalf("failed to write initialized: %v", err)
+	}
+
+	// Wait until the background build has published the index before sending the
+	// watched-file change, so the change is applied to a live index.
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("index build did not publish within 5s")
+	}
+
+	for _, msg := range []jsonrpc2.Message{didChangeWatchedNotif, shutdownCall, exitNotif} {
+		if err := writeFramedMessage(pw, msg); err != nil {
+			t.Fatalf("failed to write framed message: %v", err)
+		}
+	}
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s")
 	}
 
 	// Parse notifications
-	output := outBuf.String()
+	output := out.String()
 	notifications := parseAllNotifications(t, output)
 
 	// Find publishDiagnostics for the watched file URI
@@ -1876,31 +1909,18 @@ func TestLifecycleDiagnosticPublishing_FlatNamespaceAmbiguity(t *testing.T) {
 	}`, string(mainURI), string(mainContent)))
 	didOpenNotif := jsonrpc2.NewNotification("textDocument/didOpen", didOpenParams)
 
-	shutdownID := jsonrpc2.NewNumberID(2)
-	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
-	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
-
-	var inBuf bytes.Buffer
-	for _, msg := range []jsonrpc2.Message{initCall, initNotif, didOpenNotif, shutdownCall, exitNotif} {
-		if err := writeFramedMessage(&inBuf, msg); err != nil {
-			t.Fatalf("failed to write framed message: %v", err)
-		}
-	}
-
-	// Act
-	var outBuf bytes.Buffer
-	logBuf := &bytes.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
-
-	az := natural.New(nil)
-
-	err := Run(context.Background(), &inBuf, &outBuf, "0.0.0-test", tmpDir, az, logger)
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
+	// Act: the ambiguity diagnostic depends on the resolution set, which is only
+	// populated after the ASYNC index build publishes (feature 21, T4). Schedule
+	// didOpen in the "mid" phase so it runs AFTER the build is ready — otherwise
+	// publishFileDiagnostics would see a nil resolution set and emit no ambiguity
+	// diagnostic. initialize+initialized run in the "pre" phase.
+	outBufL, _ := runGatedLifecycle(t,
+		[]jsonrpc2.Message{initCall, initNotif},
+		[]jsonrpc2.Message{didOpenNotif},
+		tmpDir, natural.New(nil))
 
 	// Parse notifications
-	output := outBuf.String()
+	output := outBufL.String()
 	notifications := parseAllNotifications(t, output)
 
 	// Find publishDiagnostics for MAIN.NSP

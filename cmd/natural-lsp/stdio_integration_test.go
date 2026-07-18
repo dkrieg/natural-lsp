@@ -625,56 +625,73 @@ func TestCrossWorkdirRootUri(t *testing.T) {
 	// Step 8: Send definition request at the CALLGREET call site
 	// HELLO.NSP line 12 (0-indexed: line 11): CALLNAT 'CALLGREET' #NAME
 	// The identifier CALLGREET is at character 10 (inside the quotes, after CALLNAT ')
-	defID := jsonrpc2.NewNumberID(2)
-	defCall := jsonrpc2.NewCall(defID, "textDocument/definition", jsonrpc2.RawMessage(`{
-		"textDocument": {
-			"uri": "`+helloURI+`"
-		},
-		"position": {
-			"line": 11,
-			"character": 10
-		}
-	}`))
-
-	defMsg, err := jsonrpc2.EncodeMessage(defCall)
-	if err != nil {
-		t.Fatalf("failed to encode definition request: %v", err)
-	}
-	framedDefRequest := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(defMsg))
-	if _, err := stdin.Write([]byte(framedDefRequest)); err != nil {
-		t.Fatalf("failed to write definition request header: %v", err)
-	}
-	if _, err := stdin.Write(defMsg); err != nil {
-		t.Fatalf("failed to write definition request body: %v", err)
-	}
-
-	// Read definition response, skipping any interleaved notifications
-	// (e.g. publishDiagnostics, window/showMessage).
-	defRespCall := fr.readResponseSkippingNotifications(t, &defID, 5*time.Second)
-
-	if defRespCall.Err() != nil {
-		t.Fatalf("definition response has error: %v", defRespCall.Err())
-	}
-
-	// Step 9: Assert definition result is non-empty and points to CALLGREET.NSN in workspace
-	if defRespCall.Result() == nil {
-		t.Fatalf("definition response result is nil (definition not resolved); this proves the bug is not fixed")
-	}
-
-	// Parse result as a Location or Location[] (location.go's handler returns []Location)
+	//
+	// Feature 21 (T4): the workspace index is now built ASYNCHRONOUSLY on a
+	// background goroutine, so a definition request sent immediately after
+	// "initialized" may arrive before the index has published — in which case the
+	// provider degrades to an empty Location[] (FR-43), NOT an error. A real
+	// editor simply sees the definition become available once indexing finishes.
+	// This test mirrors that by retrying the request (fresh id each attempt)
+	// until it resolves or a bounded deadline elapses.
 	var locations []interface{}
-	if err := json.Unmarshal(defRespCall.Result(), &locations); err != nil {
-		// Try parsing as a single Location
-		var singleLoc interface{}
-		if err := json.Unmarshal(defRespCall.Result(), &singleLoc); err != nil {
-			t.Fatalf("failed to unmarshal definition result: %v (result: %s)", err, string(defRespCall.Result()))
+	deadline := time.Now().Add(10 * time.Second)
+	nextID := int64(2)
+	for attempt := 0; ; attempt++ {
+		defID := jsonrpc2.NewNumberID(nextID)
+		nextID++
+		defCall := jsonrpc2.NewCall(defID, "textDocument/definition", jsonrpc2.RawMessage(`{
+			"textDocument": {
+				"uri": "`+helloURI+`"
+			},
+			"position": {
+				"line": 11,
+				"character": 10
+			}
+		}`))
+
+		defMsg, err := jsonrpc2.EncodeMessage(defCall)
+		if err != nil {
+			t.Fatalf("failed to encode definition request: %v", err)
 		}
-		locations = []interface{}{singleLoc}
+		framedDefRequest := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(defMsg))
+		if _, err := stdin.Write([]byte(framedDefRequest)); err != nil {
+			t.Fatalf("failed to write definition request header: %v", err)
+		}
+		if _, err := stdin.Write(defMsg); err != nil {
+			t.Fatalf("failed to write definition request body: %v", err)
+		}
+
+		// Read the correlated definition response, skipping any interleaved
+		// notifications (e.g. publishDiagnostics, window/showMessage).
+		defRespCall := fr.readResponseSkippingNotifications(t, &defID, 5*time.Second)
+		if defRespCall.Err() != nil {
+			t.Fatalf("definition response has error: %v", defRespCall.Err())
+		}
+
+		// A nil / null / [] result means the index has not published yet — retry.
+		locations = nil
+		if defRespCall.Result() != nil {
+			if err := json.Unmarshal(defRespCall.Result(), &locations); err != nil {
+				// Try parsing as a single Location object.
+				var singleLoc interface{}
+				if err := json.Unmarshal(defRespCall.Result(), &singleLoc); err != nil {
+					t.Fatalf("failed to unmarshal definition result: %v (result: %s)", err, string(defRespCall.Result()))
+				}
+				if singleLoc != nil {
+					locations = []interface{}{singleLoc}
+				}
+			}
+		}
+		if len(locations) > 0 {
+			break // index published and definition resolved
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("definition returned empty Location[] after %d attempts over 10s; the async index build never published a resolvable index from rootUri", attempt+1)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	if len(locations) == 0 {
-		t.Fatalf("definition returned empty Location[]; the index did not resolve from rootUri")
-	}
+	// Step 9: Assert definition result points to CALLGREET.NSN in workspace.
 
 	// Assert the first location's URI contains CALLGREET.NSN and is in the workspace
 	firstLoc, ok := locations[0].(map[string]interface{})
@@ -695,8 +712,10 @@ func TestCrossWorkdirRootUri(t *testing.T) {
 		t.Errorf("definition URI = %q, want to be in workspace %s", uriVal, workspaceDir)
 	}
 
-	// Step 10: Send shutdown request
-	shutdownID := jsonrpc2.NewNumberID(3)
+	// Step 10: Send shutdown request. Use nextID (past any definition-retry ids)
+	// so the id never collides with a retried definition request.
+	shutdownID := jsonrpc2.NewNumberID(nextID)
+	nextID++
 	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", nil)
 	shutdownMsg, err := jsonrpc2.EncodeMessage(shutdownCall)
 	if err != nil {

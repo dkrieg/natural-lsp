@@ -703,6 +703,173 @@ func TestInitialize(t *testing.T) {
 	}
 }
 
+// TestInitializeDetectsWorkDoneProgressCapability tests feature 21, T1: detecting
+// whether the client advertises server-initiated work-done progress support via
+// Capabilities.Window.WorkDoneProgress (FR-32).
+//
+// This test verifies that handleInitialize correctly parses the client's
+// window.workDoneProgress capability in all cases:
+// - Capability advertised (true) → should be detected as supported
+// - Capability absent (nil) → should be detected as unsupported
+// - Capability explicit false → should be detected as unsupported
+// - Window object absent entirely → should be detected as unsupported
+//
+// The detected capability must be stored in the Run-local context so the
+// initialized handler can gate progress reporting.
+//
+// Currently FAILS (RED): handleInitialize does not detect/expose window.workDoneProgress yet.
+func TestInitializeDetectsWorkDoneProgressCapability(t *testing.T) {
+	testCases := []struct {
+		name             string
+		paramsJSON       string
+		expectedDetected bool
+	}{
+		{
+			name: "WindowCapability_WorkDoneProgressTrue_Detected",
+			paramsJSON: `{
+				"processId": 1234,
+				"rootPath": "/workspace",
+				"capabilities": {
+					"window": {
+						"workDoneProgress": true
+					}
+				}
+			}`,
+			expectedDetected: true,
+		},
+		{
+			name: "WindowCapability_WorkDoneProgressFalse_NotDetected",
+			paramsJSON: `{
+				"processId": 1234,
+				"rootPath": "/workspace",
+				"capabilities": {
+					"window": {
+						"workDoneProgress": false
+					}
+				}
+			}`,
+			expectedDetected: false,
+		},
+		{
+			name: "WindowCapability_WorkDoneProgressAbsent_NotDetected",
+			paramsJSON: `{
+				"processId": 1234,
+				"rootPath": "/workspace",
+				"capabilities": {
+					"window": {}
+				}
+			}`,
+			expectedDetected: false,
+		},
+		{
+			name: "WindowCapabilityAbsent_NotDetected",
+			paramsJSON: `{
+				"processId": 1234,
+				"rootPath": "/workspace",
+				"capabilities": {}
+			}`,
+			expectedDetected: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: set up the hook to capture the detected workDoneProgress flag
+			detectedChan := make(chan bool, 1)
+			initializeReadyHookMu.Lock()
+			oldHook := initializeReadyHook
+			initializeReadyHook = func(root string, cfg config.Config, clientSupportsWorkDoneProgress bool) {
+				detectedChan <- clientSupportsWorkDoneProgress
+			}
+			initializeReadyHookMu.Unlock()
+			defer func() {
+				initializeReadyHookMu.Lock()
+				initializeReadyHook = oldHook
+				initializeReadyHookMu.Unlock()
+			}()
+
+			// Build an initialize request with the test params
+			id := jsonrpc2.NewNumberID(1)
+			call := jsonrpc2.NewCall(id, "initialize", jsonrpc2.RawMessage(tc.paramsJSON))
+
+			// Write the request as a Content-Length-framed message
+			var reqBuf bytes.Buffer
+			if err := writeFramedMessage(&reqBuf, call); err != nil {
+				t.Fatalf("failed to write framed request: %v", err)
+			}
+
+			// Create an output buffer for responses
+			var outBuf bytes.Buffer
+
+			// Create a logger
+			logBuf := &bytes.Buffer{}
+			logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+			// Act: run the server
+			az := &stubAnalyzer{}
+			err := Run(
+				context.Background(),
+				&reqBuf,
+				&outBuf,
+				"0.1.0-test",
+				"/workspace",
+				az,
+				logger,
+			)
+
+			// Assert: no error from Run
+			if err != nil {
+				t.Fatalf("Run failed: %v", err)
+			}
+
+			// Extract the JSON body from the framed response
+			output := outBuf.String()
+			lines := strings.Split(output, "\r\n")
+			if len(lines) < 3 {
+				t.Fatalf("response too short; expected at least 3 lines, got %d", len(lines))
+			}
+			// Body starts after: "Content-Length: N\r\n\r\n"
+			bodyStart := len(lines[0]) + 2 + 2
+			bodyBytes := output[bodyStart:]
+
+			// Decode the response from the body bytes
+			respMsg, err := jsonrpc2.DecodeMessage([]byte(bodyBytes))
+			if err != nil {
+				t.Fatalf("failed to decode response: %v (output was: %q)", err, output)
+			}
+
+			resp, ok := respMsg.(*jsonrpc2.Response)
+			if !ok {
+				t.Fatalf("expected *jsonrpc2.Response, got %T", respMsg)
+			}
+
+			// Assert: response id matches request id
+			if resp.ID() != id {
+				t.Errorf("response id = %v, want %v", resp.ID(), id)
+			}
+
+			// Assert: response has a result and no error
+			if resp.Err() != nil {
+				t.Errorf("response has an error: %v; want nil", resp.Err())
+			}
+			if resp.Result() == nil {
+				t.Fatalf("response has no result; want InitializeResult")
+			}
+
+			// Assert: clientSupportsWorkDoneProgress was detected correctly
+			select {
+			case detected := <-detectedChan:
+				if detected != tc.expectedDetected {
+					t.Errorf("clientSupportsWorkDoneProgress = %v, want %v (feature 21, T1)",
+						detected, tc.expectedDetected)
+				}
+			case <-time.After(1 * time.Second):
+				t.Fatalf("initializeReadyHook was not called within timeout")
+			}
+		})
+	}
+}
+
 // TestWorkspaceIndexBuiltAfterInitialized pins feature 10, T2 (RED phase).
 // It tests that after the server reaches initialized, it holds a queryable
 // workspace.Index populated with files from the workspace root, and retains
@@ -779,7 +946,10 @@ END
 		}
 	}
 
-	// Arrange: set up the index capture hook
+	// Arrange: set up the index capture hook. Feature 21 (T4) made the index
+	// build asynchronous; the runGatedHandshake harness below chains onto this
+	// hook and withholds shutdown until the build publishes, so capturedIndex is
+	// populated deterministically. Restore via t.Cleanup (LIFO with the gate).
 	var capturedIndex *workspace.Index
 	var capturedEncoding protocol.PositionEncodingKind
 	indexReadyHookMu.Lock()
@@ -789,15 +959,15 @@ END
 		capturedEncoding = enc
 	}
 	indexReadyHookMu.Unlock()
-	defer func() {
+	t.Cleanup(func() {
 		indexReadyHookMu.Lock()
 		indexReadyHook = oldHook
 		indexReadyHookMu.Unlock()
-	}()
+	})
 
-	// Arrange: build the message sequence: initialize (request UTF-8) → initialized (triggers hook)
-	initID := jsonrpc2.NewNumberID(1)
-	initParams := jsonrpc2.RawMessage(fmt.Sprintf(`{
+	// Act: drive initialize (request UTF-8) → initialized → (await build) →
+	// shutdown → exit through the async-safe gated harness.
+	initParams := fmt.Sprintf(`{
 		"processId": 1234,
 		"rootPath": %q,
 		"capabilities": {
@@ -805,45 +975,8 @@ END
 				"positionEncodings": ["utf-8", "utf-16"]
 			}
 		}
-	}`, tmpDir))
-	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
-
-	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
-
-	shutdownID := jsonrpc2.NewNumberID(2)
-	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
-
-	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
-
-	// Write all messages as Content-Length-framed messages
-	var inBuf bytes.Buffer
-	for i, msg := range []jsonrpc2.Message{initCall, initNotif, shutdownCall, exitNotif} {
-		if err := writeFramedMessage(&inBuf, msg); err != nil {
-			t.Fatalf("failed to write framed message %d: %v", i, err)
-		}
-	}
-
-	// Create output buffer and logger
-	var outBuf bytes.Buffer
-	logBuf := &bytes.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
-
-	// Act: run the server with the message sequence
-	az := &stubAnalyzer{}
-	err := Run(
-		context.Background(),
-		&inBuf,
-		&outBuf,
-		"0.0.0-test",
-		tmpDir,
-		az,
-		logger,
-	)
-
-	// Assert: Run should complete without error (clean shutdown)
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
+	}`, tmpDir)
+	_, _ = runGatedHandshake(t, initParams, tmpDir, &stubAnalyzer{})
 
 	// Assert: the test hook was called with a non-nil index (RED: currently will be nil)
 	if capturedIndex == nil {
@@ -2324,7 +2457,11 @@ END
 		t.Fatalf("failed to write fixture: %v", err)
 	}
 
-	// Arrange: set up the index capture hook to verify the index is built after initialized
+	// Arrange: set up the index capture hook to verify the index is built after
+	// initialized. Feature 21 (T4) made the build asynchronous; the
+	// runGatedLifecycle harness below chains onto this hook and withholds
+	// shutdown until the build publishes, so capturedIndex is populated
+	// deterministically. Restore via t.Cleanup (LIFO with the gate's cleanup).
 	var capturedIndex *workspace.Index
 	indexReadyHookMu.Lock()
 	oldHook := indexReadyHook
@@ -2332,18 +2469,18 @@ END
 		capturedIndex = idx
 	}
 	indexReadyHookMu.Unlock()
-	defer func() {
+	t.Cleanup(func() {
 		indexReadyHookMu.Lock()
 		indexReadyHook = oldHook
 		indexReadyHookMu.Unlock()
-	}()
+	})
 
 	// Arrange: build the message sequence:
 	// 1. initialize → should succeed with three providers advertised
 	// 2. initialized → triggers index build
 	// 3. didOpen → opens the fixture document
 	// 4. textDocument/definition → requests definition at a position with no edge (should return empty)
-	// 5. shutdown, exit → clean lifecycle
+	// 5. shutdown, exit → clean lifecycle (appended by runGatedLifecycle)
 	initID := jsonrpc2.NewNumberID(1)
 	initParams := jsonrpc2.RawMessage(fmt.Sprintf(`{
 		"processId": 1234,
@@ -2381,40 +2518,11 @@ END
 	}`, string(docURI))
 	defCall := jsonrpc2.NewCall(defID, "textDocument/definition", jsonrpc2.RawMessage(defParams))
 
-	shutdownID := jsonrpc2.NewNumberID(3)
-	shutdownCall := jsonrpc2.NewCall(shutdownID, "shutdown", jsonrpc2.RawMessage(`{}`))
-
-	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
-
-	// Write all messages as Content-Length-framed messages
-	var inBuf bytes.Buffer
-	for i, msg := range []jsonrpc2.Message{initCall, initNotif, didOpenNotif, defCall, shutdownCall, exitNotif} {
-		if err := writeFramedMessage(&inBuf, msg); err != nil {
-			t.Fatalf("failed to write framed message %d: %v", i, err)
-		}
-	}
-
-	// Create output buffer and logger
-	var outBuf bytes.Buffer
-	logBuf := &bytes.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
-
-	// Act: run the server with the message sequence
-	az := &stubAnalyzer{}
-	err := Run(
-		context.Background(),
-		&inBuf,
-		&outBuf,
-		"0.0.0-test",
-		tmpDir,
-		az,
-		logger,
-	)
-
-	// Assert: Run should complete without error (clean shutdown)
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
+	// Act: run the server through the async-safe gated lifecycle harness. The
+	// pre-shutdown messages (initialize → initialized → didOpen → definition) are
+	// served first; shutdown/exit are withheld until the background build
+	// publishes so capturedIndex is populated deterministically (feature 21, T4).
+	outBufL, _ := runGatedLifecycle(t, []jsonrpc2.Message{initCall, initNotif}, []jsonrpc2.Message{didOpenNotif, defCall}, tmpDir, &stubAnalyzer{})
 
 	// Assert: the index was built after initialized (T2)
 	if capturedIndex == nil {
@@ -2422,7 +2530,7 @@ END
 	}
 
 	// Parse the responses
-	responseBuf := bytes.NewBuffer(outBuf.Bytes())
+	responseBuf := bytes.NewBuffer(outBufL.Bytes())
 
 	// Read initialize response
 	initBody, err := parseFramedResponse(responseBuf)
@@ -2536,7 +2644,7 @@ func TestIncrementalUpdateReflectedInSymbolAndDefinitionGreen(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 
 	// Build the initial index and resolution set
-	idx, err := workspace.Build(tmpDir, cfg, az, logger, nil)
+	idx, err := workspace.Build(context.Background(), tmpDir, cfg, az, logger, nil)
 	if err != nil {
 		t.Fatalf("failed to build initial index: %v", err)
 	}
@@ -2607,7 +2715,7 @@ func TestIncrementalUpdateReflectedInSymbolAndDefinitionGreen(t *testing.T) {
 	if err := os.WriteFile(progPath, []byte(updatedContent), 0600); err != nil {
 		t.Fatalf("failed to write updated content: %v", err)
 	}
-	freshIdx, err := workspace.Build(tmpDir, cfg, az, logger, nil)
+	freshIdx, err := workspace.Build(context.Background(), tmpDir, cfg, az, logger, nil)
 	if err != nil {
 		t.Fatalf("failed to build fresh index: %v", err)
 	}
@@ -2663,7 +2771,7 @@ func TestIncrementalUpdateReflectedInDefinition(t *testing.T) {
 	az := natural.New(nil)
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 
-	idx, err := workspace.Build(root, cfg, az, logger, nil)
+	idx, err := workspace.Build(context.Background(), root, cfg, az, logger, nil)
 	if err != nil {
 		t.Fatalf("failed to build initial index: %v", err)
 	}

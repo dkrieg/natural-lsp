@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–20 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
+**Features 00–21 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
 
 **Assessment (2026-07-14) — known defects and remediation plan.** An independent full-project
 assessment (`docs/assessment-2026-07-14.md`: live wire probes, four specialist reviews, LSP-spec
 verification) confirmed the core is sound (lifecycle/encoding/capabilities spec-correct,
 robustness and the Analyzer seam PASS) but found five issues, re-planned as features **19–23**
-(features 19 and 20 are **shipped**; 21–23 are `Planned` under `docs/plans/features/`) — read the
-assessment before touching the affected areas: **(1) — FIXED by feature 19.**
+(features 19, 20, and 21 are **shipped**; 22–23 are `Planned` under `docs/plans/features/`) — read
+the assessment before touching the affected areas: **(1) — FIXED by feature 19.**
 `textDocument/completion` results were corrupted on the wire —
 `CompletionItem.detail`/`sortText` serialized as `{}` because `protocol.Optional[T]` only
 implements json/v2 `MarshalJSONTo` while the completion dispatch used stdlib `json.Marshal`;
@@ -21,15 +21,48 @@ The server ignored `InitializeParams.workspaceFolders`/`rootUri` — root came o
 `os.Getwd()` sentinel walk-up, so any client that didn't set the process cwd to the workspace got
 a silently empty index. Feature 20 negotiates the root from the handshake (workspaceFolders →
 rootUri → cwd fallback) and surfaces an empty/unresolved workspace via stderr + `window/showMessage`
-(see the feature-20 note below). **(3)** FR-32
-(P0, indexing progress) was never implemented — `internal/server/progress.go` is a stub, `Build`
-runs with `onProgress: nil`; and **(4)** the cold index build runs synchronously inside the
-`initialized` handler, blocking all requests (NFR-5) → **feature 21** (background build +
-`$/progress` wiring). **(5)** NFR-1/2/3/4 performance claims have zero benchmarks; known hot
+(see the feature-20 note below). **(3) and (4) — FIXED by feature 21.** FR-32 (P0, indexing
+progress) was never implemented (`progress.go` was a stub, `Build` ran with `onProgress: nil`) and
+**(4)** the cold index build ran synchronously inside the `initialized` handler, blocking all
+requests (NFR-5). Feature 21 runs the initial build on a background goroutine and wires
+`window/workDoneProgress` create/begin/report/end (see the feature-21 note below); it also **wired
+the on-disk cache into the server build path** (warm starts now real — FR-37/FR-38, partial NFR-2).
+**(5)** NFR-1/2/3/4 performance claims still have zero benchmarks; known hot
 spots: O(all-files) `LookupByName`, and `workspace/symbol` re-reads every file from disk per
-query → **feature 22**. Secondary: the README `go install` path contradicts the bare
+query → **feature 22** (warm-start latency is now wired but unmeasured). Secondary: the README `go install` path contradicts the bare
 `natural-lsp` module path in `go.mod`, and `scripts/smoke.sh` mis-resolves its no-arg default
 binary → **feature 23**. Recommended order: 19 → 20 → 21 → 22 → 23.
+
+Feature 21 (async indexing & work-done progress) fixes assessment defects #3 (FR-32) and #4
+(NFR-5). **No `internal/model` change and no cache-format bump** (still `0.6.0`). Two behaviors:
+**(a) the initial index build now runs on a background goroutine** tied to `bgCtx` (spawned in the
+`initialized` handler) instead of synchronously on the serial dispatch loop, so the editor stays
+responsive during a cold index — providers degrade to null/empty until the index publishes, and the
+open-document store answers `documentSymbol` on live buffers meanwhile. The goroutine builds via
+`buildIndex`, checks `bgCtx.Err()`, publishes `(idx,res)` atomically under `idxResMu` (F7
+build-then-publish, mirroring `applyDocumentChange`), **replays open-buffer edits that arrived during
+the build** into the published index (`replayOpenBuffers` — closes the OQ-B.1 window so index-backed
+providers reflect mid-build edits, not just the store), then fires `reportNoUsableRoot` and the test
+`indexReadyHook`. A `bgBuild sync.WaitGroup` is joined (via a deferred `bgCancel(); Wait()` ordered
+before `stream.Close`) so the goroutine never writes to a closed stream and never leaks;
+`workspace.Build`/`BuildWithCache` gained a `context.Context` (ADR-020) so shutdown aborts an
+in-flight build mid-scan. **(b) work-done progress** is emitted when the client advertises
+`window.workDoneProgress`: `internal/server/progress.go`'s `progressReporter` sends a
+`window/workDoneProgress/create` request (fire-and-forget, OQ-A — response logged, not awaited, so
+the serial loop never blocks) then `$/progress` begin → report(`N/M files` + percentage, clamped
+`[0,100]`, omitted when total 0) → end, all sharing the `natural-lsp-index` token, wired to the
+existing `workspace.Build(onProgress)` callback; a non-supporting client gets async indexing with
+**no** progress messages. Progress `end` fires **before** feature-20's no-usable-root
+`window/showMessage` (OQ-D). **No server capability is added** (work-done progress is gated on the
+*client* capability, like `publishDiagnostics`); marshaling stays on the json/v2 path (feature 19).
+Feature 21 also **wired the on-disk cache** (`BuildWithCache` with `cachePath = root/cfg.Cache.Path`)
+into the server for the first time — fixing two latent `BuildWithCache` bugs (cold-start-with-cachePath
+produced an empty index; the cache was never written back) so warm starts genuinely load the
+content-hash-invalidated cache and re-analyze only changed files (ADR-024) — and **retired the stale
+`handlers.go`/`progress.go` stubs** (Story 3). ADRs 019–024 record the decisions.
+`FuzzResolveRootStart`/`FuzzNoUsableRootMessage` (feature 20) plus the workspace ctx-cancel tests and
+the `progressReporter` wire tests guard the new paths. Fixtures reuse
+`internal/server/testdata/roothandshake/`.
 
 Feature 20 (workspace root handshake) fixes the assessment's defect #2. **No `internal/model`
 change and no cache-format bump** (still `0.6.0`) — server-wiring + config-plumbing only, entirely

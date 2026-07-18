@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"testing"
@@ -31,7 +32,7 @@ func TestResolve_AmbiguityDiagnosticCode_FlatNamespace(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}

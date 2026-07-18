@@ -48,10 +48,12 @@ var (
 // immediately after config.Bootstrap resolves the workspace root and config from
 // the client's initialize params (feature 20, deferred bootstrap). It lets tests
 // observe the NEGOTIATED root/cfg — the values that drive the store, watcher, and
-// index build — without needing to reach the index build.
+// index build — without needing to reach the index build. As of feature 21 (T1),
+// it also passes the clientSupportsWorkDoneProgress flag so tests can verify
+// capability detection.
 // Set only in tests; nil in production.
 var (
-	initializeReadyHook   func(root string, cfg config.Config)
+	initializeReadyHook   func(root string, cfg config.Config, clientSupportsWorkDoneProgress bool)
 	initializeReadyHookMu sync.Mutex
 )
 
@@ -123,11 +125,21 @@ func marshalResult(v any) ([]byte, error) {
 	return gojson.Marshal(v)
 }
 
+// initializeNegotiation holds the results of the initialize handshake,
+// capturing the negotiated capabilities and encoding for later use.
+type initializeNegotiation struct {
+	result                         []byte
+	posEncoding                    protocol.PositionEncodingKind
+	clientSupportsWatchedFilesReg  bool
+	clientSupportsWorkDoneProgress bool
+}
+
 // handleInitialize processes an LSP "initialize" request, negotiates
 // positionEncoding (UTF-8 preferred, UTF-16 default per ADR-008), and returns
-// the marshalled InitializeResult bytes, the negotiated PositionEncodingKind
-// (for direct retention — no JSON round-trip), and a flag indicating whether
-// the client supports dynamic registration for workspace/didChangeWatchedFiles.
+// an initializeNegotiation struct capturing the marshalled InitializeResult bytes,
+// the negotiated PositionEncodingKind, a flag indicating whether the client
+// supports dynamic registration for workspace/didChangeWatchedFiles, and a flag
+// indicating whether the client supports server-initiated work-done progress.
 //
 // Note (feature 20): root/config discovery is NOT performed here — it happens in
 // the "initialize" dispatch case (see Run), which computes the discovery start
@@ -141,7 +153,7 @@ func marshalResult(v any) ([]byte, error) {
 // Feature 11 (T3) adds documentSymbolProvider (true).
 // When features 12–13 add further providers (hover, completion, …),
 // they MUST update TestInitialize to extend the allow-list, making additions explicit.
-func handleInitialize(params protocol.InitializeParams, version string) ([]byte, protocol.PositionEncodingKind, bool, error) {
+func handleInitialize(params protocol.InitializeParams, version string) (initializeNegotiation, error) {
 	// Negotiate position encoding: prefer UTF-8 if offered, else fall back to UTF-16.
 	// slices.Contains is O(n) over a typically-tiny list (1–3 entries).
 	posEncoding := protocol.PositionEncodingKindUTF16
@@ -158,6 +170,16 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 		params.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration != nil &&
 		*params.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration {
 		clientSupportsWatchedFilesReg = true
+	}
+
+	// Check whether the client supports server-initiated work-done progress (FR-32).
+	// Mirror the nil-chain deref pattern used for Workspace.DidChangeWatchedFiles.DynamicRegistration.
+	// This flag will be used in the initialized handler to gate progress reporting (feature 21, T1).
+	clientSupportsWorkDoneProgress := false
+	if params.Capabilities.Window != nil &&
+		params.Capabilities.Window.WorkDoneProgress != nil &&
+		*params.Capabilities.Window.WorkDoneProgress {
+		clientSupportsWorkDoneProgress = true
 	}
 
 	// Intentional minimal capability set — see comment above.
@@ -198,9 +220,14 @@ func handleInitialize(params protocol.InitializeParams, version string) ([]byte,
 	var buf bytes.Buffer
 	enc := jsontext.NewEncoder(&buf)
 	if err := initResult.MarshalJSONTo(enc); err != nil {
-		return nil, posEncoding, false, fmt.Errorf("marshal initialize result: %w", err)
+		return initializeNegotiation{}, fmt.Errorf("marshal initialize result: %w", err)
 	}
-	return buf.Bytes(), posEncoding, clientSupportsWatchedFilesReg, nil
+	return initializeNegotiation{
+		result:                         buf.Bytes(),
+		posEncoding:                    posEncoding,
+		clientSupportsWatchedFilesReg:  clientSupportsWatchedFilesReg,
+		clientSupportsWorkDoneProgress: clientSupportsWorkDoneProgress,
+	}, nil
 }
 
 // handlerContext is the shared state available to every request handler in the
@@ -264,6 +291,11 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 	// Initially false; set to true by handleInitialize if the client advertises support.
 	clientSupportsWatchedFilesReg := false
 
+	// clientSupportsWorkDoneProgress tracks whether the client supports server-initiated
+	// work-done progress (parsed from initialize params, used in initialized handler).
+	// Initially false; set to true by handleInitialize if the client advertises support (feature 21, T1).
+	clientSupportsWorkDoneProgress := false
+
 	// bgCtx is the context for all background goroutines spawned by this server
 	// instance (indexer, watcher, etc.). It is derived from the caller's ctx so
 	// that external cancellation also propagates. bgCancel is called on shutdown
@@ -271,6 +303,15 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 	// shutdown hook.
 	bgCtx, bgCancel := context.WithCancel(ctx)
 	defer bgCancel() // ADR-012: cancel background work on any exit path
+
+	// bgBuild tracks the background index-build goroutine spawned in the
+	// "initialized" handler (feature 21, T4). Run must join it before returning
+	// so (a) the goroutine never writes to the stream or touches hctx after Run
+	// has torn them down (no use-after-return), and (b) no goroutine leaks. The
+	// deferred wait is registered AFTER defer stream.Close() (below) so, by LIFO,
+	// it runs FIRST — bgCancel aborts the in-flight build (T11), the goroutine
+	// exits, and only then is the stream closed.
+	var bgBuild sync.WaitGroup
 
 	// Test hook: if set, called immediately after creating bgCtx to allow tests
 	// to observe the background context (for ADR-012 verification).
@@ -308,6 +349,17 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 	conn := &readWriteCloser{r: r, w: w}
 	stream := jsonrpc2.NewHeaderStream(conn)
 	defer stream.Close()
+
+	// Join the background build goroutine before the stream is closed (feature
+	// 21, T4). Registered after defer stream.Close() so LIFO runs it FIRST:
+	// bgCancel() aborts any in-flight workspace.Build mid-scan (T11), then Wait()
+	// blocks until the goroutine has observed cancellation and returned. This
+	// guarantees the goroutine never races the stream teardown or writes after
+	// Run returns. bgCancel is idempotent (also deferred at the top of Run).
+	defer func() {
+		bgCancel()
+		bgBuild.Wait()
+	}()
 
 	// done is closed when Run returns so the context-watcher goroutine below always
 	// exits — whether Run returns normally (EOF/exit notification) or via a ctx
@@ -409,41 +461,146 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 					if state == statePreInit {
 						state = stateInitialized
 
-						// Feature 10, T2: build the workspace index after initialized.
-						// Errors are logged but don't abort the server (FR-43: graceful degradation).
-						// onProgress is nil for MVP (no work-done progress yet).
-						if hctx.idx == nil {
-							builtIdx, buildErr := workspace.Build(hctx.root, hctx.cfg, az, logger, nil)
+						// Feature 21 T4 (NFR-5): run the initial index build on a
+						// BACKGROUND goroutine so a cold build never stalls the
+						// dispatch loop. The handler returns immediately after
+						// spawning, so requests queued behind "initialized" are
+						// serviced while the build is in flight (store-first
+						// providers answer; index-backed providers degrade to
+						// null/empty until the build publishes — FR-43).
+						//
+						// The goroutine is tied to bgCtx: on shutdown, bgCancel
+						// aborts the in-flight workspace.Build mid-scan (T11) and
+						// the guard below skips publish/hook/report (no
+						// publish-after-shutdown, Story 2 AC5). bgBuild joins it in
+						// Run's deferred cleanup so it never leaks and never writes
+						// to the stream or hctx after Run returns.
+						// Feature 21 T5/T6: construct the work-done progress
+						// reporter for this build. It is ENABLED only when the
+						// client advertised window.workDoneProgress (T1 flag,
+						// negotiated at "initialize", which always precedes
+						// "initialized"); otherwise it is a no-op object, so a
+						// non-supporting client sees NO create/$/progress on the
+						// wire while the async build still runs (Story 1 AC2).
+						// The token is shared across create/begin/report/end
+						// (OQ-C). No server capability is advertised for progress
+						// — like publishDiagnostics, it needs none.
+						reporter := newProgressReporter(stream, protocol.String("natural-lsp-index"), logger, clientSupportsWorkDoneProgress)
+
+						bgBuild.Add(1)
+						go func() {
+							defer bgBuild.Done()
+
+							// Fire-and-forget create, then begin (OQ-A option (i)):
+							// send window/workDoneProgress/create WITHOUT awaiting
+							// its response, then immediately send begin. The serial
+							// dispatch loop cannot both block on a response and keep
+							// reading, and a client that advertised
+							// window.workDoneProgress is expected to accept
+							// server-initiated progress right after create; the
+							// create response stays logged-only in the Response
+							// branch. Ordering on the wire is create → begin →
+							// (report* in T7) → end, all sharing one token.
+							_ = reporter.create(bgCtx)
+							_ = reporter.begin(bgCtx, "Indexing Natural workspace")
+
+							// buildIndex runs workspace.Build + workspace.Resolve
+							// OFF the dispatch loop and returns the fresh (idx, res)
+							// pair without touching hctx. The onProgress callback
+							// (T7 / OQ-E) forwards each (path, current, total) from
+							// the build into reporter.report on the background
+							// goroutine, so the client sees a rising report sequence
+							// "1/N", "2/N", ..., "N/N". A disabled reporter is a
+							// no-op; this happens on the goroutine, not the dispatch
+							// loop, so stream.Write is safe (jsonrpc2.Stream
+							// serializes writes). bgCtx is passed so shutdown aborts
+							// the build (T11 returns ctx.Err()).
+							//
+							// Errors are logged but don't abort the server (FR-43):
+							// providers guard on idx==nil and return null/empty.
+							idx, res, buildErr := hctx.buildIndex(bgCtx, func(path string, current, total int) {
+								_ = reporter.report(bgCtx, current, total, path)
+							})
 							if buildErr != nil {
-								logger.Error("failed to build workspace index", "err", buildErr)
-								// Leave hctx.idx nil; handlers guard with hctx.idx != nil
-							} else {
-								hctx.idx = builtIdx
+								hctx.logger.Error("failed to build workspace index", "err", buildErr)
+								// Fall through with a nil idx so publishIndex leaves
+								// handlers degrading gracefully — unless cancelled
+								// (checked next), in which case we publish nothing.
 							}
-						}
 
-						// Feature 10, T7: compute the resolution set after index build.
-						// This binds call/dependency/data-access edges to their definitions.
-						if hctx.idx != nil {
-							hctx.res = workspace.Resolve(hctx.idx, &hctx.cfg)
-						}
+							// No-publish-after-shutdown guard (Story 2 AC5): if
+							// shutdown raced the build and cancelled bgCtx, skip
+							// publish, hook, report, AND the progress "end". We do
+							// NOT emit progress for an aborted build — writing end to
+							// a stream Run is tearing down is exactly what the guard
+							// avoids (bgBuild.Wait joins us before stream.Close, but
+							// skipping keeps the shutdown clean and emits no dangling
+							// progress). create/begin may already be on the wire;
+							// that is a harmless orphaned progress token the client
+							// discards, non-fatal (FR-43).
+							if bgCtx.Err() != nil {
+								return
+							}
 
-						// Feature 20 (Story 3, T5/T6): report the no-usable-root
-						// condition ONCE here (not per-request), naming the paths
-						// tried. Emits a Warn on stderr and a window/showMessage
-						// Warning notification to the client when the root could not
-						// be established or the index is empty. A healthy, populated
-						// root emits nothing.
-						hctx.reportNoUsableRoot(ctx, stream)
+							// F7 build-then-publish: commit (idx, res) atomically
+							// under idxResMu. publishIndex takes the write lock;
+							// providers snapshot the pair under the read lock, so
+							// there is no torn (old idx, new res) observable.
+							hctx.publishIndex(idx, res)
 
-						// Test hook: if set, call it with the index and encoding (feature 10, T2).
-						// This allows tests to verify the index is populated after initialization.
-						indexReadyHookMu.Lock()
-						hook := indexReadyHook
-						indexReadyHookMu.Unlock()
-						if hook != nil {
-							hook(hctx.idx, hctx.posEncoding)
-						}
+							// Feature 21 (T13 / OQ-B.1): replay any open-buffer edits
+							// that arrived DURING the build into the freshly-published
+							// index. A didChange racing the cold build lands only in
+							// the store (applyDocumentChange saw idx==nil); this merge
+							// makes index-backed providers reflect it too. It runs
+							// under idxResMu (F7) and BEFORE reportNoUsableRoot/hook so
+							// the no-usable-root count and any hook-gated test observe
+							// the fully-realized index (an open buffer counts as usable
+							// content).
+							hctx.replayOpenBuffers()
+
+							// Feature 21 T5 (OQ-D): close the progress UI with a
+							// single "end" AFTER publish+replay but BEFORE the
+							// no-usable-root window/showMessage, so the progress
+							// notification retires before the actionable warning
+							// surfaces. This is the last progress message and shares
+							// the create/begin token. A disabled reporter writes
+							// nothing (Story 1 AC2). Report* messages are wired in T7;
+							// for now begin→end bracket the build with no reports.
+							_ = reporter.end(bgCtx, "Indexing complete")
+
+							// Feature 20 (Story 3, T5/T6): report the no-usable-root
+							// condition ONCE, AFTER publish (OQ-D end-first ordering:
+							// the no-usable-root signal reflects the built index's
+							// file count and fires after the index is known). Emits a
+							// Warn on stderr and a window/showMessage Warning to the
+							// client when the root could not be established or the
+							// index is empty; a healthy, populated root emits nothing.
+							// stream.Write is safe from this goroutine — headerStream
+							// serializes writes under its own writeMu, so this never
+							// races the dispatch loop's response writes.
+							hctx.reportNoUsableRoot(bgCtx, stream)
+
+							// Test hook: fires as the goroutine's FINAL action, after
+							// publish AND reportNoUsableRoot, so a test that waits on
+							// it observes a fully-published index AND the completed
+							// no-usable-root signal (feature 10 T2; feature 21 T4 uses
+							// it as the async-build "everything done" sync point so
+							// pre-fed lifecycle tests can withhold shutdown until the
+							// build is fully finished). Reads hctx.idx/posEncoding
+							// under the read lock — hctx.idx is only written here
+							// (single background builder) via publishIndex.
+							indexReadyHookMu.Lock()
+							hook := indexReadyHook
+							indexReadyHookMu.Unlock()
+							if hook != nil {
+								hctx.idxResMu.RLock()
+								publishedIdx := hctx.idx
+								enc := hctx.posEncoding
+								hctx.idxResMu.RUnlock()
+								hook(publishedIdx, enc)
+							}
+						}()
 
 						// FR-34, A2: if the client supports dynamic registration for workspace/didChangeWatchedFiles,
 						// send a client/registerCapability request to register our interest in file change events.
@@ -487,12 +644,11 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 					}
 				case "test/panic-notification":
 					// TEST-ONLY INFRASTRUCTURE: this case exists solely to let
-					// TestNotificationPanicRecovery exercise the panic-recovery path for
-					// notifications (FR-43, T7). It is intentional dead code in production and
-					// will be removed once Task 7 adds the panic recovery wrapper.
-					// A build tag is intentionally not used here: the hook is trivial,
-					// the comment makes its purpose clear, and segregating it behind
-					// a tag would add build complexity for no meaningful safety gain.
+					// TestNotificationPanicRecovery exercise the per-notification
+					// panic-recovery path (FR-43). It is permanent: the test hook is
+					// intentional dead code in production, and a build tag is not used
+					// because the hook is trivial and segregating it would add build
+					// complexity for no meaningful safety gain.
 					panic("test panic for FR-43 notification recovery")
 				case "textDocument/didOpen":
 					// Only handle didOpen in the fully initialized state (FR-33, Task 5).
@@ -676,11 +832,15 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid initialize params: %v", err))
 					return
 				}
-				respResult, hctx.posEncoding, clientSupportsWatchedFilesReg, err = handleInitialize(params, version)
+				negotiation, err := handleInitialize(params, version)
 				if err != nil {
 					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
 					return
 				}
+				respResult = negotiation.result
+				hctx.posEncoding = negotiation.posEncoding
+				clientSupportsWatchedFilesReg = negotiation.clientSupportsWatchedFilesReg
+				clientSupportsWorkDoneProgress = negotiation.clientSupportsWorkDoneProgress
 
 				// Feature 20 (Variant A): resolve the workspace root from the client's
 				// initialize params (workspaceFolders → rootUri → cwdFallback) and load
@@ -710,11 +870,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 				}
 
 				// Test hook: observe the negotiated root/cfg (feature 20, T2).
+				// As of feature 21 (T1), also pass clientSupportsWorkDoneProgress for capability detection testing.
 				initializeReadyHookMu.Lock()
 				initHook := initializeReadyHook
 				initializeReadyHookMu.Unlock()
 				if initHook != nil {
-					initHook(root, cfg)
+					initHook(root, cfg, clientSupportsWorkDoneProgress)
 				}
 
 				// Construct the document store now that the negotiated root is known
@@ -750,13 +911,11 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 
 			case "test/panic":
 				// TEST-ONLY INFRASTRUCTURE: this case exists solely to let
-				// TestRequestPanicRecovery exercise the panic-recovery path
-				// (FR-43, T6). It is intentional dead code in production and
-				// will be removed once feature handlers (features 09–13) land
-				// and the test no longer needs a synthetic panic trigger.
-				// A build tag is intentionally not used here: the hook is trivial,
-				// the comment makes its purpose clear, and segregating it behind
-				// a tag would add build complexity for no meaningful safety gain.
+				// TestRequestPanicRecovery exercise the per-request panic-recovery
+				// path (FR-43). It is permanent: the test hook is intentional dead
+				// code in production, and a build tag is not used because the hook
+				// is trivial and segregating it would add build complexity for no
+				// meaningful safety gain.
 				panic("test panic for FR-43")
 
 			case "textDocument/definition":
@@ -1182,6 +1341,133 @@ func (hctx *handlerContext) sendShowMessage(ctx context.Context, stream jsonrpc2
 	if _, err := stream.Write(ctx, notif); err != nil {
 		hctx.logger.Error("failed to send window/showMessage", "err", err) // FR-43: non-fatal
 	}
+}
+
+// buildIndex builds the workspace index and resolution set without publishing them
+// onto hctx. It runs workspace.Build (passing hctx.root, hctx.cfg, hctx.az, and
+// hctx.logger) followed by workspace.Resolve, and returns the fresh (idx, res) pair
+// to the caller for inspection or subsequent publishIndex. Errors from Build are
+// returned; a Build error yields a nil idx (and therefore a nil res).
+//
+// onProgress is forwarded verbatim to workspace.BuildWithCache — pass nil to
+// suppress per-file progress callbacks (T7 supplies a real callback).
+//
+// ctx is threaded into the build so a cancelled build (e.g. server shutdown,
+// feature 21 T4/OQ-F) aborts mid-scan and returns ctx.Err() rather than running
+// to completion. The background build goroutine passes bgCtx so shutdown cancels
+// it.
+//
+// Cache wiring (feature 21 T12 / OQ-E): the build goes through
+// workspace.BuildWithCache with cachePath = root/cfg.Cache.Path (a
+// workspace-relative location, default ".natural-lsp-cache"). A warm start loads
+// the persisted index and re-analyzes only files whose content hash changed
+// (FR-38/NFR-2); a cold first run writes the cache. currentHashes is passed nil
+// so BuildWithCache computes content hashes from disk itself. A corrupt or
+// unreadable cache falls back to a full rebuild without error (FR-43), and a
+// cache-directory creation failure is logged, never fatal — the built index is
+// still valid for the session. The cache format is unchanged ("0.6.0").
+//
+// This method is the pure-build half of the F7 build-then-publish pattern (T3).
+// The caller must call publishIndex to atomically commit the pair to hctx.
+func (hctx *handlerContext) buildIndex(ctx context.Context, onProgress func(path string, current, total int)) (*workspace.Index, *workspace.ResolutionSet, error) {
+	cachePath := filepath.Join(hctx.root, hctx.cfg.Cache.Path)
+	idx, changedCount, totalCount, err := workspace.BuildWithCache(ctx, hctx.root, hctx.cfg, hctx.az, hctx.logger, cachePath, nil, onProgress)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build workspace index: %w", err)
+	}
+	hctx.logger.Info("workspace index built",
+		"total", totalCount, "reanalyzed", changedCount, "cache", cachePath,
+		"warm", changedCount < totalCount)
+	res := workspace.Resolve(idx, &hctx.cfg)
+	return idx, res, nil
+}
+
+// publishIndex atomically commits a freshly-built (idx, res) pair to hctx
+// under the idxResMu write lock, mirroring the publish half of applyDocumentChange.
+// After this call, all handlers that snapshot (idx, res) under the read lock will
+// see the new pair consistently — never a torn (old idx, new res) or vice versa.
+//
+// A nil idx is accepted (e.g. when buildIndex returned an error); handlers already
+// guard on idx == nil and degrade gracefully (FR-43).
+func (hctx *handlerContext) publishIndex(idx *workspace.Index, res *workspace.ResolutionSet) {
+	hctx.idxResMu.Lock()
+	hctx.idx = idx
+	hctx.res = res
+	hctx.idxResMu.Unlock()
+}
+
+// replayOpenBuffers re-applies every open-document buffer's current analysis into
+// the freshly-published index (feature 21, T13 / OQ-B.1). It must be called ONCE
+// on the background build goroutine, immediately AFTER publishIndex and BEFORE the
+// indexReadyHook fires.
+//
+// Why: a didOpen/didChange that arrives WHILE the cold background build is still
+// running calls applyDocumentChange with hctx.idx == nil — the edit lands in the
+// document store but not in the (not-yet-published) index. When the build then
+// publishes fresh DISK content, index-backed providers (workspace/symbol,
+// definition, references) would serve the stale disk analysis and miss the
+// in-flight edit until the next change. Store-first providers (documentSymbol)
+// are unaffected. Replay closes that window by merging the store's live buffers
+// into the published index.
+//
+// It reuses the store's already-computed model.FileAnalysis (from Store.Open/Update)
+// rather than re-analyzing, so no analyzer work happens under the lock.
+//
+// Concurrency (F7, mirrors applyDocumentChange): the per-document relPath derivation
+// runs OFF the lock; a SINGLE idxResMu write-lock section then does idx.Add for each
+// buffer followed by one ResolveInto over all replayed paths, so handlers reading
+// under RLock never observe a torn (some-buffers-merged) state. A didChange arriving
+// during replay is serialized by the dispatch loop and the mutex — it cannot
+// interleave with this lock section.
+//
+// A nil index (build error) or an empty store makes this a no-op.
+func (hctx *handlerContext) replayOpenBuffers() {
+	if hctx.store == nil {
+		return
+	}
+	docs := hctx.store.OpenDocuments()
+	if len(docs) == 0 {
+		return
+	}
+
+	// Derive (relPath, analysis) pairs off the lock. Buffers outside the root are
+	// skipped (they cannot key the index); FR-43 keeps a single bad doc from
+	// aborting the replay of the rest.
+	type replayEntry struct {
+		relPath  string
+		analysis model.FileAnalysis
+	}
+	entries := make([]replayEntry, 0, len(docs))
+	for i := range docs {
+		doc := docs[i]
+		_, relPath, err := uriToRelPath(hctx.root, doc.URI)
+		if err != nil {
+			hctx.logger.Warn("replay: skipping open buffer outside workspace root", "uri", doc.URI, "err", err)
+			continue
+		}
+		entries = append(entries, replayEntry{relPath: relPath, analysis: doc.Analysis})
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	// Single lock section: merge every buffer, then recompute resolution once over
+	// all replayed paths, mirroring applyDocumentChange's publish half.
+	hctx.idxResMu.Lock()
+	defer hctx.idxResMu.Unlock()
+
+	if hctx.idx == nil {
+		// The build errored (nil idx published); nothing to merge into. The store
+		// still serves live buffers via store-first providers (FR-43).
+		return
+	}
+
+	changedPaths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		hctx.idx.Add(e.relPath, e.analysis)
+		changedPaths = append(changedPaths, e.relPath)
+	}
+	hctx.res = workspace.ResolveInto(hctx.res, hctx.idx, &hctx.cfg, changedPaths)
 }
 
 // applyDocumentChange (Feature 10, T14) handles incremental updates when a document changes.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -232,7 +233,7 @@ func TestProvideDefinitionEndToEnd(t *testing.T) {
 			fixtureAbs := filepath.Join(wd, tc.fixtureRoot)
 
 			cfg := config.Defaults()
-			idx, _, _, err := workspace.BuildWithCache(fixtureAbs, cfg, az, logger, "", nil, nil)
+			idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureAbs, cfg, az, logger, "", nil, nil)
 			if err != nil {
 				t.Fatalf("failed to build index: %v", err)
 			}
@@ -349,7 +350,7 @@ func TestProvideDefinition_AmbiguousReturnsAllCandidates(t *testing.T) {
 	fixtureRoot := filepath.Join(wd, "testdata", "..", "..", "workspace", "testdata", "resolution", "ambiguous-flat")
 
 	cfg := config.Defaults()
-	idx, _, _, err := workspace.BuildWithCache(fixtureRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to build index: %v", err)
 	}
@@ -504,7 +505,7 @@ func TestProvideDefinition_UnresolvedReturnsEmpty(t *testing.T) {
 	fixtureRoot := filepath.Join(wd, "testdata", "navigation")
 
 	cfg := config.Defaults()
-	idx, _, _, err := workspace.BuildWithCache(fixtureRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to build index: %v", err)
 	}
