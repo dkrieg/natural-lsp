@@ -63,6 +63,33 @@ func (s *Store) Get(u uri.URI) (*Document, bool) {
 	return doc, ok
 }
 
+// OpenDocuments returns a snapshot slice of all currently-open documents as
+// VALUE copies taken under the read lock. Returning copies (not the live
+// *Document pointers) is essential: Store.Update reassigns a live Document's
+// fields in place under the write lock, so a caller iterating shared pointers
+// off-lock would race a concurrent didChange. Each returned Document's Content
+// and Analysis alias the backing arrays that were current at snapshot time;
+// Update assigns fresh values rather than mutating those arrays, so reading them
+// is race-free. Callers must still not mutate Content (it may be shared with
+// other readers).
+//
+// Feature 21 (T13): the background index build uses this to replay open buffers
+// into the freshly-published index, so an edit that arrived during the build is
+// reflected by index-backed providers (not just store-first ones).
+func (s *Store) OpenDocuments() []Document {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.docs) == 0 {
+		return nil
+	}
+	docs := make([]Document, 0, len(s.docs))
+	for _, doc := range s.docs {
+		docs = append(docs, *doc)
+	}
+	return docs
+}
+
 // Open stores a new document with the given URI, version, and content, making it
 // the source of truth for that file. If the URI already exists, it is overwritten.
 // FR-33: on open, the document's current content becomes the source of truth.

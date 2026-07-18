@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"natural-lsp/internal/model"
 	"os"
+	"path/filepath"
 )
 
 const cacheFormatVersion = "0.6.0"
@@ -32,6 +33,57 @@ type cacheEntry struct {
 	HostVarRefs []model.HostVarRef      `json:"hostVarRefs"`
 	Structure   *model.Symbol           `json:"structure,omitempty"`
 	ContentHash string                  `json:"contentHash"`
+}
+
+// cacheExists reports whether a regular cache file is present at path.
+// Used to decide whether a fully-warm build (no re-analysis) still needs to
+// write the cache (it does when the file is absent — e.g. it was created for
+// the first time this session).
+func cacheExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// saveIndex is the root-aware cache writer used by BuildWithCache. Index keys
+// are workspace-relative paths; content hashes are computed from the file at
+// root/relPath so the write is correct regardless of the process CWD (Save,
+// by contrast, reads the key verbatim and is only correct when CWD == root —
+// it is retained for the existing test round-trips). Feature 21 T12.
+func saveIndex(idx *Index, root, cachePath string) error {
+	entries := make(map[string]cacheEntry)
+	idx.ForEach(func(relPath string, fa model.FileAnalysis) {
+		content, err := os.ReadFile(filepath.Join(root, relPath))
+		var hash string
+		if err != nil {
+			hash = fmt.Sprintf("%x", sha256.Sum256([]byte(relPath)))
+		} else {
+			hash = fmt.Sprintf("%x", sha256.Sum256(content))
+		}
+		entries[relPath] = cacheEntry{
+			ObjectType:  string(fa.ObjectType),
+			Symbols:     fa.Symbols,
+			Edges:       fa.Edges,
+			DataAccess:  fa.DataAccess,
+			Definitions: fa.Definitions,
+			WorkFiles:   fa.WorkFiles,
+			HostVarRefs: fa.HostVarRefs,
+			Structure:   fa.Structure,
+			ContentHash: hash,
+		}
+	})
+
+	cache := CacheFile{Version: cacheFormatVersion, Entries: entries}
+	data, err := json.MarshalIndent(cache, "", "    ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal cache: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write cache file: %w", err)
+	}
+	return nil
 }
 
 // Save serializes the index to a JSON file at the given path.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -708,7 +709,7 @@ func TestProvideHoverEndToEnd(t *testing.T) {
 	fixtureRoot := filepath.Join(wd, testdataDir)
 
 	cfg := config.Defaults()
-	idx, _, _, err := workspace.BuildWithCache(fixtureRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to build index: %v", err)
 	}
@@ -992,7 +993,7 @@ func TestProvideHoverDataAccess(t *testing.T) {
 	cfg := config.Defaults()
 
 	// Build the index with both files (DDM-indexed case)
-	idx, _, _, err := workspace.BuildWithCache(tmpDir, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), tmpDir, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to build index with DDM: %v", err)
 	}
@@ -1017,7 +1018,7 @@ func TestProvideHoverDataAccess(t *testing.T) {
 		t.Fatalf("failed to write reader.NSP to temp workspace (DDM-absent): %v", err)
 	}
 
-	idxNoDDM, _, _, err := workspace.BuildWithCache(tmpDirNoDDM, cfg, az, logger, "", nil, nil)
+	idxNoDDM, _, _, err := workspace.BuildWithCache(context.Background(), tmpDirNoDDM, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to build index without DDM: %v", err)
 	}
@@ -1206,7 +1207,7 @@ func TestProvideHoverExternalPerform(t *testing.T) {
 	}
 
 	cfg := config.Defaults()
-	idx, _, _, err := workspace.BuildWithCache(tmpDir, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), tmpDir, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to build index: %v", err)
 	}
@@ -1328,7 +1329,7 @@ func TestProvideHoverAmbiguous(t *testing.T) {
 	}
 
 	cfg := config.Defaults()
-	idx, _, _, err := workspace.BuildWithCache(tmpDir, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), tmpDir, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to build index: %v", err)
 	}
@@ -1445,7 +1446,7 @@ func TestProvideHoverInboundCountIncremental(t *testing.T) {
 	}
 
 	cfg := config.Defaults()
-	idx, _, _, err := workspace.BuildWithCache(tmpDir, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), tmpDir, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to build index: %v", err)
 	}

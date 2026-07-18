@@ -4,6 +4,9 @@
 package workspace
 
 import (
+	"context"
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -372,10 +375,16 @@ func (idx *Index) Invalidate(path string) []string {
 // - Invokes onProgress callback for each file with accurate counts
 // - Handles analyzer panics gracefully (FR-43) by recovering and logging
 //
+// The build is cancellable via ctx: it is checked once per file at the top of
+// the scan loop, so a cancelled ctx (e.g. on server shutdown, feature 21 T4)
+// aborts the build early instead of running to completion. On cancellation the
+// partially-populated index is discarded and (nil, ctx.Err()) is returned — see
+// BuildWithCache for the rationale.
+//
 // The returned Index is concurrency-safe. Errors are collected and returned
 // at the end; individual file processing errors do not abort the build.
-func Build(root string, cfg config.Config, az analysis.Analyzer, logger *slog.Logger, onProgress func(path string, current, total int)) (*Index, error) {
-	idx, _, _, err := BuildWithCache(root, cfg, az, logger, "", nil, onProgress)
+func Build(ctx context.Context, root string, cfg config.Config, az analysis.Analyzer, logger *slog.Logger, onProgress func(path string, current, total int)) (*Index, error) {
+	idx, _, _, err := BuildWithCache(ctx, root, cfg, az, logger, "", nil, onProgress)
 	return idx, err
 }
 
@@ -383,18 +392,36 @@ func Build(root string, cfg config.Config, az analysis.Analyzer, logger *slog.Lo
 // It accepts an optional cache path and a map of current file hashes.
 //
 // Behavior:
-// - When cachePath is empty or cache doesn't exist: full index build from scratch
-// - When cache exists and is fresh: load from cache, no re-analysis
-// - When cache exists with stale files: load cache + re-analyze only stale files
+//   - When cachePath is empty: full index build from scratch, no cache I/O.
+//   - When cachePath is set and no/corrupt/version-mismatched cache exists: full
+//     rebuild from scratch, then the fresh index is written to cachePath (FR-43
+//     graceful degradation — a corrupt cache never crashes, it rebuilds).
+//   - When a valid cache exists: load it, re-analyze only files whose content hash
+//     changed (or that are newly present), retain the rest, then write the cache
+//     back if anything was re-analyzed (warm start, FR-38/NFR-2).
+//
+// Content hashes: when currentHashes is nil and cachePath is set, they are
+// computed from disk (sha256 of file content, keyed by workspace-relative path)
+// so invalidation is content-based (FR-38), not mtime-based. Callers may supply
+// an explicit map to override (used by the workspace tests).
 //
 // Returns:
 // - *Index: the populated index
-// - staleCount: number of files that were re-analyzed (stale files)
+// - staleCount: number of files that were (re-)analyzed (stale or not-in-cache)
 // - totalFiles: total number of files in the workspace
 // - error: any error that occurred during the build
 //
 // The onProgress callback is invoked for each file with accurate counts.
-func BuildWithCache(root string, cfg config.Config, az analysis.Analyzer, logger *slog.Logger, cachePath string, currentHashes map[string]string, onProgress func(path string, current, total int)) (*Index, int, int, error) {
+//
+// Cancellation contract (feature 21 T4/OQ-F): ctx is checked once per file at
+// the top of the scan loop. When ctx is cancelled the build stops immediately
+// and returns (nil, 0, totalFiles, ctx.Err()). A partial index is deliberately
+// NOT returned: the only caller that cancels is the server's background build
+// goroutine, which checks bgCtx before publishing and skips publish on cancel
+// (so a partial index would never be published), and discarding it keeps the
+// contract unambiguous — a non-nil error always means "no usable index". ctx is
+// checked once per file, not more often, to avoid hurting build throughput.
+func BuildWithCache(ctx context.Context, root string, cfg config.Config, az analysis.Analyzer, logger *slog.Logger, cachePath string, currentHashes map[string]string, onProgress func(path string, current, total int)) (*Index, int, int, error) {
 	// Collect all files in the workspace root that match the indexed extensions.
 	var files []string
 	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -438,7 +465,32 @@ func BuildWithCache(root string, cfg config.Config, az analysis.Analyzer, logger
 	sort.Strings(files)
 	totalFiles := len(files)
 
-	// Try to load from cache first
+	// When a cache is in play and the caller did not supply content hashes,
+	// compute them from disk so Load can invalidate changed files by content
+	// (FR-38 — not mtime). Keyed by workspace-relative path to match the cache
+	// entry keys. A file that cannot be read is simply omitted (it will be
+	// treated as not-in-cache and re-analyzed, or its read failure handled in
+	// the scan loop). Callers that pass an explicit map (the workspace tests)
+	// keep full control. Feature 21 T12.
+	if cachePath != "" && currentHashes == nil {
+		currentHashes = make(map[string]string, totalFiles)
+		for _, filePath := range files {
+			content, readErr := os.ReadFile(filePath)
+			if readErr != nil {
+				continue
+			}
+			relPath, _ := filepath.Rel(root, filePath)
+			currentHashes[relPath] = fmt.Sprintf("%x", sha256.Sum256(content))
+		}
+	}
+
+	// Try to load from cache first. A cache HIT populates idx with the persisted
+	// per-file analysis; staleFiles are the entries whose content hash no longer
+	// matches (relative paths, from Load). On any failure (missing/corrupt/
+	// version-mismatch) fall back to a full rebuild: an empty idx with NO cached
+	// entries, so every scanned file is treated as needing analysis below (the
+	// notInCache branch). This is the FR-43 graceful-degradation path — a corrupt
+	// cache never crashes; it just rebuilds. (Feature 21 T12.)
 	var idx *Index
 	var staleFiles []string
 	var err error
@@ -446,32 +498,50 @@ func BuildWithCache(root string, cfg config.Config, az analysis.Analyzer, logger
 	if cachePath != "" {
 		idx, staleFiles, err = Load(cachePath, currentHashes, logger)
 		if err != nil {
-			// Cache load failed, fall back to full build
+			// Cache missing/unreadable/corrupt: full rebuild from scratch.
 			logger.Info("cache load failed, building from scratch", "path", cachePath, "error", err)
 			idx = &Index{entries: make(map[string]model.FileAnalysis)}
-			staleFiles = files
+			staleFiles = nil
 		} else if idx == nil {
-			// Version mismatch - all files are stale
+			// Version mismatch: discard the cache, full rebuild from scratch.
 			idx = &Index{entries: make(map[string]model.FileAnalysis)}
-			staleFiles = files
+			staleFiles = nil
 		}
 	} else {
-		// No cache path provided - full build from scratch
+		// No cache path provided - full build from scratch.
 		idx = &Index{entries: make(map[string]model.FileAnalysis)}
 	}
 
-	// Create a map of stale files for quick lookup
-	// staleFiles from Load() are already relative paths
+	// Create a map of stale files for quick lookup. staleFiles from Load() are
+	// relative paths, matched against relPath below.
 	staleMap := make(map[string]bool)
 	for _, f := range staleFiles {
 		staleMap[f] = true
 	}
 
-	// Track how many files are actually re-analyzed (stale files from cache)
+	// staleCount counts only files re-analyzed because their content hash no
+	// longer matched a LOADED cache entry (a warm-start invalidation). A cold
+	// build (no prior cache) analyzes every file but reports staleCount 0, so
+	// the count means "files that changed since the last cached run" — the
+	// signal the server uses to tell a warm start from a cold one.
 	staleCount := 0
+	// analyzedAny tracks whether ANY file was (re-)analyzed this build (stale OR
+	// not-in-cache), which is what determines whether the on-disk cache needs
+	// rewriting — distinct from staleCount, which excludes cold/new-file work.
+	analyzedAny := false
 
-	// Process all files - load from cache first, then re-analyze stale files
+	// Process all files. A file is (re-)analyzed when it is stale (content hash
+	// changed) or absent from the loaded cache (cold start / newly-added file);
+	// otherwise its cached analysis is retained. Fresh cache hits are neither
+	// re-read nor re-analyzed (the warm-start fast path, FR-38/NFR-2).
 	for i, filePath := range files {
+		// Abort early if the build was cancelled (e.g. server shutdown raced the
+		// build, feature 21 T4). Checked once per file — cheap and does not hurt
+		// throughput. On cancel discard the partial index (see the doc comment).
+		if err := ctx.Err(); err != nil {
+			return nil, 0, totalFiles, err
+		}
+
 		relPath, _ := filepath.Rel(root, filePath)
 
 		// Invoke progress callback
@@ -479,8 +549,9 @@ func BuildWithCache(root string, cfg config.Config, az analysis.Analyzer, logger
 			onProgress(relPath, i+1, totalFiles)
 		}
 
-		// Check if file is stale and needs re-analysis
-		if staleMap[relPath] {
+		_, inCache := idx.Get(relPath)
+		stale := staleMap[relPath]
+		if stale || !inCache {
 			// Read file
 			content, err := os.ReadFile(filePath)
 			if err != nil {
@@ -511,38 +582,22 @@ func BuildWithCache(root string, cfg config.Config, az analysis.Analyzer, logger
 			}()
 
 			idx.Add(relPath, fa)
-			staleCount++
-		} else if cachePath == "" {
-			// No cache exists - build file from scratch
-			content, err := os.ReadFile(filePath)
-			if err != nil {
-				logger.Warn("failed to read file", "path", filePath, "error", err)
-				continue
+			analyzedAny = true
+			if stale {
+				staleCount++
 			}
+		}
+	}
 
-			// Check file size
-			if int64(len(content)) > cfg.Workspace.MaxFileSize {
-				logger.Info("skipping file due to size limit", "path", filePath, "size", len(content), "max", cfg.Workspace.MaxFileSize)
-				continue
-			}
-
-			// Analyze file with panic recovery
-			var fa model.FileAnalysis
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logger.Warn("analyzer panic recovered", "path", filePath, "panic", r)
-						fa = model.FileAnalysis{ObjectType: model.ObjectUnknown}
-					}
-				}()
-				fa, err = az.Analyze(filePath, content)
-				if err != nil {
-					logger.Warn("analyzer returned error", "path", filePath, "error", err)
-					fa = model.FileAnalysis{ObjectType: model.ObjectUnknown}
-				}
-			}()
-
-			idx.Add(relPath, fa)
+	// Persist the freshly-built index back to the cache so the next start is
+	// warm (FR-37). Write failures are logged, never fatal (FR-43): the built
+	// index is still valid for this session. Skipped when no cachePath is set
+	// (the pure in-memory Build path). Only written when at least one file was
+	// (re-)analyzed OR the cache did not previously exist, to avoid rewriting an
+	// unchanged cache on a fully-warm start.
+	if cachePath != "" && (analyzedAny || !cacheExists(cachePath)) {
+		if err := saveIndex(idx, root, cachePath); err != nil {
+			logger.Warn("failed to write cache", "path", cachePath, "error", err)
 		}
 	}
 

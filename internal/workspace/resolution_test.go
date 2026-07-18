@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -383,7 +384,7 @@ func TestResolve_DynamicAndInline_Task4(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -506,7 +507,7 @@ func TestResolve_StaticCallBinding_FlatNamespace_Task5(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -734,7 +735,7 @@ func TestResolve_SteplibChain_Task6(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			az := natural.New(nil)
 
-			idx, _, _, err := BuildWithCache(tc.workspaceRoot, cfg, az, logger, "", nil, nil)
+			idx, _, _, err := BuildWithCache(context.Background(), tc.workspaceRoot, cfg, az, logger, "", nil, nil)
 			if err != nil {
 				t.Fatalf("BuildWithCache failed: %v", err)
 			}
@@ -834,7 +835,7 @@ func TestResolve_AmbiguityDiagnostic_FlatNamespace_Task7(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -1000,7 +1001,7 @@ func TestResolve_ExternalPERFORM_Task8a(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -1116,7 +1117,7 @@ func TestResolve_InlineWinsPERFORM_Task8a(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -1241,7 +1242,7 @@ func TestResolve_NavigationStatements_Task8b(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -1392,7 +1393,7 @@ func TestResolve_ExplicitLibraryBypass_Task8b(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache("testdata/resolution/explicit-library-bypass", cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), "testdata/resolution/explicit-library-bypass", cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -1523,7 +1524,7 @@ func TestResolve_PlaceholderConfirmation_Task8c(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -1688,7 +1689,7 @@ func TestResolve_EdgeIncludes_SimpleBinding_FR13(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache() returned error: %v", err)
 	}
@@ -1789,7 +1790,7 @@ func TestResolve_EdgeIncludes_MissingTarget_FR13(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache() returned error: %v", err)
 	}
@@ -1874,7 +1875,7 @@ func TestInvalidate_TransitiveIncludes_FR13(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache() returned error: %v", err)
 	}
@@ -1972,7 +1973,7 @@ func TestInvalidate_SimpleInclude_FR13(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache() returned error: %v", err)
 	}
@@ -2047,7 +2048,7 @@ func TestResolve_ChannelSeparationCorpus_Task10(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -2474,7 +2475,7 @@ func TestResolve_CacheRoundTrip_Task11(t *testing.T) {
 			az := natural.New(nil)
 
 			// Cold build: no cache path provided → full index build from scratch.
-			coldIdx, _, coldTotal, err := BuildWithCache(
+			coldIdx, _, coldTotal, err := BuildWithCache(context.Background(),
 				tc.workspaceRoot, cfg, az, logger, "", nil, nil,
 			)
 			if err != nil {
@@ -2523,7 +2524,7 @@ func TestResolve_CacheRoundTrip_Task11(t *testing.T) {
 			// We use an empty currentHashes map, which causes all files to be marked stale
 			// and re-analyzed. This ensures a fresh analysis from the cache,
 			// allowing us to test that resolution recomputes identically.
-			cacheIdx, _, cacheTotal, err := BuildWithCache(
+			cacheIdx, _, cacheTotal, err := BuildWithCache(context.Background(),
 				tc.workspaceRoot, cfg, az, logger, cachePath, map[string]string{}, nil,
 			)
 			if err != nil {
@@ -2730,7 +2731,7 @@ func TestResolve_R1_UndeclaredPathFallback_SingleMatch(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -2819,7 +2820,7 @@ func TestResolve_R1_UndeclaredPathFallback_Ambiguous(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}
@@ -3524,7 +3525,7 @@ func TestResolveInto_ScopedRecomputeFlipsOutcome_T13a(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	az := natural.New(nil)
 
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, nil)
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
 	if err != nil {
 		t.Fatalf("BuildWithCache failed: %v", err)
 	}

@@ -1,17 +1,50 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"natural-lsp/internal/analysis/natural"
 	"natural-lsp/internal/config"
 	"natural-lsp/internal/model"
 )
+
+// cancellingAnalyzer is a test Analyzer that records how many files it analyzed
+// and, on the first Analyze call, cancels a supplied context. It lets a
+// cancellation-during-build test synchronize deterministically on the analyzer
+// (no sleeps): the ctx is cancelled from inside the build, so the next
+// per-file ctx.Err() check aborts the loop.
+type cancellingAnalyzer struct {
+	mu     sync.Mutex
+	count  int
+	cancel context.CancelFunc
+}
+
+func (a *cancellingAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis, error) {
+	a.mu.Lock()
+	a.count++
+	first := a.count == 1
+	a.mu.Unlock()
+	if first && a.cancel != nil {
+		// Cancel after the first file is analyzed. The build checks ctx.Err()
+		// at the top of the next iteration and returns early.
+		a.cancel()
+	}
+	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
+}
+
+func (a *cancellingAnalyzer) analyzed() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.count
+}
 
 func TestIndex_Add_Get(t *testing.T) {
 	t.Helper()
@@ -143,7 +176,7 @@ func TestBuild_CoreTypes(t *testing.T) {
 	}
 
 	// Call BuildWithCache().
-	idx, _, _, err := BuildWithCache(workspaceRoot, cfg, az, logger, "", nil, func(path string, current, total int) {
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, func(path string, current, total int) {
 		progressCalls = append(progressCalls, struct {
 			path    string
 			current int
@@ -226,7 +259,7 @@ func TestBuild_ExcludedDirectories(t *testing.T) {
 	az := natural.New(nil)
 
 	// Call BuildWithCache().
-	idx, _, _, err := BuildWithCache(tmpDir, cfg, az, logger, "", nil, func(path string, current, total int) {
+	idx, _, _, err := BuildWithCache(context.Background(), tmpDir, cfg, az, logger, "", nil, func(path string, current, total int) {
 		// Progress callback - just count calls.
 	})
 
@@ -282,7 +315,7 @@ func TestBuild_TooLargeFiles(t *testing.T) {
 	az := natural.New(nil)
 
 	// Call BuildWithCache().
-	idx, _, _, err := BuildWithCache(tmpDir, cfg, az, logger, "", nil, func(path string, current, total int) {
+	idx, _, _, err := BuildWithCache(context.Background(), tmpDir, cfg, az, logger, "", nil, func(path string, current, total int) {
 		// Progress callback.
 	})
 
@@ -342,7 +375,7 @@ func TestBuild_ProgressCallback(t *testing.T) {
 	}
 
 	// Call BuildWithCache().
-	idx, _, _, err := BuildWithCache(tmpDir, cfg, az, logger, "", nil, func(path string, current, total int) {
+	idx, _, _, err := BuildWithCache(context.Background(), tmpDir, cfg, az, logger, "", nil, func(path string, current, total int) {
 		progressCalls = append(progressCalls, struct {
 			path    string
 			current int
@@ -724,7 +757,7 @@ func TestBuild_CacheIntegration(t *testing.T) {
 			// Build the workspace index.
 			// NOTE: This call will fail to compile until Build() signature is
 			// updated to support cache integration (task 05-C02).
-			idx, staleCount, totalFiles, err := BuildWithCache(workspaceRoot, cfg, az, logger, cachePath, tc.currentHashes, nil)
+			idx, staleCount, totalFiles, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, cachePath, tc.currentHashes, nil)
 			if err != nil {
 				t.Fatalf("BuildWithCache() returned error: %v", err)
 			}
@@ -996,4 +1029,81 @@ func TestBuildNameIndex_Race(t *testing.T) {
 	}
 
 	<-done
+}
+
+// TestBuild_CancelledMidBuild verifies the feature 21 T4/OQ-F cancellation
+// contract: a ctx cancelled during the per-file scan aborts the build early
+// (it does NOT run to completion) and returns (nil, ctx.Err()). Determinism:
+// the cancelling analyzer cancels the ctx from inside the FIRST Analyze call,
+// so the loop's ctx.Err() check fires on the next iteration — no sleeps.
+func TestBuild_CancelledMidBuild(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create several indexed files so there is more than one loop iteration.
+	// Names are chosen so sorted order is stable and the analyzer sees them
+	// one at a time; only the first should be analyzed before cancellation.
+	for _, name := range []string{"a.NSP", "b.NSP", "c.NSP", "d.NSP", "e.NSP"} {
+		p := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(p, []byte("WRITE 'x'\nEND\n"), 0644); err != nil {
+			t.Fatalf("write fixture %s: %v", name, err)
+		}
+	}
+
+	cfg := config.Defaults()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	az := &cancellingAnalyzer{cancel: cancel}
+
+	// No cache path → every file flows through az.Analyze, so the analysis
+	// count is a precise measure of how far the build got.
+	var progressCalls int
+	idx, err := Build(ctx, tmpDir, cfg, az, logger, func(path string, current, total int) {
+		progressCalls++
+	})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Build() error = %v, want context.Canceled", err)
+	}
+	if idx != nil {
+		t.Errorf("Build() returned a non-nil index on cancellation; want nil (partial index discarded)")
+	}
+	if got := az.analyzed(); got != 1 {
+		t.Errorf("analyzer ran %d times, want 1 (build must abort after the first file, not run all 5)", got)
+	}
+	if progressCalls >= 5 {
+		t.Errorf("onProgress fired %d times, want fewer than the 5 total files (build aborted early)", progressCalls)
+	}
+}
+
+// TestBuild_PreCancelledContext verifies that a ctx cancelled BEFORE the build
+// starts causes an immediate early return: no file is analyzed at all.
+func TestBuild_PreCancelledContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	for _, name := range []string{"a.NSP", "b.NSP", "c.NSP"} {
+		p := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(p, []byte("WRITE 'x'\nEND\n"), 0644); err != nil {
+			t.Fatalf("write fixture %s: %v", name, err)
+		}
+	}
+
+	cfg := config.Defaults()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the build runs
+
+	az := &cancellingAnalyzer{} // cancel func nil — must never be needed
+	idx, err := Build(ctx, tmpDir, cfg, az, logger, nil)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Build() error = %v, want context.Canceled", err)
+	}
+	if idx != nil {
+		t.Errorf("Build() returned a non-nil index for a pre-cancelled ctx; want nil")
+	}
+	if got := az.analyzed(); got != 0 {
+		t.Errorf("analyzer ran %d times for a pre-cancelled ctx, want 0", got)
+	}
 }

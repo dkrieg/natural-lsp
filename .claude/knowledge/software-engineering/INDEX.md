@@ -28,6 +28,50 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 
 ## Changelog
 
+- 2026-07-17 — **architecture-decisions.md**: recorded **ADR-024** (feature 21 T12 / OQ-E, FR-37/FR-38/NFR-2) —
+  the server now builds via `workspace.BuildWithCache(root/cfg.Cache.Path, currentHashes=nil, …)` for real warm
+  starts (was always cold `Build`). Fixed two latent `BuildWithCache` defects it exposed: cold-start-with-cachePath
+  produced an EMPTY index (absolute-vs-relative `staleMap` mismatch + a `cachePath==""`-gated analyze branch), and
+  `BuildWithCache` never wrote the cache back. Now: hashes computed from disk when nil (content-based, FR-38);
+  staleness unified on relPath (stale OR not-in-cache → analyze); root-aware `saveIndex` write-back on
+  `analyzedAny || !cacheExists`; corrupt/version-mismatch → full rebuild, write failures logged-not-fatal (FR-43).
+  Cache format UNCHANGED (`0.6.0`); no model/Analyzer change. Regression: `internal/server/cache_wiring_test.go`
+  (cold→warm zero-reanalysis, changed-file single-reanalysis, corrupt-cache fallback+repair) via a counting
+  analyzer. Also fixed a pre-existing **T4** async-timing flake (`TestLifecycleDiagnosticPublishing_DidChangeWatchedFiles_Change`
+  pre-fed a watched-file change that raced the async build → converted to the pipe+`indexReadyGate` harness; fails
+  with cold `Build` too, so not a cache regression). `-race -count=2` green.
+- 2026-07-17 — **architecture-decisions.md**: recorded **ADR-023** (feature 21 T5/T6 / FR-32, OQ-A/OQ-C/OQ-D) —
+  the async build goroutine constructs a `progressReporter` gated on the client's `window.workDoneProgress`
+  capability (disabled no-op when absent → zero create/`$/progress` bytes, build still runs), and sequences
+  **fire-and-forget** `window/workDoneProgress/create` → `$/progress begin` → `end` sharing one
+  `natural-lsp-index` token with no response-await (the create response stays logged-only). `end` fires after
+  publish+replay but before feature-20's no-usable-root `window/showMessage` (OQ-D end-first). On a
+  shutdown-raced build the `bgCtx.Err()` guard skips publish AND `end` (no progress for an aborted build). No
+  server capability added (like publishDiagnostics); no model/Analyzer/cache change. Regression:
+  `internal/server/progress_wire_test.go` (ordering, fire-and-forget, two-branch gating) — `-race -count=2`
+  green.
+- 2026-07-17 — **architecture-decisions.md**: recorded **ADR-022** (feature 21 T13 / OQ-B.1) — after the
+  async background build publishes, the goroutine calls `hctx.replayOpenBuffers()` to re-apply every open
+  buffer's already-computed `FileAnalysis` into the freshly-published index (`idx.Add` + one `ResolveInto`
+  under a single `idxResMu` lock, mirroring `applyDocumentChange`), closing the window where a `didChange`
+  racing the cold build landed only in the store and index-backed providers served stale disk content. The
+  load-bearing detail: `document.Store.OpenDocuments()` (new additive accessor) returns **value copies**, not
+  live `*Document` pointers — returning pointers raced `Store.Update`'s in-place field reassignment
+  (`-race`-caught). Replay runs before `reportNoUsableRoot`/`indexReadyHook`, so an open-buffer-only workspace
+  counts as usable content. Server + document change only; no model/Analyzer/cache change.
+- 2026-07-17 — **architecture-decisions.md**: recorded **ADR-021** (feature 21 T4 / NFR-5) — the initial
+  index build now runs on a background goroutine (tracked by a `sync.WaitGroup`, tied to `bgCtx`) so the
+  serial dispatch loop stays responsive during a cold build; the goroutine publishes under `idxResMu`
+  (F7), guards `bgCtx.Err()` before publish (no publish-after-shutdown), fires `indexReadyHook` last as
+  the test-sync point, and is **joined** in `Run`'s deferred cleanup (`bgCancel(); bgBuild.Wait()`
+  registered after `defer stream.Close()`) so it never leaks or writes after `Run` returns. Documented
+  that `stream.Write` from the goroutine is safe because `jsonrpc2.headerStream.Write` serializes frames
+  under its own `writeMu` (verified in `framer.go@v1.0.0`). Server-only change: no `internal/model`,
+  `Analyzer`-seam, or cache-format change.
+- 2026-07-17 — **architecture-decisions.md**: recorded **ADR-020** (feature 21 T11 / OQ-F) — `workspace.Build`
+  and `BuildWithCache` gained a leading `ctx context.Context`; the per-file scan loop checks `ctx.Err()`
+  once per file and returns `(nil, ctx.Err())` on cancel (partial index discarded). Workspace-package API
+  change (review-seam), but Analyzer interface / `internal/model` / cache format `0.6.0` all unchanged.
 - 2026-06-23 — Full LSP 3.17 verification sweep. **lsp-protocol.md**: verified all claims against the
   live spec at https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/;
   added explicit source citations for position encoding (Section 5.3, Section 6.1.1) and diagnostics

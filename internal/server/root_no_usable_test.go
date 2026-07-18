@@ -132,10 +132,9 @@ func FuzzNoUsableRootMessage(f *testing.F) {
 // shutdown → exit against a fresh server, with cwdFallback pointed at emptyCwd.
 // It returns the server output buffer (framed notifications/responses) and the
 // captured stderr log text. Encoding UTF-8 is offered.
-func runHandshakeAgainstRoot(t *testing.T, rootDir, emptyCwd string) (outBuf *bytes.Buffer, logText string) {
+func runHandshakeAgainstRoot(t *testing.T, rootDir, emptyCwd string) (outText string, logText string) {
 	t.Helper()
 
-	var reqBuf bytes.Buffer
 	rootURI := uri.File(rootDir)
 	initParams := fmt.Sprintf(`{
 		"processId": 1234,
@@ -143,27 +142,12 @@ func runHandshakeAgainstRoot(t *testing.T, rootDir, emptyCwd string) (outBuf *by
 		"capabilities": {"general": {"positionEncodings": ["utf-8"]}}
 	}`, string(rootURI))
 
-	msgs := []jsonrpc2.Message{
-		jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), "initialize", jsonrpc2.RawMessage(initParams)),
-		jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`)),
-		jsonrpc2.NewCall(jsonrpc2.NewNumberID(2), "shutdown", jsonrpc2.RawMessage(`{}`)),
-		jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`)),
-	}
-	for i, m := range msgs {
-		if err := writeFramedMessage(&reqBuf, m); err != nil {
-			t.Fatalf("write framed message %d: %v", i, err)
-		}
-	}
-
-	outBuf = &bytes.Buffer{}
-	logBuf := &bytes.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
-	az := natural.New(nil)
-
-	if err := Run(context.Background(), &reqBuf, outBuf, "0.0.0-test", emptyCwd, az, logger); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	return outBuf, logBuf.String()
+	// Feature 21 (T4): the index build is asynchronous, so drive the handshake
+	// through the ready-gated harness — shutdown is withheld until the background
+	// build publishes (and fires reportNoUsableRoot), so the no-usable-root
+	// stderr Warn / window/showMessage still appear deterministically.
+	out, logText := runGatedHandshake(t, initParams, emptyCwd, natural.New(nil))
+	return out.String(), logText
 }
 
 // TestNoUsableRoot_EmptyRoot_StderrWarn verifies T5 (Story 3 AC1): an empty
@@ -202,9 +186,9 @@ func TestNoUsableRoot_EmptyRoot_ShowMessage(t *testing.T) {
 	emptyRoot := t.TempDir()
 	emptyCwd := t.TempDir()
 
-	outBuf, _ := runHandshakeAgainstRoot(t, emptyRoot, emptyCwd)
+	outText, _ := runHandshakeAgainstRoot(t, emptyRoot, emptyCwd)
 
-	notifs := parseAllNotifications(t, outBuf.String())
+	notifs := parseAllNotifications(t, outText)
 	var showMsgs []*jsonrpc2.Notification
 	for _, n := range notifs {
 		if n.Method() == "window/showMessage" {
@@ -238,14 +222,14 @@ func TestNoUsableRoot_PopulatedRoot_NoSignal(t *testing.T) {
 	copyTestdataRootHandshake(t, wsDir)
 	emptyCwd := t.TempDir()
 
-	outBuf, logText := runHandshakeAgainstRoot(t, wsDir, emptyCwd)
+	outText, logText := runHandshakeAgainstRoot(t, wsDir, emptyCwd)
 
 	if strings.Contains(logText, "no indexable Natural files") ||
 		strings.Contains(logText, "could not establish workspace root") {
 		t.Errorf("populated root should emit NO no-usable-root Warn.\nLog:\n%s", logText)
 	}
 
-	notifs := parseAllNotifications(t, outBuf.String())
+	notifs := parseAllNotifications(t, outText)
 	for _, n := range notifs {
 		if n.Method() == "window/showMessage" {
 			t.Errorf("populated root should emit NO window/showMessage, got one: %s", string(n.Params()))

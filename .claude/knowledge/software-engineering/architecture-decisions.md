@@ -295,6 +295,262 @@ client root.
 **Source:** feature-20 `docs/plans/features/20-workspace-root-handshake/tasks.md` (T1/T2, OQ-1/OQ-4);
 LSP 3.17 `initialize` (`workspaceFolders`/`rootUri`), see `lsp-protocol.md`.
 
+## ADR-020 — Workspace build is context-cancellable; cancel discards the partial index (feature 21 T11, OQ-F) (2026-07-17)
+
+**Status:** verified (2026-07-17) (feature-21 tasks.md OQ-F RESOLVED; implemented in T11).
+
+**Decision.** `workspace.Build` and `workspace.BuildWithCache` gained a leading `ctx context.Context`
+parameter: `Build(ctx, root, cfg, az, logger, onProgress)` and
+`BuildWithCache(ctx, root, cfg, az, logger, cachePath, currentHashes, onProgress)`. The per-file scan
+loop (`index.go`) checks `ctx.Err()` **once per file** at the top of each iteration; on a non-nil error
+it stops immediately and returns `(nil, 0, totalFiles, ctx.Err())`. The partial index is **discarded**
+(nil, not returned) — a non-nil error unambiguously means "no usable index." The server's `buildIndex`
+threads its ctx through (`buildIndex(ctx, onProgress)`); the initialized handler passes the handler ctx
+today and will pass `bgCtx` in T4 so shutdown aborts an in-flight build mid-scan rather than running to
+completion (retiring OQ-F's original run-to-completion MVP limitation).
+
+**Rationale.** Before this, a shutdown that raced the initial index build only skipped the *publish*;
+the `workspace.Build` call still ran every file to completion (it took no ctx), wasting work and delaying
+`Run`'s return on a large cold workspace. Checking `ctx.Err()` once per file is the right cadence: it is
+cheap relative to per-file analysis and never becomes a throughput bottleneck (contrast a per-token or
+per-line check).
+
+**Discard-vs-partial contract.** Returning `(nil, ctx.Err())` rather than `(partialIndex, ctx.Err())` was
+chosen because the only caller that cancels is the background build goroutine, which checks `bgCtx` before
+`publishIndex` and skips publish on cancel — so a partial index would never be published anyway. Discarding
+keeps the contract simple and prevents any caller from accidentally consuming a half-built index.
+
+**Seam note (review-seam applies).** This is a **workspace-package API change** — the `Build` entry point
+is part of the workspace API the server depends on. The `analysis.Analyzer` interface itself is untouched,
+`internal/model` is unchanged, and the cache format stays `0.6.0` (only the build entry-point signature
+gains a ctx). All Build/BuildWithCache callers (server `buildIndex` + ~30 workspace/server test sites)
+were migrated to pass `context.Background()` (tests) / the handler ctx (server).
+
+**Alternatives considered.** (a) Return a partial index on cancel — rejected (see contract above).
+(b) Check ctx inside the WalkDir enumeration too — unnecessary; enumeration is fast and the analysis loop
+is where time is spent. (c) Leave Build uncancellable and only skip publish (the original OQ-F MVP) —
+rejected once OQ-F was approved: it leaves the build goroutine burning CPU past shutdown.
+
+**Source:** feature-21 `docs/plans/features/21-async-indexing-and-progress/tasks.md` (T11, Decisions →
+OQ-F).
+
+## ADR-021 — Initial index build runs on a background goroutine, joined at Run exit (feature 21 T4, NFR-5) (2026-07-17)
+
+**Status:** verified (2026-07-17) (feature-21 tasks.md T4; implemented + `-race` green).
+
+**Decision.** The `initialized` notification handler no longer builds the workspace index synchronously on
+the dispatch loop. Instead it spawns a single background goroutine (tracked by a `sync.WaitGroup`,
+`bgBuild`) that runs `hctx.buildIndex(bgCtx, …)` **off** the loop, then — guarded by a `bgCtx.Err()` check
+— `publishIndex`, `reportNoUsableRoot`, and the test-only `indexReadyHook`. The handler returns
+immediately after `bgBuild.Add(1); go …`, so the strictly-serial dispatch loop keeps servicing messages
+while the build is in flight (NFR-5). `client/registerCapability` for watched files stays **on the loop**
+(it does not depend on the index, so watched-files registration is not delayed by the build).
+
+**bgCtx.Err() guard placement.** The guard sits **after `buildIndex` returns and before `publishIndex`**.
+`buildIndex` passes `bgCtx` into `workspace.Build` (ADR-020), so a shutdown that races the build aborts it
+mid-scan; but even a build that completed just as `bgCancel` fired must not publish. Checking `bgCtx.Err()`
+directly (not the build error) after the build is the single decision point: cancelled → skip
+publish/report/hook and return; else publish. This gives Story 2 AC5 "no publish-after-shutdown."
+
+**Goroutine lifecycle — joined, never leaked.** `Run` registers `defer func(){ bgCancel(); bgBuild.Wait() }`
+**after** `defer stream.Close()`, so by LIFO it runs *first*: on any exit path `bgCancel` aborts the
+in-flight build (ADR-020 returns `ctx.Err()` at the next per-file check) and `bgBuild.Wait()` blocks until
+the goroutine has observed cancellation and returned — *then* the stream is closed. This guarantees the
+goroutine never (a) writes to a torn-down stream, (b) touches `hctx` after `Run` returns, or (c) leaks. It
+is the reason `-race` stays clean with the build goroutine and the read loop both live.
+
+**Stream-write safety from the goroutine.** `reportNoUsableRoot`/`sendShowMessage` `stream.Write` now runs
+on the background goroutine, concurrently with the dispatch loop's response writes. This is safe because
+`go.lsp.dev/jsonrpc2`'s `headerStream.Write` serializes each frame under its own `writeMu` (verified in
+`framer.go@v1.0.0`: `wbuf`/`writeMu` guard the compose-and-write; reads use a separate `rbuf`/path). No
+extra serialization is needed in the server; documented inline at the call site.
+
+**indexReadyHook fires last (test-sync ordering).** The test-only `indexReadyHook` fires as the goroutine's
+**final** action — after `publishIndex` AND `reportNoUsableRoot` — so a pre-fed lifecycle test can use it
+as an "everything done" gate and withhold `shutdown` (which cancels `bgCtx`) until the build has fully
+published and emitted its no-usable-root signal. This does **not** violate OQ-D end-first (progress `end`
+before the no-usable-root `window/showMessage` is a T7 concern on the client-facing channel); the hook is a
+non-production seam, and firing it last is strictly safer for synchronization.
+
+**Test adaptation (async timing).** Pre-fed `initialize→initialized→shutdown→exit` harnesses could no
+longer assume the index is ready the instant `initialized` is processed — shutdown would cancel `bgCtx`
+before the build published. A shared test harness (`internal/server/async_build_test.go`:
+`indexReadyGate`/`gatedHandshakeReader`/`runGatedHandshake`/`runGatedLifecycle`) serves the pre-shutdown
+messages, blocks a gated reader until `indexReadyHook` fires, then serves shutdown/exit — making the build
+deterministically complete first. Index/resolution-dependent messages (e.g. a `didOpen` whose ambiguity
+diagnostic needs the resolution set) are scheduled in a post-ready "mid" phase. Over-the-wire integration
+tests (no hooks) instead **retry** the index-backed request with a bounded deadline, mirroring how a real
+editor sees the definition become available once indexing finishes.
+
+**Alternatives considered.** (a) Fire-and-forget goroutine with no join, relying only on `bgCtx` — rejected:
+leaves a window where the goroutine writes to the stream/hctx after `Run` returns (use-after-return, a
+`-race` flake source). (b) Await goroutine via a done-channel select in the loop — rejected: the join must
+happen on *every* exit path (EOF, ctx-cancel, exit-notification), which a single deferred `WaitGroup.Wait`
+expresses cleanly and a per-return-site select does not. (c) Keep the synchronous build but move it to a
+worker before returning the initialize response — rejected: violates NFR-5 (the loop still stalls).
+
+**Source:** feature-21 `docs/plans/features/21-async-indexing-and-progress/tasks.md` (T4); jsonrpc2
+`framer.go` (`headerStream.writeMu`), `go.lsp.dev/jsonrpc2@v1.0.0`.
+
+## ADR-022 — Replay open buffers into the index after the background build publishes (feature 21 T13, OQ-B.1) (2026-07-17)
+
+**Status:** verified (2026-07-17) (feature-21 tasks.md T13, Decision OQ-B; implemented + `-race -count=2` green).
+
+**Problem.** ADR-021 made the initial index build asynchronous. A `didOpen`/`didChange` that arrives **before**
+the background build publishes calls `applyDocumentChange` while `hctx.idx == nil`; it logs "called before
+index initialized" and the edit lands in the `document.Store` but **not** the index. The subsequent full-build
+publish then swaps in fresh **disk** content, so **index-backed** providers (`workspace/symbol`, `definition`,
+`references`) serve stale disk analysis and miss the in-flight edit until the next change. Store-first providers
+(`documentSymbol`) are unaffected because they read the store directly. This is the OQ-B.1 window.
+
+**Decision (OQ-B → replay).** After `publishIndex(idx, res)` on the background goroutine — and only when NOT
+cancelled — the goroutine calls `hctx.replayOpenBuffers()`, which re-applies every open-document buffer's
+**already-computed** `model.FileAnalysis` (from `Store.Open`/`Update`) into the freshly-published index via the
+same merge machinery as `applyDocumentChange`: `idx.Add(relPath, analysis)` per buffer, then a single
+`workspace.ResolveInto` over all replayed paths. No re-analysis happens (the store's `Analysis` is reused), so
+no analyzer work runs under the lock.
+
+**Lock discipline (F7, mirrors `applyDocumentChange`).** Per-document `relPath` derivation runs **off** the
+lock (`Store.OpenDocuments()` returns a snapshot; `uriToRelPath` is pure). A **single** `idxResMu.Lock()`
+section then does all the `idx.Add`s plus one `ResolveInto`, so handlers reading under `RLock` never observe a
+torn "some-buffers-merged" state. A `didChange` arriving during replay is serialized by the strictly-serial
+dispatch loop and the mutex — it cannot interleave with the replay's lock section.
+
+**Store snapshot must be by value, not by pointer (the `-race` fix).** The first cut of `Store.OpenDocuments()`
+returned the live `[]*document.Document` pointers. `-race` immediately flagged a write/read race:
+`Store.Update` reassigns a live `Document`'s fields **in place** under the store's write lock (a concurrent
+`didChange`), while `replayOpenBuffers` read `doc.Analysis`/`doc.URI` **off** the store lock. Fix:
+`OpenDocuments()` returns **value copies** (`[]document.Document`) taken under the store `RLock`. Because
+`Update` assigns *fresh* `Content`/`Analysis` values (never mutates the backing arrays in place), a value
+snapshot is a stable, race-free view. This is the load-bearing correctness detail of the task.
+
+**Ordering vs. `reportNoUsableRoot` / `indexReadyHook`.** Replay runs **after `publishIndex` and before
+`reportNoUsableRoot` and `indexReadyHook`**. Two consequences: (1) a test gating on `indexReadyHook` observes
+the fully-realized index (including replayed buffers); (2) the no-usable-root file-count check reflects the
+post-replay index, so a workspace whose only content is an open buffer counts as **usable** (no spurious
+"no usable root" warning). This is a deliberate, sensible resolution of the "open buffer is the only content"
+note in the task; `reportNoUsableRoot`'s own logic is otherwise unchanged.
+
+**Regression test.** `internal/server/replay_test.go::TestReplayDirtyBufferAfterPublish` uses a live-pipe
+harness and a `gatedDiskAnalyzer` (wraps the real analyzer; blocks only on content carrying a disk-only
+marker, so the disk build stalls while buffer analysis is never gated). It `didOpen`+`didChange`es a file to
+buffer content that adds a subroutine **absent from disk** while the build is blocked, uses a barrier request
+to guarantee the edit is processed before releasing the build, then asserts an **index-backed**
+`workspace/symbol` for that subroutine returns a hit. Verified failing (`[]`, disk content wins) before the
+replay and passing after — the direct proof the OQ-B.1 window is closed.
+
+**Alternatives considered.** (a) MVP "store-first is enough; index catches up on next change" (OQ-B recommended
+option) — rejected by user decision OQ-B: index-backed providers would silently serve stale content until an
+unrelated edit, a confusing correctness gap. (b) Re-analyze each buffer during replay (like `applyDocumentChange`
+does on the change path) — rejected: the store already analyzed on Open/Update, so reusing `doc.Analysis` avoids
+redundant analyzer work under the lock. (c) Return live `*Document` pointers from `OpenDocuments` — rejected by
+`-race` (see above).
+
+**Server + document change only:** no `internal/model`, `Analyzer`-interface, or cache-format change. One
+additive `document.Store.OpenDocuments()` accessor.
+
+**Source:** feature-21 `docs/plans/features/21-async-indexing-and-progress/tasks.md` (T13, Decision OQ-B / OQ-B.1).
+
+## ADR-023 — Fire-and-forget `window/workDoneProgress/create`, capability-gated, end-before-no-usable-root (feature 21 T5/T6, FR-32) (2026-07-17)
+
+**Status:** verified (2026-07-17) (feature-21 tasks.md T5/T6, Decisions OQ-A/OQ-C/OQ-D; implemented + `-race -count=2` green).
+
+**Problem.** The async background build (ADR-021) must report indexing progress (FR-32) via LSP work-done
+progress. Two constraints collide: (1) `window/workDoneProgress/create` is a server→client **request**, but the
+strictly-serial dispatch loop cannot block awaiting its response (the Response branch only logs — there is no
+correlation/wait primitive, `server.go:625`), and (2) progress must not appear at all for a client that did not
+advertise `window.workDoneProgress`, while the build itself must still run (Story 1 AC2).
+
+**Decision.**
+- **OQ-A → (i) fire-and-forget create, then begin.** On the background build goroutine the reporter sends
+  `create` then immediately `begin` with **no await**; the create response stays logged-only in the existing
+  Response branch. A client that advertised `window.workDoneProgress` is expected to accept server-initiated
+  progress right after create; a create rejection means the client ignores the (cosmetic, non-fatal) progress —
+  FR-43. The wire order is `create (request)` → `$/progress begin` → `report*` (T7) → `$/progress end`, all
+  sharing one `protocol.String("natural-lsp-index")` token.
+- **OQ-C → gate on `Capabilities.Window.WorkDoneProgress`.** The reporter is constructed in the `initialized`
+  handler as `newProgressReporter(stream, token, logger, clientSupportsWorkDoneProgress)`. The T1 flag is
+  negotiated at `initialize` (which always precedes `initialized`), so it is available. When the capability is
+  absent the reporter is the **disabled no-op** (ADR/T2): every create/begin/report/end method returns nil
+  writing zero bytes, so a non-supporting client sees NO `window/workDoneProgress/create` and NO `$/progress` on
+  the wire, yet the async build still runs and `indexReadyHook` still fires. **No server capability is advertised
+  for progress** — like publishDiagnostics, it needs none; the `TestInitialize` allow-list is unchanged.
+- **OQ-D → end before no-usable-root.** The single `end` fires **after** `publishIndex`+`replayOpenBuffers` but
+  **before** `reportNoUsableRoot`, so the progress UI retires before feature-20's actionable no-usable-root
+  `window/showMessage` warning surfaces.
+
+**Cancellation (no progress for an aborted build).** The existing `bgCtx.Err()` guard after `buildIndex` returns
+early on a shutdown-raced build, skipping publish/replay/hook AND the progress `end`. `create`/`begin` may
+already be on the wire; that is a harmless orphaned token the client discards (non-fatal). `end` is deliberately
+NOT written on the cancel path — writing to a stream `Run` is tearing down is exactly what the guard avoids. The
+`bgBuild.Wait()` join before `stream.Close` (ADR-021) still guarantees no progress write after `Run` returns.
+`stream.Write` from the goroutine is safe (headerStream serializes frames under its own `writeMu`, ADR-021).
+
+**Regression tests** (`internal/server/progress_wire_test.go`, reusing T4's `runGatedHandshake`/gated harness and
+a new `decodeAllFramed` ordered-stream decoder): `TestProgressSequence_CreateBeforeBegin` asserts
+create<begin<end sharing one token (create is a request, begin/end are notifications);
+`TestProgressCreateIsFireAndForget` asserts begin is written though no create-response is ever fed (proves no
+await); `TestProgressCapabilityGating` is the two-branch proof — supporting client → create+`$/progress` present,
+non-supporting → neither — and BOTH reach a populated index. Forcing `enabled=true` unconditionally makes the
+non-supporting branch fail (confirmed the gate is load-bearing).
+
+**Server-only change:** no `internal/model`, `Analyzer`-interface, or cache-format change. Marshaling stays
+json/v2 (T2's reporter: `MarshalJSONTo` for params, `mustLSPAny`/`gojson` for the `$/progress` value union).
+
+**Source:** feature-21 `docs/plans/features/21-async-indexing-and-progress/tasks.md` (T5/T6, Decisions OQ-A/OQ-C/OQ-D).
+
+## ADR-024 — Wire the on-disk cache into the server build path; fix `BuildWithCache` cold-start & write-back (feature 21 T12, OQ-E, FR-37/FR-38/NFR-2) (2026-07-17)
+
+**Status:** verified (2026-07-17) (feature-21 tasks.md T12 / Decision OQ-E; implemented + `-race -count=2` green).
+
+**Problem.** The server always **cold-built** the index: `buildIndex` called `workspace.Build` (no cache path),
+so every start re-analyzed every file — Story 1 AC4's "warm start served from cache" could not be exercised
+through `Run`. OQ-E resolved to wire `BuildWithCache` in now. Investigating revealed `BuildWithCache` had never
+actually served the server's use case: it was only ever exercised in tests that **pre-seed a cache and pass an
+explicit matching `currentHashes` map**. Two latent defects fell out (both confirmed with a throwaway probe test
+before fixing):
+1. **Cold-start-with-cachePath produced an empty index.** On a missing/corrupt/version-mismatched cache the
+   fallback set `staleFiles = files` (**absolute** paths) but the scan loop matched `staleMap[relPath]`
+   (**relative**) — every lookup missed, and the only from-scratch analyze branch was gated on `cachePath == ""`,
+   which is false when a cachePath is supplied. Net: nothing analyzed.
+2. **`BuildWithCache` never wrote the cache back.** `Save` existed but was called only by tests, and it reads
+   `os.ReadFile(indexKey)` on the relative key — correct only when CWD == root.
+
+**Decision.**
+- `buildIndex` calls `workspace.BuildWithCache(ctx, root, cfg, az, logger, cachePath, nil, onProgress)` with
+  `cachePath = filepath.Join(hctx.root, hctx.cfg.Cache.Path)` (default `.natural-lsp-cache`, workspace-relative).
+  It passes **`currentHashes = nil`**: `BuildWithCache` now computes content hashes from disk itself (sha256,
+  keyed by relPath) when nil and a cachePath is set, so invalidation is content-based (FR-38), not mtime.
+  Explicit-map callers (the workspace tests) are unchanged.
+- **Staleness unified on relPath.** A file is (re-)analyzed when it is `staleMap[relPath]` OR absent from the
+  loaded cache (`!idx.Get(relPath)` — cold start / newly-added file). The old absolute-path fallback and the
+  `cachePath == ""`-gated second analyze branch are gone.
+- **`staleCount` semantics preserved:** it counts ONLY files stale against a *loaded* cache (warm-start
+  invalidations); a cold build reports 0 (honoring `TestBuild_CacheIntegration`'s "no cache → staleCount 0"). A
+  separate `analyzedAny` flag drives write-back.
+- **Write-back:** a new root-aware `saveIndex(idx, root, cachePath)` (cache.go) computes hashes from
+  `root/relPath` (CWD-independent, unlike the retained `Save`), `os.MkdirAll`s the cache dir, and writes.
+  Triggered when `analyzedAny || !cacheExists(cachePath)` — so a fully-warm build with zero re-analysis does not
+  rewrite an unchanged cache, but a cold build or any re-analysis persists.
+- **Graceful degradation (FR-43):** a missing/corrupt/version-mismatched cache → full rebuild, no error (the
+  `Load` error/`idx==nil` branches reset to an empty index); a write-back or mkdir failure is **logged, never
+  fatal** — the in-memory index is still valid for the session.
+
+**Cache format is UNCHANGED (`0.6.0`)** — this is pure wiring + two correctness fixes to an existing function; no
+`internal/model`, `Analyzer`-interface, or on-disk-format change.
+
+**Regression tests** (`internal/server/cache_wiring_test.go`, a `countingAnalyzer` wrapping the real analyzer to
+observe exactly which files are re-analyzed): `TestBuildIndexCacheColdThenWarm` (cold writes the cache file under
+`root/cfg.Cache.Path` + analyzes all; warm loads it + re-analyzes ZERO); `TestBuildIndexCacheChangedFile` (change
+one file → only that file re-analyzed); `TestBuildIndexCorruptCacheFallsBack` (garbage cache → full rebuild, no
+error/panic, cache repaired so a follow-up build is warm). A pre-existing **T4** async-timing defect surfaced when
+running the full suite — `TestLifecycleDiagnosticPublishing_DidChangeWatchedFiles_Change` pre-fed
+`didChangeWatchedFiles` into one buffer and raced the now-async build (the index/disk diagnostics path saw a
+not-yet-published index; confirmed it fails with cold `Build` too, so NOT a cache regression). Fixed by converting
+that test to the pipe + `indexReadyGate` harness so the change is sent only after the index publishes.
+
+**Source:** feature-21 `docs/plans/features/21-async-indexing-and-progress/tasks.md` (T12, Decision OQ-E).
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.

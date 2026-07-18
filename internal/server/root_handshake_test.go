@@ -65,7 +65,12 @@ func TestRootHandshakeNegotiatedRootDrivesIndex(t *testing.T) {
 	//    This dir has no Natural files and no sentinel.
 	emptyDir := t.TempDir()
 
-	// 3. Set up the index-ready hook to capture the built index.
+	// 3. Set up the index-ready hook to capture the built index. Feature 21 (T4)
+	// made the index build asynchronous; the runGatedHandshake harness below
+	// chains onto this capture hook and withholds shutdown until the build has
+	// published, so capturedIdx is populated deterministically. Restore is via
+	// t.Cleanup (LIFO with the gate's own cleanup) so the hook chain unwinds
+	// cleanly.
 	var capturedIdx *workspace.Index
 	var capturedEncoding protocol.PositionEncodingKind
 	indexReadyHookMu.Lock()
@@ -75,16 +80,15 @@ func TestRootHandshakeNegotiatedRootDrivesIndex(t *testing.T) {
 		capturedEncoding = enc
 	}
 	indexReadyHookMu.Unlock()
-	defer func() {
+	t.Cleanup(func() {
 		indexReadyHookMu.Lock()
 		indexReadyHook = oldHook
 		indexReadyHookMu.Unlock()
-	}()
+	})
 
-	// 4. Build the initialize request with rootUri = wsDir.
-	var reqBuf bytes.Buffer
-
-	// Initialize request: send the workspace temp dir as rootUri (file:// URI).
+	// 4-5. Drive initialize(rootUri=wsDir) → initialized → (await build) →
+	// shutdown → exit through the async-safe gated harness, with emptyDir as
+	// cwdFallback (NOT the workspace).
 	initParamsJSON := fmt.Sprintf(`{
 		"processId": 1234,
 		"rootUri": "file://%s",
@@ -94,39 +98,7 @@ func TestRootHandshakeNegotiatedRootDrivesIndex(t *testing.T) {
 			}
 		}
 	}`, wsDir)
-
-	initCall := jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), "initialize", jsonrpc2.RawMessage(initParamsJSON))
-	if err := writeFramedMessage(&reqBuf, initCall); err != nil {
-		t.Fatalf("failed to write initialize: %v", err)
-	}
-
-	// Initialized notification (triggers index build).
-	initializedNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
-	if err := writeFramedMessage(&reqBuf, initializedNotif); err != nil {
-		t.Fatalf("write initialized: %v", err)
-	}
-
-	// Shutdown request.
-	shutdownCall := jsonrpc2.NewCall(jsonrpc2.NewNumberID(2), "shutdown", jsonrpc2.RawMessage(`{}`))
-	if err := writeFramedMessage(&reqBuf, shutdownCall); err != nil {
-		t.Fatalf("write shutdown: %v", err)
-	}
-
-	// Exit notification.
-	exitNotif := jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`))
-	if err := writeFramedMessage(&reqBuf, exitNotif); err != nil {
-		t.Fatalf("write exit: %v", err)
-	}
-
-	// 5. Run the server with emptyDir as cwdFallback (NOT the workspace).
-	var outBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	az := natural.New(nil)
-
-	err = Run(context.Background(), &reqBuf, &outBuf, "0.0.0-test", emptyDir, az, logger)
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
+	_, _ = runGatedHandshake(t, initParamsJSON, emptyDir, natural.New(nil))
 
 	// 6. Assert the index is non-empty and contains CALLGREET.
 	if capturedIdx == nil {
@@ -198,9 +170,10 @@ func TestRootHandshakeWatcherStartsAgainstNegotiatedRoot(t *testing.T) {
 	var capturedRoot string
 	initializeReadyHookMu.Lock()
 	oldHook := initializeReadyHook
-	initializeReadyHook = func(root string, cfg config.Config) {
+	initializeReadyHook = func(root string, cfg config.Config, clientSupportsWorkDoneProgress bool) {
 		capturedRoot = root
-		_ = cfg // cfg captured to verify bootstrap occurred, though we only use root here
+		_ = cfg                            // cfg captured to verify bootstrap occurred, though we only use root here
+		_ = clientSupportsWorkDoneProgress // ignored in this test
 	}
 	initializeReadyHookMu.Unlock()
 	defer func() {
@@ -301,9 +274,10 @@ func TestInitializeCR6MalformedConfig(t *testing.T) {
 	var cfgCaptured bool
 	initializeReadyHookMu.Lock()
 	oldInitHook := initializeReadyHook
-	initializeReadyHook = func(root string, cfg config.Config) {
+	initializeReadyHook = func(root string, cfg config.Config, clientSupportsWorkDoneProgress bool) {
 		capturedCfg = cfg
 		cfgCaptured = true
+		_ = clientSupportsWorkDoneProgress // ignored in this test
 	}
 	initializeReadyHookMu.Unlock()
 	defer func() {
@@ -312,7 +286,9 @@ func TestInitializeCR6MalformedConfig(t *testing.T) {
 		initializeReadyHookMu.Unlock()
 	}()
 
-	// Capture the built index to prove indexing still happens despite bad config (d).
+	// Capture the built index to prove indexing still happens despite bad config
+	// (d). Restore via t.Cleanup so it unwinds LIFO with runGatedHandshake's own
+	// gate cleanup (feature 21, T4 — the build is asynchronous).
 	var capturedIdx *workspace.Index
 	indexReadyHookMu.Lock()
 	oldIdxHook := indexReadyHook
@@ -320,14 +296,15 @@ func TestInitializeCR6MalformedConfig(t *testing.T) {
 		capturedIdx = idx
 	}
 	indexReadyHookMu.Unlock()
-	defer func() {
+	t.Cleanup(func() {
 		indexReadyHookMu.Lock()
 		indexReadyHook = oldIdxHook
 		indexReadyHookMu.Unlock()
-	}()
+	})
 
-	// Drive the full lifecycle with rootUri = the malformed-config workspace.
-	var reqBuf bytes.Buffer
+	// Drive the full lifecycle with rootUri = the malformed-config workspace,
+	// through the async-safe gated harness (withholds shutdown until the build
+	// publishes). (c) no panic — Run completes without error.
 	rootURI := uri.File(wsDir)
 	initParams := fmt.Sprintf(`{
 		"processId": 1234,
@@ -335,29 +312,8 @@ func TestInitializeCR6MalformedConfig(t *testing.T) {
 		"capabilities": {"general": {"positionEncodings": ["utf-8"]}}
 	}`, string(rootURI))
 
-	msgs := []jsonrpc2.Message{
-		jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), "initialize", jsonrpc2.RawMessage(initParams)),
-		jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`)),
-		jsonrpc2.NewCall(jsonrpc2.NewNumberID(2), "shutdown", jsonrpc2.RawMessage(`{}`)),
-		jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`)),
-	}
-	for i, m := range msgs {
-		if err := writeFramedMessage(&reqBuf, m); err != nil {
-			t.Fatalf("write framed message %d: %v", i, err)
-		}
-	}
-
-	var outBuf bytes.Buffer
-	logBuf := &bytes.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logBuf, nil))
-	az := natural.New(nil)
-
-	// (c) no panic — Run completes without error.
-	if err := Run(context.Background(), &reqBuf, &outBuf, "0.0.0-test", emptyCwd, az, logger); err != nil {
-		t.Fatalf("Run returned error (CR-6 hard-fail regression): %v", err)
-	}
-
-	logText := logBuf.String()
+	outBufL, logText := runGatedHandshake(t, initParams, emptyCwd, natural.New(nil))
+	outBuf := bytes.NewBuffer(outBufL.Bytes())
 
 	// (a) the malformed config is surfaced as a Warn naming the offending file.
 	if !strings.Contains(logText, "config file error") {

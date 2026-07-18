@@ -124,8 +124,9 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/documentSymbol` — **shipped** (feature 11)
 - `textDocument/codeLens` (call counts, table write summaries) — **shipped** (feature 13)
 - `textDocument/publishDiagnostics` (parse errors, ambiguous resolution) — **shipped** (feature 14)
-- `window/workDoneProgress` (indexing progress on first run) — **not yet implemented** (FR-32, P0;
-  planned as [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md))
+- `window/workDoneProgress` (indexing progress on first run) — **shipped** (FR-32,
+  [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md); gated on the client's
+  `window.workDoneProgress` capability)
 
 ---
 
@@ -148,13 +149,18 @@ verified clean. Five issues were confirmed and re-planned:
    cwd sentinel walk-up), so any LSP client works regardless of the server's launch directory. An
    empty or unresolved workspace is surfaced via an stderr warning and a `window/showMessage`
    notification rather than silently returning nothing.
-3. **No indexing progress reporting** (FR-32, P0) — no `$/progress` is ever sent.
-   Fix: [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md).
-4. **The cold index build blocks all requests** — it runs synchronously in the `initialized`
-   handler (NFR-5). Fix: also [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md).
+3. ~~**No indexing progress reporting**~~ — **FIXED in
+   [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md).** The server sends
+   `window/workDoneProgress` create → begin → report (`N/M files`) → end during indexing when the
+   client advertises the capability.
+4. ~~**The cold index build blocks all requests**~~ — **FIXED in
+   [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md).** The initial index
+   build runs on a background goroutine, so the editor stays responsive; requests degrade to
+   null/empty until the index is ready, and edits made during the build are replayed into it.
 5. **Performance/scale claims are unmeasured** (NFR-1/2/3/4) — no benchmarks exist; known hot
-   spots at scale include `workspace/symbol` re-reading files per query.
-   Fix: [feature 22](docs/plans/features/22-performance-and-scale-verification/plan.md).
+   spots at scale include `workspace/symbol` re-reading files per query. (Feature 21 wired the
+   on-disk cache into the server, so warm starts are now real — but warm-start/scale latency is
+   still unmeasured.) Fix: [feature 22](docs/plans/features/22-performance-and-scale-verification/plan.md).
 
 Secondary: the `go install` path below does not match the module path in `go.mod` (install from
 a clone for now), and `scripts/smoke.sh` needs an explicit binary path — both addressed by
