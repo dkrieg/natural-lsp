@@ -13,3 +13,8 @@
 # Workspace index cache (content-hashed, rebuilt on demand)
 .natural-lsp-cache/
 
+# Generated synthetic benchmark corpora (internal/workspace/corpusgen) — never
+# committed; regenerate from a seed. Manual runs may emit under these paths.
+/bench-corpus/
+*.bench-corpus/
+

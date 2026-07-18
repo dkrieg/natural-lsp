@@ -15,7 +15,7 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 | File | Covers | Overall status |
 |------|--------|----------------|
 | [lsp-protocol.md](lsp-protocol.md) | JSON-RPC base, lifecycle, capabilities per method, position-encoding negotiation, sync kind, ranges, push-vs-pull diagnostics, `$/cancelRequest`→context | verified (2026-06-21) (LSP 3.17 spec) |
-| [architecture-decisions.md](architecture-decisions.md) | ADR log: parser-based extraction (ADR-015 supersedes ADR-001), Analyzer seam, extraction↔resolution split, cache invalidation, position encoding, sync kind, transport lib, hash, index concurrency model, parser fuzzing, push diagnostics | verified (2026-06-21) (internal docs + Go KB) — ADR-001 superseded 2026-06-21 |
+| [architecture-decisions.md](architecture-decisions.md) | ADR log: parser-based extraction (ADR-015 supersedes ADR-001), Analyzer seam, extraction↔resolution split, cache invalidation, position encoding, sync kind, transport lib, hash, index concurrency model, parser fuzzing, push diagnostics, in-memory line-width table (ADR-025), cached name index (ADR-026) | verified (2026-06-21) (internal docs + Go KB) — ADR-001 superseded 2026-06-21 |
 | [testing-strategy.md](testing-strategy.md) | Pyramid, table-driven, testdata fixtures, golden files (+determinism contract), Analyzer-seam fakes, fuzzing the parser | verified (2026-06-20) (internal docs; Go-fuzz fact: go.dev) |
 | [engineering-principles.md](engineering-principles.md) | SOLID, DRY/YAGNI/KISS, quality gates, reviews | verified (2026-06-20) (recognized literature + NFRs) |
 
@@ -28,6 +28,40 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 
 ## Changelog
 
+- 2026-07-18 — **architecture-decisions.md**: recorded **ADR-026** (feature 22 T7 / OQ-E, NFR-3) —
+  cached the name→[]Candidate map on `workspace.Index`, invalidated (set nil) on `Add` (the sole
+  `idx.entries` mutator; `Invalidate` is read-only). Turns `NamesWithPrefix` (completion, per-keystroke)
+  and `LookupByName` (definition/hover) from O(files)-per-call into a warm map read. Deadlock-free via
+  **double-checked locking** (release RLock → take Lock → re-check → build from `idx.entries` → publish),
+  because Go's RWMutex has no lock-upgrade; cache read only under RLock, written only under Lock. Keyed
+  on `*config.Config` identity (cfg is session-fixed). Before/after (4k objects, warm): NamesWithPrefix
+  3.63 ms→41 µs/query (~87×, 12,082→17 allocs, 2.26 MB→81 KB); LookupByName 2.96 ms→30 ns (~97,000×,
+  now O(matches), flat across tiers). In-memory-only — **no cache bump (0.6.0), no model change, no seam
+  change.** Critical guard: an invalidation test (fails when invalidation removed) proving a mutation is
+  never served stale.
+- 2026-07-18 — **architecture-decisions.md**: recorded **ADR-025** (feature 22 T8 / OQ-B B-i, NFR-3) —
+  eliminated the `workspace/symbol` & `references` per-query full-workspace `os.ReadFile` sweep by keeping
+  an **in-memory, encoding-agnostic per-file line-width table** on `workspace.Index` (ASCII fast path:
+  ASCII lines store only a byte length, retain no bytes; only non-ASCII lines keep raw bytes for exact
+  UTF-16 surrogate counting). In-memory-only — **no cache bump (0.6.0), no model change, no seam change.**
+  Populated inline where content is in hand (build scan loop, applyDocumentChange, replay) + a one-time
+  `ensureLineWidths` sweep at warm cache load (amortized, not per-query). New `Index.ForEachWithRange`
+  hands each callback a disk-free `RangeConverter` under a single RLock (avoids a nested-RLock deadlock
+  hazard under writer contention). Before/after (4k objects): workspace/symbol 44.6 ms→0.97 ms (~46×),
+  references 49 ms→1.46 ms (~34×), ~7× less memory each; heap-per-object stayed flat (NFR-4 band held).
+  Correctness guards are untagged (`just test`): line-width-table-vs-UTF-16-oracle + byte-identical
+  provider output incl. non-ASCII/UTF-16 + files-deleted-after-build disk-free proof. `-race -count=2` clean.
+- 2026-07-18 — **architecture-decisions.md**: recorded feature-22 **T5/T6 measured baselines** (Apple M4 Max,
+  Go 1.26). Warm start (NFR-2) is dominated by per-file SHA-256 hashing + full-cache JSON unmarshal, NOT
+  analysis — full-hit ~57–61 µs/object (≈ cold's 14–17.5 µs/object, actually worse), still sub-second at 4k
+  (246 ms). Request latency (NFR-3): `workspace/symbol` ~44.6 ms and `references` ~49 ms per query at 4k
+  objects (~11 µs/file, ~32k/24k allocs) — the per-query disk sweep, the T8 target (pre-fix baseline).
+  **OQ-E decided: name index IS hot → do T7.** `NamesWithPrefix` (rebuilds `buildNameIndex` on every
+  keystroke) = ~3.68 ms + 12k allocs + 2.26 MB/call at 4k; `LookupByName` cheaper (~2.98 ms, 2 allocs,
+  once-per-request). Provider baselines live in `internal/server` behind `//go:build bench` (need the
+  unexported `handlerContext`); `just bench` now covers `./internal/server/...` too. NFR-8 freshness is a
+  normal (untagged) unit test (`internal/workspace/freshness_test.go`) in `just test`. No model/Analyzer/cache
+  change.
 - 2026-07-17 — **architecture-decisions.md**: recorded **ADR-024** (feature 21 T12 / OQ-E, FR-37/FR-38/NFR-2) —
   the server now builds via `workspace.BuildWithCache(root/cfg.Cache.Path, currentHashes=nil, …)` for real warm
   starts (was always cold `Build`). Fixed two latent `BuildWithCache` defects it exposed: cold-start-with-cachePath

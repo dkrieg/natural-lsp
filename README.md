@@ -157,10 +157,14 @@ verified clean. Five issues were confirmed and re-planned:
    [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md).** The initial index
    build runs on a background goroutine, so the editor stays responsive; requests degrade to
    null/empty until the index is ready, and edits made during the build are replayed into it.
-5. **Performance/scale claims are unmeasured** (NFR-1/2/3/4) — no benchmarks exist; known hot
-   spots at scale include `workspace/symbol` re-reading files per query. (Feature 21 wired the
-   on-disk cache into the server, so warm starts are now real — but warm-start/scale latency is
-   still unmeasured.) Fix: [feature 22](docs/plans/features/22-performance-and-scale-verification/plan.md).
+5. ~~**Performance/scale claims are unmeasured**~~ — **ADDRESSED in
+   [feature 22](docs/plans/features/22-performance-and-scale-verification/plan.md).** A benchmark
+   suite (`just bench`, off the default gate) now records NFR-1/2/3/4 verdicts (measure-and-record;
+   see the plan's Results section), and the two per-query hot spots were fixed: `workspace/symbol`
+   and `references` no longer re-read files from disk (~46×/~34× faster via an in-memory line-width
+   table), and the completion name index is cached (~87× faster). Honest caveat: measured at ≤4k
+   objects and extrapolated to tens of thousands; warm-start latency at very large scale remains a
+   future optimization.
 
 Secondary: the `go install` path below does not match the module path in `go.mod` (install from
 a clone for now), and `scripts/smoke.sh` needs an explicit binary path — both addressed by

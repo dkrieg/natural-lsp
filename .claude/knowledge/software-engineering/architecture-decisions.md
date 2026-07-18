@@ -551,6 +551,205 @@ that test to the pipe + `indexReadyGate` harness so the change is sent only afte
 
 **Source:** feature-21 `docs/plans/features/21-async-indexing-and-progress/tasks.md` (T12, Decision OQ-E).
 
+### ADR: Synthetic-corpus generator lives in a normally-built package, not the bench-tagged one (feature 22, T1)
+`Status: verified` — 2026-07-18
+
+**Decision.** The deterministic synthetic-corpus generator is `internal/workspace/corpusgen` — a **normally-built**
+package (no `//go:build bench` tag). Rationale: T1's small-corpus correctness test must run in `just test` (the
+generator is the trust anchor for every benchmark, so it needs permanent CI coverage), while the heavy benchmarks
+(T2+) live behind `//go:build bench`. Both must import the generator, so it cannot itself be bench-tagged. Placing it
+under `internal/workspace` keeps it next to its only consumers (`workspace.Build`/`Resolve`) and its config/model
+dependencies without a new top-level package.
+
+**API.** `Generate(targetDir string, objectCount int, seed int64) error` (convenience) over
+`GenerateParams(targetDir string, p Params) error` where `Params{Objects, Libraries, Seed, CrossRefDensity}`.
+Zero-valued `Libraries`/`CrossRefDensity` get size-appropriate defaults in `normalize`.
+
+**Determinism contract (NFR-9).** All randomness is drawn from a single `rand.New(rand.NewSource(seed))` — never the
+global unseeded source, never a wall-clock value. Same `(objectCount, seed)` → byte-identical tree (asserted by a
+hash-of-tree equality test across two temp dirs). Critically, the **object plan** (`planObjects`: kind/name/library
+assignment via fixed round-robin) does NOT consume the rng — it is a pure function of `(Objects, Libraries)` — so the
+per-object content rng draws stay aligned regardless of `CrossRefDensity`, and object *count* is exact and
+density-independent.
+
+**Corpus layout.** N libraries `LIB00..LIBnn` (top-level dirs). Phase 1 seeds each library with a baseline of
+subprogram(.NSN)/subroutine(.NSS)/copycode(.NSC)/DDM(.NSD) so a caller always has a same-library target; phase 2 fills
+the remaining budget with programs(.NSP). A `.natural-lsp.toml` declares each library with a **single-hop steplib
+chain** (`LIBk` → `LIB(k+1 mod N)`), so resolution exercises both current-library and cross-library-via-steplib
+paths. Programs emit guaranteed CALLNAT/INCLUDE/external-PERFORM/READ plus an inline `DEFINE SUBROUTINE` (a same-file
+PERFORM target), all against `reachableTargets` (current lib + declared steplibs) so every static reference resolves.
+DDMs are emitted in the exported fixed-column report format the `ddm.go` line-scanner parses (T@0/L@2/DB@4/Name@7/
+F@41/Leng@43).
+
+**Trust guard.** The correctness test builds via `workspace.Build` + `workspace.Resolve` and asserts: exact object
+count indexed, zero happy-path syntax diagnostics, and that CALLNAT/PERFORM/INCLUDE edges actually **resolve** (not
+dangling) plus named DDM read sites and parsed DDM field definitions exist. This is what makes the generator
+trustworthy for benchmarks.
+
+**No contract impact.** No `internal/model`, Analyzer-interface, or cache-format change — the generator only emits
+`.NSx` source consumed by the existing analyzer. Output dir patterns (`/bench-corpus/`, `*.bench-corpus/`) added to
+`.gitignore`; the corpus is generated, never committed.
+
+**Source:** feature-22 `docs/plans/features/22-performance-and-scale-verification/tasks.md` (T1, Decisions OQ-A/OQ-D).
+
+### ADR: Warm-start & request-latency baselines — measured findings (feature 22, T5/T6) (2026-07-18)
+`Status: verified` — 2026-07-18 (measured on Apple M4 Max, Go 1.26, darwin/arm64)
+
+**Warm-start (NFR-2) is NOT dominated by analysis — it is dominated by hashing + JSON cache
+deserialization.** Full-cache-hit `BuildWithCache` (`staleCount==0`) measured ~57–61 µs/object across
+tiers (small 11.4 ms/200 obj, medium 61 ms/1000, large 246 ms/4000) — i.e. **roughly the same or worse
+per-object than a COLD build** (~14–17.5 µs/object). Reason: on a full hit no file is re-analyzed, but
+the build still (1) walks the whole tree, (2) with `currentHashes==nil` re-reads every file from disk to
+recompute its SHA-256, and (3) `Load` unmarshals the ENTIRE JSON cache into `FileAnalysis`. Alloc counts
+confirm the cache-JSON cost dominates (warm large ≈220k allocs vs cold ≈332k). **Implication for a future
+NFR-2 pass:** the warm path's win is skipping *analysis*, not I/O — sub-second warm start at 4k objects
+holds on this hardware (246 ms), but at tens of thousands the per-file hash+unmarshal will be the wall.
+Partial-invalidation (`staleCount==K`, K=5) tracks the full-hit cost plus the K re-analyses and a cache
+rewrite.
+
+**Interactive request latency (NFR-3) — the disk sweep is the cost.** The two providers that do a
+per-query full-workspace `os.ReadFile` sweep are clearly the hot ones at scale (4k-object large tier):
+`workspace/symbol` ~44.6 ms/query, 31.8k allocs; `references` ~49 ms/query, 24k allocs — both grow
+~linearly with index size (≈11 µs/file), because each query re-reads every indexed file solely to convert
+byte columns → UTF-16 code units. This is the T8 target; these figures are the pre-fix baseline for the T9
+before/after contrast.
+
+**OQ-E decision — the name index IS hot enough to warrant T7's cache.** `NamesWithPrefix` (rebuilds the
+whole name index via `buildNameIndex` on every call) measured ~3.68 ms/query with **12k allocs / 2.26 MB**
+per call at the large tier (44 µs at small, 400 µs at medium — clean linear growth in files). Since it
+fires on **every completion keystroke**, ~3.7 ms + 2.3 MB of garbage per character at only 4k objects (and
+proportionally worse at 10k–50k) is a real interactive cost. `LookupByName` is cheaper (~2.98 ms/query but
+only **2 allocs** — it does not build a map, just walks and appends matches) and fires **once per request**
+(DDM/module resolve), so it is far less pressing. **Recommendation:** proceed with T7 to cache the name
+index (invalidated on `Add`/`Invalidate` under the lock), primarily to kill `NamesWithPrefix`'s
+per-keystroke O(files) rebuild + allocation churn; `LookupByName` benefits too (it can consult the same
+cached map) but was not the deciding factor.
+
+**Test placement.** The `workspace/symbol` and `references` provider baselines live in the
+`internal/server` package behind `//go:build bench` (they need the unexported `*handlerContext`, so
+benchmarking the *real* provider beats replicating its query path); `just bench` now covers both
+`./internal/workspace/bench/...` and `./internal/server/...`. The `NamesWithPrefix`/`LookupByName`
+micro-benchmarks and the warm-start benchmarks are index-level and live in `internal/workspace/bench`. The
+NFR-8 freshness guard is a **normal (untagged) unit test** (`internal/workspace/freshness_test.go`,
+`TestBuildWithCache_NeverServesStaleContent`) so it runs in `just test` — content-hash invalidation is a
+gating correctness property, not a benchmark.
+
+**Source:** feature-22 tasks.md (T5/T6, Decisions OQ-C/OQ-E); measured `just bench` output 2026-07-18.
+
+### ADR-025 — Eliminate the workspace/symbol & references per-query disk sweep via an in-memory per-file line-width table (feature 22 T8, OQ-B B-i) (2026-07-18)
+`Status: verified` — 2026-07-18 (measured on Apple M4 Max, Go 1.26, darwin/arm64)
+
+**Problem.** `provideWorkspaceSymbols` and `referenceSites` called `os.ReadFile` for **every indexed
+file on every query**, inside `idx.ForEach` under the Index RLock. The disk read existed *solely* to feed
+`toProtocolRange`'s byte-offset-column → code-unit conversion: UTF-16 (the LSP default) needs the source
+line's bytes to count surrogate pairs; UTF-8 does not. The symbol data itself (`FileAnalysis.Structure`)
+was already fully in memory. At scale this is tens of thousands of disk reads per keystroke (baseline:
+~44.6 ms / ~49 ms per query at 4k objects — ADR above).
+
+**Decision (OQ-B B-i, user-approved).** Keep an **in-memory, encoding-agnostic per-file line-width table**
+keyed by workspace-relative path, and convert ranges from it — never reading the file per query. The table
+maps `(0-based line, byte offset)` → code-unit count for both UTF-8 and UTF-16. It is
+**in-memory-only**: NOT persisted, so **no cache-format bump (still 0.6.0), no `model.FileAnalysis` change,
+no Analyzer-seam change.**
+
+**Representation (ASCII fast path).** Natural source is overwhelmingly ASCII (identifiers A-Z/0-9/#/&/-/@/+),
+so an ASCII line stores only its `uint32` byte length (byte == UTF-8 unit == UTF-16 unit) and retains **no
+bytes**; only a non-ASCII line retains its raw bytes for exact UTF-16 surrogate-pair counting. Memory cost
+is therefore near-zero for the common case — confirmed by the T4 cold-memory benchmark: heap-per-object
+stayed flat across tiers (~4,702 B/object at 4k), so the table does not perturb NFR-4's linear-growth band.
+
+**Placement & population (seam-safe).** The table lives on `workspace.Index` (`lineWidths map[string]*lineWidthTable`,
+guarded by the existing `idx.mu`). It is populated wherever content is already in hand — the
+`BuildWithCache` scan loop (`idx.PutContent(relPath, content)` right after `idx.Add`), the server's
+`applyDocumentChange` and `replayOpenBuffers` (live-edit content). On a **warm cache load**, cached-but-unchanged
+files were never re-read, so a one-time `ensureLineWidths` sweep reads each such file exactly once at
+build/load time (an **amortized one-time cost, NOT per-query**; FR-43 — a read failure leaves the file with
+no table and falls back to byte==code-unit, exact for ASCII).
+
+**Query path.** New `Index.ForEachWithRange(f func(path, fa, RangeConverter))` walks entries and the
+line-width tables **under a single RLock**, handing each callback a disk-free `RangeConverter`. This avoids
+a nested-lock re-entrancy hazard: a plain `ForEach` + a per-file `idx.ProtocolRange` (which re-acquires the
+RLock) can deadlock if a writer is queued between the two RLock acquisitions (Go RWMutex is not
+recursively-safe under writer contention). `lineWidthTable.protocolRange` reproduces `toProtocolRange`'s
+exact semantics (0-based, end-exclusive, zero-width caret preserved).
+
+**Result (T9 before/after, 4k-object large tier, same hardware).**
+- `workspace/symbol`: **44.6 ms → 0.97 ms/query (~46×), 5.29 MB → 0.74 MB (~7×), ~31.8k → 13.8k allocs.**
+- `references`: **49 ms → 1.46 ms/query (~34×), 4.33 MB → 0.58 MB (~7.5×), ~24k → 8.0k allocs.**
+
+**Correctness guards (untagged, run in `just test`).** `internal/workspace/linewidth_test.go` asserts the
+table's conversion equals an independent UTF-16 oracle for every byte offset on ASCII + BMP +
+supplementary-plane lines under both encodings. `internal/server/linewidth_regression_test.go` proves the
+providers return byte-identical `Location` ranges vs. the disk-reading oracle (incl. a non-ASCII/UTF-16
+corpus) under both encodings, AND that results are unchanged after the source files are **deleted from
+disk** (the disk-free proof). `-race -count=2` clean.
+
+**Source:** feature-22 tasks.md (T8, Decision OQ-B B-i); measured `just bench` output 2026-07-18.
+
+---
+
+### ADR-026 — Cache the name→[]Candidate index on `workspace.Index`, invalidate on `Add` (feature 22 T7, OQ-E) (2026-07-18)
+
+**Status:** verified (2026-07-18) — measured `just bench` before/after; `-race -count=2` clean.
+
+**Problem.** `Index.NamesWithPrefix` (completion, fires per keystroke) and `Index.LookupByName`
+(definition/hover DDM resolve) each rebuilt the full name index on **every call**:
+`NamesWithPrefix` called `buildNameIndex` (a fresh O(files) `map[name][]Candidate` pass);
+`LookupByName` did its own O(files) `ForEach` walk computing `objectIdentity` per entry. T6 measured
+`NamesWithPrefix` at **3.68 ms / 12,082 allocs / 2.26 MB per keystroke at 4k objects** — the deciding
+data that turned the conditional T7 into an unconditional GO (OQ-E: measure-first, fix-if-hot).
+
+**Decision.** Cache the built `map[string][]Candidate` on `Index` (`nameIndex` + a `nameIndexCfg`
+identity guard), reuse it across calls, and invalidate it (set nil) on **`Add` — the sole mutator of
+`idx.entries`** (`Build`, cache `Load`, and the server's `applyDocumentChange` all funnel through
+`Add`; `Invalidate` is read-only and does NOT mutate entries, so it is not an invalidation point).
+`buildNameIndex` was refactored to share a pure `buildNameMapFrom(entries, cfg)` with the new
+lock-held `cachedNameIndex`. `LookupByName` now does an O(matches) bucket lookup + copy instead of an
+O(files) walk (the cache's per-name bucket is already Path-sorted, so no re-sort). **No `internal/model`
+change, no cache-format bump (0.6.0), no seam change — the cache is in-memory-only Index state.**
+
+**Lock discipline (deadlock-free, the crux).** Go's `sync.RWMutex` has **no lock upgrade** — an RLock
+holder that needs to build (write) cannot atomically upgrade to Lock (self-deadlock). So `cachedNameIndex`
+uses **double-checked locking**: fast path takes `RLock`, returns the cache if present for this `cfg`;
+otherwise it **releases the RLock**, takes the full `Lock`, re-checks (another goroutine may have built
+it in the gap), builds from `idx.entries` directly if still nil, and publishes `nameIndex`+`nameIndexCfg`
+atomically. The cache is thus **only ever read under RLock or written under Lock**; `Add` nils it under
+the write lock it already holds (no upgrade). No new mutex, no re-entrancy.
+
+**`cfg` identity guard.** `buildNameIndex` is `cfg`-dependent (library map → `objectIdentity`/`Library`).
+`cfg` is fixed for a server session (loaded once at startup), so the cache keys on the `*config.Config`
+pointer identity; a caller passing a different pointer forces a one-time rebuild rather than serving
+results computed under the wrong library map. Documented as a defensive guard for a non-occurring
+in-session case.
+
+**Result (before/after, 4k-object large tier, Apple M4 Max / darwin/arm64 / Go 1.26; warm path — no
+mutation between lookups, the realistic keystroke case).**
+- `NamesWithPrefix/large`: **3,628,850 → 41,475 ns/op (~87.5×), 12,082 → 17 allocs, 2.26 MB → 81 KB.**
+  (Residual cost is the prefix scan across all name buckets + reachability filter + result copy; the
+  O(files) rebuild-per-call is gone.)
+- `LookupByName/large`: **2,960,497 → 30.46 ns/op (~97,000×), now O(matches) and flat (~30 ns) across
+  all tiers.** The first call after an `Add` pays a one-time O(files) rebuild; between mutations it is
+  the warm figure.
+
+**Correctness guards (untagged, run in `just test`).** `internal/workspace/name_index_cache_test.go`:
+(1) cached results == fresh computation across prefixes/types/refPaths + names/type-filters (hand-seeded
++ a real analyzer-built multi-library corpus exercising the steplib chain); (2) **the critical
+invalidation guard** — build → query (populate cache) → `Add` a new/retyped object → query again asserts
+the change is reflected (not served stale); verified to FAIL when the invalidation is removed (the tests
+have teeth); (3) `TestNameIndexCache_ConcurrentLookupsAndAdd` runs 8 concurrent lookups vs. a mutating
+writer under `-race`. A stale name-index cache serving deleted/renamed symbols would be the regression
+this guards against (freshness, NFR-8-adjacent).
+
+**Alternatives considered.** (a) Skip T7 ("measured, not hot") — rejected: T6 proved it hot. (b) Lazy
+build via `sync.Once` — rejected: `Once` can't be reset on invalidation without replacing the whole
+`Once`, which reintroduces a race; the nil-means-stale + double-checked build is simpler and
+invalidation is a single nil assignment. (c) Eager rebuild inside `Add` — rejected: `Add` is called
+per-file during a build (O(files) rebuilds = O(files²)); lazy rebuild-on-next-lookup rebuilds at most
+once per lookup burst.
+
+**Source:** feature-22 tasks.md (T7, Decision OQ-E); measured `just bench` output 2026-07-18;
+`.claude/knowledge/go/` RWMutex non-upgradability.
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.

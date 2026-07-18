@@ -1,7 +1,6 @@
 package server
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -47,22 +46,18 @@ func provideWorkspaceSymbols(hctx *handlerContext, query string) []protocol.Symb
 
 	var results []protocol.SymbolInformation
 
-	// Walk every indexed file (idx is stable for the duration of this function)
-	idx.ForEach(func(relPath string, fa model.FileAnalysis) {
+	// Walk every indexed file (idx is stable for the duration of this function).
+	// Range conversion uses the in-memory line-width table (feature 22 T8) via
+	// the converter ForEachWithRange hands each callback, so there is NO
+	// per-query disk read here — the previous os.ReadFile sweep over every
+	// indexed file is gone.
+	idx.ForEachWithRange(func(relPath string, fa model.FileAnalysis, toRange rangeConverter) {
 		// Skip if no Structure (object root)
 		if fa.Structure == nil {
 			return
 		}
 
-		// Read the file content for range conversion
 		absPath := filepath.Join(hctx.root, relPath)
-		content, err := os.ReadFile(absPath)
-		if err != nil {
-			// Can't read file; skip (FR-43)
-			return
-		}
-
-		contentStr := string(content)
 
 		// Determine the protocol kind for the object root
 		// SymbolObject → SymbolKindModule (per test assertion)
@@ -76,7 +71,7 @@ func provideWorkspaceSymbols(hctx *handlerContext, query string) []protocol.Symb
 		if objMatches {
 			// Build Location for the object root
 			fileURI := uri.File(absPath)
-			symbolRange := toProtocolRange(fa.Structure.SelectionRange, contentStr, hctx.posEncoding)
+			symbolRange := protocolRangeVia(toRange, fa.Structure.SelectionRange, hctx.posEncoding)
 			results = append(results, protocol.SymbolInformation{
 				BaseSymbolInformation: protocol.BaseSymbolInformation{
 					Name: fa.Structure.Name,
@@ -95,7 +90,7 @@ func provideWorkspaceSymbols(hctx *handlerContext, query string) []protocol.Symb
 				if childMatches {
 					// Subroutine → SymbolKindFunction (per test assertion)
 					fileURI := uri.File(absPath)
-					symbolRange := toProtocolRange(child.SelectionRange, contentStr, hctx.posEncoding)
+					symbolRange := protocolRangeVia(toRange, child.SelectionRange, hctx.posEncoding)
 					results = append(results, protocol.SymbolInformation{
 						BaseSymbolInformation: protocol.BaseSymbolInformation{
 							Name: child.Name,

@@ -1436,6 +1436,7 @@ func (hctx *handlerContext) replayOpenBuffers() {
 	type replayEntry struct {
 		relPath  string
 		analysis model.FileAnalysis
+		content  []byte
 	}
 	entries := make([]replayEntry, 0, len(docs))
 	for i := range docs {
@@ -1445,7 +1446,7 @@ func (hctx *handlerContext) replayOpenBuffers() {
 			hctx.logger.Warn("replay: skipping open buffer outside workspace root", "uri", doc.URI, "err", err)
 			continue
 		}
-		entries = append(entries, replayEntry{relPath: relPath, analysis: doc.Analysis})
+		entries = append(entries, replayEntry{relPath: relPath, analysis: doc.Analysis, content: doc.Content})
 	}
 	if len(entries) == 0 {
 		return
@@ -1465,6 +1466,9 @@ func (hctx *handlerContext) replayOpenBuffers() {
 	changedPaths := make([]string, 0, len(entries))
 	for _, e := range entries {
 		hctx.idx.Add(e.relPath, e.analysis)
+		if e.content != nil {
+			hctx.idx.PutContent(e.relPath, e.content)
+		}
 		changedPaths = append(changedPaths, e.relPath)
 	}
 	hctx.res = workspace.ResolveInto(hctx.res, hctx.idx, &hctx.cfg, changedPaths)
@@ -1502,6 +1506,14 @@ func (hctx *handlerContext) applyDocumentChange(relPath string, content []byte) 
 	// Step 1: Update the index with the new FileAnalysis.
 	// idx.Add mutates the index in place; safe because we hold the write lock.
 	hctx.idx.Add(relPath, result.FileAnalysis)
+	// Keep the in-memory line-width table in step with the live content so
+	// workspace/symbol and references convert ranges without a disk read
+	// (feature 22 T8). content is nil for a deletion — skip then (the entry is
+	// being removed / re-read elsewhere); PutContent(nil) would record an empty
+	// table, which is harmless but unnecessary.
+	if content != nil {
+		hctx.idx.PutContent(relPath, content)
+	}
 
 	// Step 2: Incrementally recompute the resolution set for affected files.
 	// ResolveInto builds and returns a FRESH ResolutionSet, leaving the old one

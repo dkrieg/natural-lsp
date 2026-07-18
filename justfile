@@ -51,6 +51,21 @@ test-integration:
 verify: fmt-check lint-tests vet build test test-integration
     @echo "verify: OK — safe to push"
 
+# Scale/performance benchmarks — bench-tagged, excluded from verify; BENCH_CORPUS_OBJECTS=N to scale
+bench:
+    # Runs the `//go:build bench` package over a deterministic synthetic corpus.
+    # Excluded from `just verify`: the bench tag is off by default, so
+    # `go build`/`go vet`/`go test ./...` never compile or run it. Corpus size is
+    # tunable via BENCH_CORPUS_OBJECTS (default: small/medium/large tiers, fast):
+    #   just bench                             # small/medium/large default tiers
+    #   BENCH_CORPUS_OBJECTS=10000 just bench  # add a manual large tier
+    #   BENCH_CORPUS_OBJECTS=30000 just bench  # headline-figure run
+    # Covers both the workspace bench package (cold/warm/memory + name-index
+    # micro-benchmarks) and the internal/server request-latency baselines
+    # (workspace/symbol + references providers, which need the unexported
+    # handlerContext so they live in-package behind the bench tag).
+    go test -tags bench -bench=. -benchmem -run=^$ ./internal/workspace/bench/... ./internal/server/...
+
 # Enable the repo git hooks (pre-push then runs `just verify`)
 install-hooks:
     git config core.hooksPath .githooks

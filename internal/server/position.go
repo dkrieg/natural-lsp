@@ -4,6 +4,7 @@ import (
 	"go.lsp.dev/protocol"
 
 	"natural-lsp/internal/model"
+	"natural-lsp/internal/workspace"
 )
 
 // Position conversion between the analyzer's model coordinates and LSP protocol
@@ -151,6 +152,40 @@ func toProtocolRange(r model.Range, content string, enc protocol.PositionEncodin
 		Character: byteOffsetToCharacter(lineAt(content, endLine), endByte, enc),
 	}
 	return protocol.Range{Start: start, End: end}
+}
+
+// rangeConverter is the disk-free range converter handed to callbacks by
+// Index.ForEachWithRange: it maps a model.Range to protocol-space coordinates in
+// the given encoding using that file's in-memory line-width table (feature 22
+// T8), never reading the file. It aliases workspace.RangeConverter so the
+// callback literal's parameter type is identical to the method's signature.
+type rangeConverter = workspace.RangeConverter
+
+// protocolRangeVia builds an end-exclusive protocol.Range from a rangeConverter,
+// reproducing toProtocolRange's semantics WITHOUT reading the file. Used by the
+// full-workspace sweep providers (workspace/symbol, references), which would
+// otherwise re-read every indexed file on every query purely for this conversion.
+func protocolRangeVia(conv rangeConverter, r model.Range, enc protocol.PositionEncodingKind) protocol.Range {
+	utf16 := enc != protocol.PositionEncodingKindUTF8
+	sl, sc, el, ec := conv(r, utf16)
+	return protocol.Range{
+		Start: protocol.Position{Line: sl, Character: sc},
+		End:   protocol.Position{Line: el, Character: ec},
+	}
+}
+
+// indexProtocolRange converts a model.Range for the file at relPath into an
+// end-exclusive protocol.Range using the index's in-memory line-width table
+// (feature 22 T8), reproducing toProtocolRange's semantics WITHOUT reading the
+// file. Used for bounded, single-file conversions (e.g. the references
+// declaration site) outside a ForEachWithRange walk.
+func indexProtocolRange(idx *workspace.Index, relPath string, r model.Range, enc protocol.PositionEncodingKind) protocol.Range {
+	utf16 := enc != protocol.PositionEncodingKindUTF8
+	sl, sc, el, ec := idx.ProtocolRange(relPath, r, utf16)
+	return protocol.Range{
+		Start: protocol.Position{Line: sl, Character: sc},
+		End:   protocol.Position{Line: el, Character: ec},
+	}
 }
 
 // fromProtocolPosition converts a 0-based protocol.Position (a cursor) to a

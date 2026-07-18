@@ -40,12 +40,44 @@ type Candidate struct {
 
 // Index is an in-memory map of file paths to FileAnalysis results.
 // It provides basic query methods for the workspace symbol table.
+//
+// It also holds an in-memory-only, encoding-agnostic per-file line-width table
+// (lineWidths, feature 22 T8 / OQ-B B-i) so the workspace/symbol and references
+// providers can convert byte-offset columns to negotiated code units WITHOUT
+// re-reading the source file on every query. The table is NOT persisted (no
+// cache-format bump, no model change); it is recomputed once at cache load and
+// populated inline wherever content is already in hand. See linewidth.go.
 type Index struct {
-	mu      sync.RWMutex
-	entries map[string]model.FileAnalysis
+	mu         sync.RWMutex
+	entries    map[string]model.FileAnalysis
+	lineWidths map[string]*lineWidthTable
+
+	// nameIndex caches the name→[]Candidate map built by buildNameIndexLocked
+	// (feature 22 T7). It is the O(files) work that NamesWithPrefix and
+	// LookupByName previously repeated on every call (per completion keystroke /
+	// per definition request). A non-nil value is a valid cache built for
+	// nameIndexCfg; nil means "stale / not built" and forces a lazy rebuild on
+	// the next lookup. It is invalidated (set nil) by every entries mutation —
+	// which is exclusively Add — under the write lock (mu.Lock), so lookups only
+	// ever READ it under the read lock (or build it under the write lock). See
+	// cachedNameIndex for the double-checked build discipline (no RLock→Lock
+	// upgrade, hence deadlock-free).
+	nameIndex map[string][]Candidate
+
+	// nameIndexCfg is the config pointer the cached nameIndex was built for. cfg
+	// is fixed for the lifetime of a server session (loaded once at startup), so
+	// in practice this never changes; comparing identity is a cheap defensive
+	// guard that a caller passing a different cfg forces a rebuild rather than
+	// serving results computed under the wrong library map.
+	nameIndexCfg *config.Config
 }
 
 // Add stores a FileAnalysis keyed by path.
+//
+// Add does not populate the line-width table (it has no content); callers that
+// hold the source content should call PutContent to enable disk-free range
+// conversion for that file. A file added via Add alone falls back to treating
+// byte columns as code units (exact for ASCII — see lineWidthTable.protocolRange).
 func (idx *Index) Add(path string, analysis model.FileAnalysis) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -53,6 +85,92 @@ func (idx *Index) Add(path string, analysis model.FileAnalysis) {
 		idx.entries = make(map[string]model.FileAnalysis)
 	}
 	idx.entries[path] = analysis
+	// Invalidate the cached name index: the set of names/candidates may have
+	// changed (new object, or a retype of an existing one). The next
+	// NamesWithPrefix/LookupByName rebuilds it once. Done under the write lock we
+	// already hold, so there is no lock upgrade and no race with a concurrent
+	// lookup (feature 22 T7). Add is the ONLY writer of idx.entries (Build,
+	// cache Load, and the server's applyDocumentChange all funnel through it),
+	// so this is the sole invalidation point.
+	idx.nameIndex = nil
+	idx.nameIndexCfg = nil
+}
+
+// PutContent records the per-file line-width table for path from its raw source
+// content, so range conversion in the workspace/symbol and references providers
+// needs no disk read (feature 22 T8). It is safe to call alongside Add (same
+// mutex) and idempotent: a later call replaces the prior table (e.g. on a
+// document change). Content is not retained wholesale — only per-line width data,
+// and for a fully-ASCII file no bytes are retained at all (see buildLineWidthTable).
+func (idx *Index) PutContent(path string, content []byte) {
+	table := buildLineWidthTable(string(content))
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.lineWidths == nil {
+		idx.lineWidths = make(map[string]*lineWidthTable)
+	}
+	idx.lineWidths[path] = table
+}
+
+// RangeConverter maps a model.Range to protocol-space coordinates (0-based,
+// end-exclusive) in the requested encoding WITHOUT reading the source file,
+// using the file's in-memory line-width table (feature 22 T8). utf16 selects
+// UTF-16 code units; false selects UTF-8 (byte) units. It reproduces the
+// server's toProtocolRange semantics; the four returns are startLine, startChar,
+// endLine, endChar (the package returns raw coordinates to avoid a dependency on
+// go.lsp.dev/protocol).
+type RangeConverter func(r model.Range, utf16 bool) (startLine, startChar, endLine, endChar uint32)
+
+// ForEachWithRange calls f for each indexed entry, passing a disk-free
+// RangeConverter bound to that file's line-width table (feature 22 T8). Both the
+// entry walk and the converter run under a single RLock, so there is no
+// nested-lock re-entrancy hazard (a plain ForEach + ProtocolRange would
+// re-acquire the RLock inside the callback, which can deadlock if a writer is
+// queued between the two acquisitions). Order is arbitrary.
+func (idx *Index) ForEachWithRange(f func(path string, analysis model.FileAnalysis, toRange RangeConverter)) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	for path, analysis := range idx.entries {
+		table := idx.lineWidths[path]
+		conv := func(r model.Range, utf16 bool) (uint32, uint32, uint32, uint32) {
+			return table.protocolRange(r, utf16)
+		}
+		f(path, analysis, conv)
+	}
+}
+
+// ProtocolRange converts a model.Range for the file at path into protocol-space
+// coordinates (0-based, end-exclusive) in the requested encoding, using the
+// in-memory line-width table and NEVER reading the file (feature 22 T8). utf16
+// selects UTF-16 code units; false selects UTF-8 (byte) units. It reproduces the
+// server's toProtocolRange semantics exactly, so results are byte-identical to
+// the previous disk-reading implementation. Missing-table files fall back to
+// byte==code-unit (exact for ASCII); never panics (FR-43).
+//
+// It returns the four raw coordinates (startLine, startChar, endLine, endChar)
+// so this package need not depend on go.lsp.dev/protocol; the server assembles
+// them into a protocol.Range.
+func (idx *Index) ProtocolRange(path string, r model.Range, utf16 bool) (startLine, startChar, endLine, endChar uint32) {
+	return idx.lineWidthsFor(path).protocolRange(r, utf16)
+}
+
+// lineWidthsFor returns the line-width table for path, or nil if none is
+// recorded (in which case callers fall back to the ASCII-exact byte==code-unit
+// path). Thread-safe.
+func (idx *Index) lineWidthsFor(path string) *lineWidthTable {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.lineWidths[path]
+}
+
+// hasLineWidths reports whether path already has a line-width table (used by the
+// one-time ensureLineWidths sweep to skip files whose table was populated inline
+// during analysis). Thread-safe.
+func (idx *Index) hasLineWidths(path string) bool {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	_, ok := idx.lineWidths[path]
+	return ok
 }
 
 // Get retrieves a FileAnalysis for the given path.
@@ -100,51 +218,35 @@ func (idx *Index) Keys() []string {
 //
 // Unknown names return an empty (non-nil) slice, never an error.
 //
-// Performance: this method is O(n) over all indexed files on every call.
-// When resolving many edges in bulk — for example during call-graph resolution —
-// callers should build a full name index once using buildNameIndex and look up
-// all edges against that map, rather than calling LookupByName once per edge
-// (which would be O(edges * files)). See buildNameIndex for details.
+// Performance: this method consults the cached name index (feature 22 T7),
+// which is built once and reused across calls until an Add invalidates it — so a
+// lookup is O(candidates-for-name), not O(all files), on the warm path. The
+// first call after a mutation pays the one-time O(files) rebuild. When resolving
+// many edges in bulk — for example during call-graph resolution — callers may
+// still build a full name index once with buildNameIndex and look up all edges
+// against it; both share the same underlying map shape.
 //
 // This method is thread-safe and race-free.
 func (idx *Index) LookupByName(name string, typ model.ObjectType, cfg *config.Config) []Candidate {
 	// Uppercase the input name for case-insensitive matching.
 	inputName := strings.ToUpper(name)
 
-	var candidates []Candidate
+	// The cached bucket is already sorted by Path (buildNameMapFrom guarantees it),
+	// so no re-sort is needed. Do NOT mutate or return the cache's slice: copy the
+	// filtered matches into a fresh slice so a caller can never alias/mutate the
+	// shared cache.
+	bucket := idx.cachedNameIndex(cfg)[inputName]
 
-	// ForEach holds the read lock for the duration of the iteration.
-	idx.ForEach(func(path string, fa model.FileAnalysis) {
-		objName, objLibrary := objectIdentity(path, cfg)
-
-		if objName != inputName {
-			return
-		}
-
+	candidates := make([]Candidate, 0, len(bucket))
+	for _, cand := range bucket {
 		// A zero typ is the "any type" sentinel; non-zero restricts by ObjectType.
-		if typ != "" && fa.ObjectType != typ {
-			return
+		if typ != "" && cand.Type != typ {
+			continue
 		}
-
-		candidates = append(candidates, Candidate{
-			Path:    path,
-			Name:    objName,
-			Library: objLibrary,
-			Type:    fa.ObjectType,
-		})
-	})
-
-	// Sort by path for deterministic, byte-stable output. The golden-file tests,
-	// on-disk cache (SHA-256 keyed), and downstream lsp-graph consumer all require
-	// this stability.
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Path < candidates[j].Path
-	})
-
-	if len(candidates) == 0 {
-		return []Candidate{}
+		candidates = append(candidates, cand)
 	}
 
+	// Always a non-nil slice (make above), matching the prior contract.
 	return candidates
 }
 
@@ -168,8 +270,9 @@ func (idx *Index) LookupByName(name string, typ model.ObjectType, cfg *config.Co
 // This method is thread-safe and race-free (mirrors LookupByName discipline).
 // It is used by the completion provider (feature 16, Task 2).
 func (idx *Index) NamesWithPrefix(prefix string, typ model.ObjectType, referencingPath string, cfg *config.Config) []Candidate {
-	// Build the name index once from the current snapshot.
-	nameIndex := idx.buildNameIndex(cfg)
+	// Use the cached name index (built once, invalidated on Add) instead of
+	// rebuilding the whole O(files) map on every keystroke (feature 22 T7).
+	nameIndex := idx.cachedNameIndex(cfg)
 
 	// Normalize prefix to uppercase for case-insensitive matching.
 	upperPrefix := strings.ToUpper(prefix)
@@ -253,9 +356,16 @@ func (idx *Index) buildNameIndex(cfg *config.Config) map[string][]Candidate {
 	}
 	idx.mu.RUnlock()
 
-	// Build the name → candidates map from the snapshot (no lock held).
+	return buildNameMapFrom(snapshot, cfg)
+}
+
+// buildNameMapFrom builds the name → candidates map from a snapshot of entries.
+// It is pure (no lock, no Index state), shared by buildNameIndex (which snapshots
+// under RLock first) and buildNameIndexLocked (which passes idx.entries directly
+// while holding the write lock).
+func buildNameMapFrom(entries map[string]model.FileAnalysis, cfg *config.Config) map[string][]Candidate {
 	nameMap := make(map[string][]Candidate)
-	for path, fa := range snapshot {
+	for path, fa := range entries {
 		objName, objLibrary := objectIdentity(path, cfg)
 		nameMap[objName] = append(nameMap[objName], Candidate{
 			Path:    path,
@@ -274,6 +384,47 @@ func (idx *Index) buildNameIndex(cfg *config.Config) map[string][]Candidate {
 	}
 
 	return nameMap
+}
+
+// cachedNameIndex returns the cached name→[]Candidate map, building it on first
+// use (or after an Add invalidated it) and reusing it across subsequent calls
+// without an intervening mutation — turning the per-query O(files) buildNameIndex
+// into an amortized O(1) map read (feature 22 T7).
+//
+// Lock discipline (deadlock-free, review-concurrency): the fast path takes the
+// RLock and, if a cache built for this cfg is present, returns it. A lazy build
+// cannot upgrade RLock→Lock (Go's RWMutex has no upgrade — that self-deadlocks),
+// so the slow path RELEASES the RLock, takes the full Lock, and double-checks:
+// another goroutine may have built the cache between the two acquisitions. Under
+// the write lock it builds from idx.entries directly (no nested snapshot) and
+// publishes both nameIndex and nameIndexCfg atomically. Add, the only writer,
+// also holds the write lock when it nils the cache — so the cache is only ever
+// read under RLock or written under Lock, with no torn reads.
+//
+// The returned map is treated as read-only by callers (they range over it and
+// copy out Candidate values). It is never mutated after publication; a mutation
+// (Add) replaces the whole map with nil, and the next call rebuilds a new one.
+func (idx *Index) cachedNameIndex(cfg *config.Config) map[string][]Candidate {
+	// Fast path: a valid cache built for this cfg.
+	idx.mu.RLock()
+	if idx.nameIndex != nil && idx.nameIndexCfg == cfg {
+		nameIndex := idx.nameIndex
+		idx.mu.RUnlock()
+		return nameIndex
+	}
+	idx.mu.RUnlock()
+
+	// Slow path: build (or rebuild for a new cfg) under the write lock.
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	// Double-check: another goroutine may have built it while we waited on Lock.
+	if idx.nameIndex != nil && idx.nameIndexCfg == cfg {
+		return idx.nameIndex
+	}
+	built := buildNameMapFrom(idx.entries, cfg)
+	idx.nameIndex = built
+	idx.nameIndexCfg = cfg
+	return built
 }
 
 // Invalidate returns the set of workspace-relative paths that directly or
@@ -582,12 +733,23 @@ func BuildWithCache(ctx context.Context, root string, cfg config.Config, az anal
 			}()
 
 			idx.Add(relPath, fa)
+			// Populate the line-width table inline from the content we just read,
+			// so no second disk read is needed for this file (feature 22 T8).
+			idx.PutContent(relPath, content)
 			analyzedAny = true
 			if stale {
 				staleCount++
 			}
 		}
 	}
+
+	// One-time line-width sweep for warm-cache hits: files served straight from
+	// the cache were NOT re-read above, so they have no line-width table yet.
+	// Read each such file exactly once here to build its table (feature 22 T8 /
+	// OQ-B B-i — an amortized ONE-TIME cost at build/load, NOT a per-query read).
+	// A file that cannot be read is left without a table; range conversion then
+	// falls back to byte==code-unit (exact for ASCII, FR-43 graceful degradation).
+	ensureLineWidths(idx, root, files)
 
 	// Persist the freshly-built index back to the cache so the next start is
 	// warm (FR-37). Write failures are logged, never fatal (FR-43): the built
@@ -602,4 +764,29 @@ func BuildWithCache(ctx context.Context, root string, cfg config.Config, az anal
 	}
 
 	return idx, staleCount, totalFiles, nil
+}
+
+// ensureLineWidths builds the line-width table for any indexed file that does
+// not already have one (feature 22 T8). It is called once at the end of a build
+// so warm-cache hits — whose content was never read into memory — gain a table
+// from a single disk read each. This is an amortized ONE-TIME cost at build/load
+// time, not a per-query read. Files not present in the index are skipped; a read
+// failure leaves the file without a table (ASCII byte==code-unit fallback,
+// FR-43). files are absolute paths (as walked); the table key is the
+// workspace-relative path, matching the entries key.
+func ensureLineWidths(idx *Index, root string, files []string) {
+	for _, filePath := range files {
+		relPath, _ := filepath.Rel(root, filePath)
+		if _, inIndex := idx.Get(relPath); !inIndex {
+			continue
+		}
+		if idx.hasLineWidths(relPath) {
+			continue
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+		idx.PutContent(relPath, content)
+	}
 }
