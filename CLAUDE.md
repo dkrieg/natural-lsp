@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–21 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
+**Features 00–22 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
 
 **Assessment (2026-07-14) — known defects and remediation plan.** An independent full-project
 assessment (`docs/assessment-2026-07-14.md`: live wire probes, four specialist reviews, LSP-spec
 verification) confirmed the core is sound (lifecycle/encoding/capabilities spec-correct,
 robustness and the Analyzer seam PASS) but found five issues, re-planned as features **19–23**
-(features 19, 20, and 21 are **shipped**; 22–23 are `Planned` under `docs/plans/features/`) — read
+(features 19–22 are **shipped**; only 23 remains `Planned` under `docs/plans/features/`) — read
 the assessment before touching the affected areas: **(1) — FIXED by feature 19.**
 `textDocument/completion` results were corrupted on the wire —
 `CompletionItem.detail`/`sortText` serialized as `{}` because `protocol.Optional[T]` only
@@ -27,11 +27,46 @@ progress) was never implemented (`progress.go` was a stub, `Build` ran with `onP
 requests (NFR-5). Feature 21 runs the initial build on a background goroutine and wires
 `window/workDoneProgress` create/begin/report/end (see the feature-21 note below); it also **wired
 the on-disk cache into the server build path** (warm starts now real — FR-37/FR-38, partial NFR-2).
-**(5)** NFR-1/2/3/4 performance claims still have zero benchmarks; known hot
-spots: O(all-files) `LookupByName`, and `workspace/symbol` re-reads every file from disk per
-query → **feature 22** (warm-start latency is now wired but unmeasured). Secondary: the README `go install` path contradicts the bare
+**(5) — FIXED by feature 22.** NFR-1/2/3/4 had zero benchmarks and two per-query hot spots
+(`workspace/symbol` and `references` re-read every file from disk on each query; `NamesWithPrefix`
+rebuilt the name index per keystroke). Feature 22 added a deterministic synthetic-corpus generator
++ a `//go:build bench` benchmark suite (`just bench`, off the gate), recorded NFR-1/2/3/4 verdicts
+(measure-and-record), and landed the two fixes: an in-memory line-width table eliminating the
+per-query disk sweep (~46×/~34× faster) and a cached name index (~87× / ~97,000× faster) — see the
+feature-22 note below. Secondary: the README `go install` path contradicts the bare
 `natural-lsp` module path in `go.mod`, and `scripts/smoke.sh` mis-resolves its no-arg default
-binary → **feature 23**. Recommended order: 19 → 20 → 21 → 22 → 23.
+binary → **feature 23** (the last remaining assessment follow-up). Recommended order: 19 → 20 → 21
+→ 22 → 23.
+
+Feature 22 (performance & scale verification) fixes assessment defect #5 and adds the missing
+performance evidence. **No `internal/model` change and no cache-format bump** (still `0.6.0`);
+Analyzer seam intact. Three parts: **(a)** a deterministic, seeded synthetic-corpus generator
+(`internal/workspace/corpusgen`, a normally-built test-support package emitting multi-library
+`.NSx` objects with real CALLNAT/PERFORM/INCLUDE/DDM cross-refs, generated-not-committed) whose
+correctness test proves the cross-refs actually *resolve*; **(b)** a `//go:build bench` benchmark
+suite (`internal/workspace/bench/` + `internal/server/provider_bench_test.go`) run by a new
+**`just bench`** recipe (a `BENCH_CORPUS_OBJECTS` knob scales the corpus; **excluded from `just
+verify`** — the bench tag is off by default) covering cold-index scaling, peak memory, warm-start,
+and interactive request latency, with NFR-1/2/3/4 verdicts **measured-and-recorded** (not absolute
+CI gates) in the feature's `plan.md` `## Results` section; **(c)** two production hot-spot fixes.
+**Fix 1 (ADR-025):** `workspace/symbol` and `references` previously did a per-query full-workspace
+`os.ReadFile` sweep (only to convert byte columns → UTF-16 code units). That is replaced by an
+**in-memory, encoding-agnostic per-file line-width table** on `workspace.Index`
+(`internal/workspace/linewidth.go`, built at analyze time via `Index.PutContent`, recomputed once at
+warm-cache load via `ensureLineWidths`, exposed through `Index.ForEachWithRange`/`RangeConverter`);
+pure-ASCII lines retain no bytes (near-zero memory). Result: ~46×/~34× faster, ~7× less memory per
+query, byte-identical output under both encodings (proven vs a disk-reading oracle incl. a
+multibyte-prefixed emitted range, and by a files-deleted-after-build disk-free proof).
+**In-memory-only — no cache/model/seam change.** `references` keeps a single bounded read of the
+cursor's *own* document (to locate the cursor target), not a sweep. **Fix 2 (ADR-026):** the
+name→`[]Candidate` index (used by completion's `NamesWithPrefix` and definition's `LookupByName`) was
+rebuilt on every call; it is now **cached on `Index`** (`cachedNameIndex`, double-checked locking
+under the existing `idx.mu`, invalidated in `Add` — the sole `entries` writer), making
+`NamesWithPrefix` ~87× and `LookupByName` ~97,000× faster with proven-load-bearing invalidation
+tests. Honest limitation recorded: benchmarks measured at ≤4k objects on one machine and
+extrapolated; warm-start cost is hash-re-read + JSON-deserialization-bound (the projected wall at
+tens of thousands — a future NFR-2 optimization). `workspace.Build`/`BuildWithCache` gained the
+`context.Context` from feature 21 (unchanged here). ADRs 025/026 record the fixes.
 
 Feature 21 (async indexing & work-done progress) fixes assessment defects #3 (FR-32) and #4
 (NFR-5). **No `internal/model` change and no cache-format bump** (still `0.6.0`). Two behaviors:
@@ -575,6 +610,7 @@ pass means CI should pass.
 just verify                                 # full gate: gofmt + vet + build + unit (-race) + integration (same as CI)
 just test                                   # unit tests with the race detector
 just test-integration                       # integration tests (builds binary, runs the `integration` tag)
+just bench                                  # performance benchmarks (`//go:build bench`; NOT in `just verify`; BENCH_CORPUS_OBJECTS scales the corpus)
 just build                                  # build the server binary
 just install-hooks                          # enable the pre-push hook (runs `just verify` before every push)
 just release vX.Y.Z                          # cross-build all platforms into dist/ (releases are cut via the manual Release workflow)

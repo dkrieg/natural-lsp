@@ -144,15 +144,12 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 	// Collect all reference sites as protocol.Location values
 	var locations []protocol.Location
 
-	// Iterate every file in the index
-	idx.ForEach(func(filePath string, fa model.FileAnalysis) {
-		// Read the file content for range conversion (FR-43: graceful degradation if read fails)
+	// Iterate every file in the index. Range conversion uses the in-memory
+	// line-width table (feature 22 T8) via the converter ForEachWithRange hands
+	// each callback, so there is NO per-query disk read here — the previous
+	// os.ReadFile sweep over every indexed file is gone.
+	idx.ForEachWithRange(func(filePath string, fa model.FileAnalysis, toRange rangeConverter) {
 		absPath := filepath.Join(root, filePath)
-		fileContent, err := os.ReadFile(absPath)
-		if err != nil {
-			// Can't read file; skip range conversion (this file has no references)
-			return
-		}
 
 		// Scan edges: for each edge, check if its resolution matches the target.
 		// The matching predicate is factored into edgeMatchesTarget.
@@ -165,7 +162,7 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 				continue
 			}
 			fileURI := uri.File(absPath)
-			protocolRng := toProtocolRange(edge.Source, string(fileContent), enc)
+			protocolRng := protocolRangeVia(toRange, edge.Source, enc)
 			locations = append(locations, protocol.Location{
 				URI:   fileURI,
 				Range: protocolRng,
@@ -181,7 +178,7 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 				if strings.EqualFold(dataAccess.Name, targetName) {
 					// Record the reference site using NameRange (the DDM-name token, not the whole statement)
 					fileURI := uri.File(absPath)
-					protocolRng := toProtocolRange(dataAccess.NameRange, string(fileContent), enc)
+					protocolRng := protocolRangeVia(toRange, dataAccess.NameRange, enc)
 
 					locations = append(locations, protocol.Location{
 						URI:   fileURI,
@@ -198,19 +195,15 @@ func referenceSites(idx *workspace.Index, res *workspace.ResolutionSet, root str
 		// Use the target file's Structure.SelectionRange if available
 		targetFA, ok := idx.Get(targetPath)
 		if ok && targetFA.Structure != nil {
-			// Read the target file content for range conversion
+			// Convert via the in-memory line-width table — no disk read (T8).
 			targetAbsPath := filepath.Join(root, targetPath)
-			targetContent, err := os.ReadFile(targetAbsPath)
-			if err == nil {
-				// Successfully read the target file; build the declaration location
-				fileURI := uri.File(targetAbsPath)
-				protocolRng := toProtocolRange(targetFA.Structure.SelectionRange, string(targetContent), enc)
+			fileURI := uri.File(targetAbsPath)
+			protocolRng := indexProtocolRange(idx, targetPath, targetFA.Structure.SelectionRange, enc)
 
-				locations = append(locations, protocol.Location{
-					URI:   fileURI,
-					Range: protocolRng,
-				})
-			}
+			locations = append(locations, protocol.Location{
+				URI:   fileURI,
+				Range: protocolRng,
+			})
 		}
 	}
 

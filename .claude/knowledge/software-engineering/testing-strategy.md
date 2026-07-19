@@ -64,6 +64,37 @@ the "never panic on any input" invariant against inputs no hand-written fixture 
   fixtures. (Verified: go.dev/security/fuzz — native fuzzing since Go 1.18, corpus committed as
   regression seed.)
 
+## Scale/performance benchmarks: build-tagged package, off the verify gate
+
+**Status:** verified (2026-07-18) against feature-22 tasks.md (user-approved decisions OQ-A/OQ-C/OQ-F).
+
+Performance/scale benchmarks (NFR-1 cold scaling, NFR-4 peak memory) live in a dedicated
+`//go:build bench` package (`internal/workspace/bench/`), run via a `just bench` recipe, and are
+**entirely excluded from `just verify`** (the tag is off by default, so `go build ./...`,
+`go vet ./...`, and `go test ./...` never compile or run them). This mirrors the existing `-tags
+integration` convention; it is stronger than a `testing.Short()` guard, which still compiles+lists the
+benchmarks and would run them if a stray `-bench` reached the gate.
+
+- **Benchmark functions must live in `_test.go` files.** Go only discovers `Benchmark*` (and `Test*`)
+  in files ending `_test.go` — a `//go:build bench` file named `foo_bench.go` (or `bench.go`) compiles
+  under the tag but its benchmarks are silently never run (the failure mode looks like "`just bench`
+  prints only PASS"). The whole tagged package can be test-only files (helpers included), since nothing
+  outside tests consumes it. Consequence: naming a build-constraint-excluded package as an *explicit*
+  untagged target (`go test ./internal/workspace/bench/`) FAILs with "build constraints exclude all Go
+  files"; under the `./...` wildcard it is silently skipped (exit 0) — so `just verify`'s
+  `go test -race ./...` stays green.
+- **Measure-and-record, generous-relative assertions only (OQ-C/OQ-F).** Benchmarks record ns/op,
+  allocs/op, and peak heap; any assertion is a loose *relative* band across tiers (per-object time /
+  per-object heap stays roughly flat → linear-ish), never an absolute wall-clock or MiB cap
+  (environment-sensitive, would flake). The only hard guard is failing the benchmark if the corpus does
+  not build (bad numbers would be meaningless).
+- **Peak-memory reading:** `runtime.GC()` then `runtime.ReadMemStats` while holding a reference to the
+  built index (`runtime.KeepAlive`), so `HeapAlloc` reflects *held* (live, post-collection) memory, not
+  transient churn — reported via `b.ReportMetric(..., "peak-heap-MiB")` / `"heap-bytes/object"`.
+- **Corpus is generated, not committed** (deterministic seeded generator, NFR-9), into `b.TempDir()`;
+  size is tunable via a `BENCH_CORPUS_OBJECTS` env knob (small default tiers for a fast routine run; set
+  it for a manual 10k–30k headline run). Parsing the knob is a pure, unit-tested helper.
+
 ## The testdata regression-fixture convention (project rule)
 
 When the analyzer mishandles a construct: add a **minimal sanitized** `.NSx` reproducer under
