@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"sort"
 
-	"natural-lsp/internal/analysis"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/analysis"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // Analyzer is the parser-based extraction backend.

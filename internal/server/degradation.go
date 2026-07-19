@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"natural-lsp/internal/analysis"
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/analysis"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // FileProcessResult holds the outcome of processing a single file.

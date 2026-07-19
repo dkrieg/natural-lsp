@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // extractStructure builds a hierarchical symbol tree from the parsed program.

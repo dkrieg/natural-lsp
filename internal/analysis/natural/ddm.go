@@ -10,7 +10,7 @@ package natural
 import (
 	"strings"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // DDM fixed-column offsets (0-based byte positions, verified against natls and

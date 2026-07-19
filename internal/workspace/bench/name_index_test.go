@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // buildIndexForQueries generates a corpus, cold-builds the index, and returns the

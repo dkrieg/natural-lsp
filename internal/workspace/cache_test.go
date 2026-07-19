@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestSave_Load verifies that Save() and Load() provide a correct round-trip

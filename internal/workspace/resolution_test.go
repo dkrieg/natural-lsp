@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestResolution_Constructors_FR10 tests the constructors for Resolution outcomes.

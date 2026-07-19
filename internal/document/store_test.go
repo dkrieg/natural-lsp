@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/dkrieg/natural-lsp/internal/model"
 	"go.lsp.dev/uri"
-	"natural-lsp/internal/model"
 )
 
 // TestStoreGet tests the basic Store construction and URI lookup behavior.

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // FuzzParse is the executable proof of the parser's robustness (M-6, ADR-013):

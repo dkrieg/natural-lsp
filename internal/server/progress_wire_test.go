@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
 )
 
 // framedMsg is a decoded JSON-RPC message from the server's framed output,

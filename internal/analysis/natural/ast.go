@@ -4,7 +4,7 @@
 // This file defines the AST node types for Natural constructs.
 package natural
 
-import "natural-lsp/internal/model"
+import "github.com/dkrieg/natural-lsp/internal/model"
 
 // OperandRef represents a single operand reference (name + source range) within a statement.
 // Used by SQL statement nodes to expose unbound operand lists (columns, table names,

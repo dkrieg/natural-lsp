@@ -1,7 +1,7 @@
 package natural
 
 import (
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 	"path/filepath"
 	"strings"
 )

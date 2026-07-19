@@ -5,7 +5,7 @@ import (
 
 	"go.lsp.dev/protocol"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // provideDocumentSymbols handles textDocument/documentSymbol requests (feature 11, FR-27).

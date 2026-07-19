@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"testing"
 
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // BenchmarkColdIndexMemory measures the peak heap held around a cold

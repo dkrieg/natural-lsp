@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
 	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
-	"natural-lsp/internal/analysis/natural"
 )
 
 // TestNoUsableRootMessage covers the pure decision helper for the no-usable-root

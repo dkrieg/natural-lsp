@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
-	"natural-lsp/internal/workspace"
 )
 
 // FuzzPositionConversion is the executable proof of the position-conversion primitives'

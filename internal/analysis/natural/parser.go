@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // Parser implements a recursive-descent parser for Natural source code.

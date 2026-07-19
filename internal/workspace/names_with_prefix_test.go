@@ -3,8 +3,8 @@ package workspace
 import (
 	"testing"
 
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestNamesWithPrefix_FlatNamespace_AllPrefixMatches verifies that NamesWithPrefix

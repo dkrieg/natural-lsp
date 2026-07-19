@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestExtractDataAccess_GracefulDegradation verifies FR-43: extractDataAccess

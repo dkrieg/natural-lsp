@@ -11,9 +11,9 @@ import (
 	"sync"
 	"testing"
 
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // cancellingAnalyzer is a test Analyzer that records how many files it analyzed

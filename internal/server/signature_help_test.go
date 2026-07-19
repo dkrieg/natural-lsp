@@ -13,9 +13,9 @@ import (
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // TestDetectSignatureContext tests the pure function that classifies the signature-help

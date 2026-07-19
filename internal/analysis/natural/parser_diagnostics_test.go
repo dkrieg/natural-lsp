@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestParser_DiagnosticsForParseErrors verifies that the parser emits syntax

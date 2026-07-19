@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestWatcherDetectsModifiedFile tests that the Watcher detects file modifications

@@ -4,7 +4,7 @@
 //
 // NFR-15 (replaceable backend) constraint:
 // LSP-facing production code in internal/server, internal/workspace, and
-// internal/document must NOT import "natural-lsp/internal/analysis/natural".
+// internal/document must NOT import "github.com/dkrieg/natural-lsp/internal/analysis/natural".
 // Such code must consume FileAnalysis (including AST) only through the
 // internal/model contract and the analysis.Analyzer interface.
 // Type-asserting FileAnalysis.AST to concrete natural.* node types is forbidden
@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"natural-lsp/internal/analysis"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/analysis"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestSeam_LSPFacingPackagesDoNotImportConcreteBackend verifies that LSP-facing
@@ -78,7 +78,7 @@ func TestSeam_LSPFacingPackagesDoNotImportConcreteBackend(t *testing.T) {
 			// Check each import.
 			for _, importSpec := range f.Imports {
 				importPath := strings.Trim(importSpec.Path.Value, `"`)
-				if importPath == "natural-lsp/internal/analysis/natural" {
+				if importPath == "github.com/dkrieg/natural-lsp/internal/analysis/natural" {
 					t.Errorf(
 						"%s (in LSP-facing package %s) imports the concrete natural backend "+
 							"(natural-lsp/internal/analysis/natural), violating NFR-15: "+

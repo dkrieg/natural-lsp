@@ -6,7 +6,7 @@ package natural
 import (
 	"sort"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // extractDataAccess walks the parsed program and returns data-access entries

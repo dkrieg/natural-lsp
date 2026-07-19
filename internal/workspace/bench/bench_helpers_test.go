@@ -38,10 +38,10 @@ import (
 	"strconv"
 	"testing"
 
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/workspace"
-	"natural-lsp/internal/workspace/corpusgen"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/workspace/corpusgen"
 )
 
 // benchSeed fixes the corpus RNG so every run over a given tier is reproducible

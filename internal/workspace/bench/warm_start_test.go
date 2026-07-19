@@ -8,8 +8,8 @@ import (
 	"sort"
 	"testing"
 
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // cachePathFor returns the on-disk cache path the server uses (root/cfg.Cache.Path).

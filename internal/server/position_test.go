@@ -3,8 +3,8 @@ package server
 import (
 	"testing"
 
+	"github.com/dkrieg/natural-lsp/internal/model"
 	"go.lsp.dev/protocol"
-	"natural-lsp/internal/model"
 )
 
 func TestToProtocolRange(t *testing.T) {

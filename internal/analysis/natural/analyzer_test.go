@@ -1,8 +1,8 @@
 package natural
 
 import (
-	"natural-lsp/internal/analysis"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/analysis"
+	"github.com/dkrieg/natural-lsp/internal/model"
 	"os"
 	"path/filepath"
 	"runtime"

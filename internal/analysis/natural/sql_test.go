@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestExtractSQLAccess_SelectStatements verifies Task 2 / FR-19:
