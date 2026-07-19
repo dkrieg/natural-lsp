@@ -1,6 +1,6 @@
 package server
 
-import "natural-lsp/internal/model"
+import "github.com/dkrieg/natural-lsp/internal/model"
 
 // findCursorTarget returns the reference site (EdgeEntry or DataAccessEntry)
 // under the given cursor position, if any.

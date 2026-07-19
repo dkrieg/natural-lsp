@@ -3,8 +3,8 @@ package server
 import (
 	"go.lsp.dev/protocol"
 
-	"natural-lsp/internal/model"
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // Position conversion between the analyzer's model coordinates and LSP protocol

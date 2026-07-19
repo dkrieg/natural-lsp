@@ -7,9 +7,9 @@ import (
 
 	"go.lsp.dev/protocol"
 
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // completionKind classifies the context in which completion is triggered.

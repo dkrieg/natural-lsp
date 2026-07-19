@@ -11,8 +11,8 @@ import (
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
-	"natural-lsp/internal/model"
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // buildCallCountLens returns a code lens showing the number of resolved inbound

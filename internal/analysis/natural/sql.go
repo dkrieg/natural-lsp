@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // hasNaturalSigil reports whether name begins with a Natural user-variable

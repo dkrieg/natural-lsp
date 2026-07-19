@@ -1,4 +1,4 @@
-module natural-lsp
+module github.com/dkrieg/natural-lsp
 
 go 1.26
 

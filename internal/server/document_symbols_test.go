@@ -11,10 +11,10 @@ import (
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/document"
-	"natural-lsp/internal/model"
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/document"
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // TestSymbolToDocumentSymbol_DataSections tests the converter on a tree with

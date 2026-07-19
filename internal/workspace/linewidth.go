@@ -3,7 +3,7 @@ package workspace
 import (
 	"unicode/utf8"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // This file implements the in-memory, encoding-agnostic per-file line-width

@@ -8,8 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/dkrieg/natural-lsp/internal/model"
 	"log/slog"
-	"natural-lsp/internal/model"
 	"os"
 	"path/filepath"
 )

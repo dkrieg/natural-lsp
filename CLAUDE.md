@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–22 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
+**Features 00–23 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain). **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
 
 **Assessment (2026-07-14) — known defects and remediation plan.** An independent full-project
 assessment (`docs/assessment-2026-07-14.md`: live wire probes, four specialist reviews, LSP-spec
 verification) confirmed the core is sound (lifecycle/encoding/capabilities spec-correct,
 robustness and the Analyzer seam PASS) but found five issues, re-planned as features **19–23**
-(features 19–22 are **shipped**; only 23 remains `Planned` under `docs/plans/features/`) — read
-the assessment before touching the affected areas: **(1) — FIXED by feature 19.**
+(features 19–23 are all **shipped** — the entire assessment follow-up backlog is closed) — the
+notes below record what each fixed: **(1) — FIXED by feature 19.**
 `textDocument/completion` results were corrupted on the wire —
 `CompletionItem.detail`/`sortText` serialized as `{}` because `protocol.Optional[T]` only
 implements json/v2 `MarshalJSONTo` while the completion dispatch used stdlib `json.Marshal`;
@@ -35,8 +35,28 @@ rebuilt the name index per keystroke). Feature 22 added a deterministic syntheti
 per-query disk sweep (~46×/~34× faster) and a cached name index (~87× / ~97,000× faster) — see the
 feature-22 note below. Secondary: the README `go install` path contradicts the bare
 `natural-lsp` module path in `go.mod`, and `scripts/smoke.sh` mis-resolves its no-arg default
-binary → **feature 23** (the last remaining assessment follow-up). Recommended order: 19 → 20 → 21
-→ 22 → 23.
+binary — both **FIXED by feature 23** (see the feature-23 note below). **All assessment items
+(1–5 + secondary) are now closed.**
+
+Feature 23 (distribution hardening) fixes the assessment's secondary findings and closes the
+backlog. **No `internal/model` change, no cache-format bump (still `0.6.0`), and no production
+logic change** — the Go changes are a mechanical module rename plus two test additions. **(a)** The
+Go module was **renamed from bare `natural-lsp` to `github.com/dkrieg/natural-lsp`** (`go.mod` + all
+182 internal import paths across 85 files rewritten), so the documented
+`go install github.com/dkrieg/natural-lsp/cmd/natural-lsp@latest` now resolves (the module path
+matches the install URL; a pushed release tag is the remaining prerequisite, cut via the manual
+`release.yml`). The rename is rename-safe for versioning (the `-X main.version` ldflag is
+package-relative, not module-qualified) and touched no workflow/justfile string; the seam guard
+(`seam_test.go`) was updated to the new import prefix and still enforces the Analyzer boundary.
+**(b)** `scripts/smoke.sh`'s no-arg binary resolution was fixed — it previously tested a
+cwd-relative path (`[ -x natural-lsp ]`) but exec'd through PATH, giving a misleading failure when
+the built binary sat in cwd but not on PATH; it now normalizes a bare cwd-local name to `./name`
+before exec (else resolves via PATH, else fails accurately), guarded by a load-bearing
+`//go:build integration` regression test (`cmd/natural-lsp/smoke_integration_test.go`, proven to
+fail against the unfixed script). **(c)** A Homebrew tap (NFR-12 package-manager channel) is
+**deferred with a recorded reason** (needs a separate tap repo + stable released binaries + a
+release cadence; premature pre-v1.0) — the pre-built-binary and `go install`/from-clone paths cover
+NFR-12 for now. FR-42 `--version` output shape is pinned by a tightened `TestVersionFlag`.
 
 Feature 22 (performance & scale verification) fixes assessment defect #5 and adds the missing
 performance evidence. **No `internal/model` change and no cache-format bump** (still `0.6.0`);
@@ -599,8 +619,9 @@ references, hover, call hierarchy, document outline, and workspace symbols to an
 
 ## Commands
 
-Module is `natural-lsp` (`go.mod`), targeting Go 1.26. Note the README's `go install` path uses
-`github.com/dkrieg/natural-lsp/cmd/natural-lsp` — reconcile the module path before publishing.
+Module is `github.com/dkrieg/natural-lsp` (`go.mod`), targeting Go 1.26 — the module path matches
+the repository, so `go install github.com/dkrieg/natural-lsp/cmd/natural-lsp@latest` resolves once a
+release tag is pushed (feature 23 renamed the module from the former bare `natural-lsp`).
 
 Task runner is **`just`** (install: `brew install just`; `just --list` shows all recipes). The same
 gate — **`just verify`** — runs in the pre-push hook, in `/finalize-feature`, and in CI, so a local

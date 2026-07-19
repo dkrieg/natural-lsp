@@ -33,6 +33,13 @@ func writeFramedMessage(buf *bytes.Buffer, msg jsonrpc2.Message) error {
 
 // TestVersionFlag verifies that the `--version` flag prints a version identifier
 // and exits with code 0, locking FR-42 (version reporting on CLI).
+//
+// Rename-safety note (feature 23, T2): the release build injects the version via
+// `-ldflags "-X main.version=vX.Y.Z"` (justfile). The `-X` target `main.version`
+// is package-relative to package `main` in this directory and is NOT qualified by
+// the module path, so the 2026-07 module rename (`natural-lsp` →
+// `github.com/dkrieg/natural-lsp`) does not change the injection target. This test
+// guards the `--version` output shape (`natural-lsp <version>`) survives the rename.
 func TestVersionFlag(t *testing.T) {
 	// Arrange.
 	var outBuf bytes.Buffer
@@ -63,6 +70,11 @@ func TestVersionFlag(t *testing.T) {
 	}
 	if !strings.Contains(output, "natural-lsp") {
 		t.Errorf("run([--version]) output = %q, want substring %q", output, "natural-lsp")
+	}
+	// FR-42 shape: the line is `natural-lsp <version>` (a leading tool name so an
+	// operator / the smoke check can grep for it — see scripts/smoke.sh check 1).
+	if !strings.HasPrefix(strings.TrimSpace(output), "natural-lsp ") {
+		t.Errorf("run([--version]) output = %q, want prefix %q", output, "natural-lsp ")
 	}
 }
 

@@ -12,9 +12,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/server"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/server"
 )
 
 // version is the build version, overridden at release time via -ldflags.

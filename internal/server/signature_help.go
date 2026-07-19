@@ -9,7 +9,7 @@ import (
 	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/protocol"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // sigContextKind classifies the context in which signature help is triggered.

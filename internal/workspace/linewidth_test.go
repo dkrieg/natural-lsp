@@ -4,7 +4,7 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // oracleCodeUnit is an independent reference implementation of byte-offset →

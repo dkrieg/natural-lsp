@@ -28,14 +28,35 @@ BIN="${1:-natural-lsp}"
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1" >&2; exit 1; }
 
-# Resolve the binary: either an executable path or a name found on PATH.
-if [ -x "$BIN" ]; then
-  :
-elif command -v "$BIN" >/dev/null 2>&1; then
-  BIN="$(command -v "$BIN")"
-else
-  fail "binary not found or not executable: $BIN"
-fi
+# Resolve the binary so that what we TEST for existence is what we EXEC.
+#
+# The subtlety: `[ -x name ]` tests a path relative to the current directory,
+# but exec'ing a bare `name` (no slash) resolves via PATH — the two disagree for
+# a bare cwd-local name. So:
+#   * A path containing a slash is treated literally (relative or absolute).
+#   * A bare name is first probed as a cwd-local file; if it exists and is
+#     executable there, it is normalized to an explicit `./name` BEFORE exec so
+#     the test and the exec refer to the same file.
+#   * Otherwise a bare name is resolved via PATH (`command -v`).
+#   * If neither locates an executable, fail with an accurate message.
+case "$BIN" in
+  */*)
+    # Explicit path (relative or absolute): test and exec agree already.
+    if [ ! -x "$BIN" ]; then
+      fail "binary not found or not executable: $BIN"
+    fi
+    ;;
+  *)
+    # Bare name: prefer a cwd-local executable, normalized to an explicit path.
+    if [ -x "./$BIN" ]; then
+      BIN="./$BIN"
+    elif command -v "$BIN" >/dev/null 2>&1; then
+      BIN="$(command -v "$BIN")"
+    else
+      fail "binary not found on PATH and not executable in current directory: $BIN"
+    fi
+    ;;
+esac
 
 printf 'natural-lsp smoke check\n'
 printf 'binary: %s\n\n' "$BIN"

@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/model"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/uri"
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/model"
 )
 
 // gatedDiskAnalyzer wraps the real Natural analyzer but blocks in Analyze while

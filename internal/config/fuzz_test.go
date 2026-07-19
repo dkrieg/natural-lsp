@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/config"
 )
 
 // FuzzLoad is the executable proof of the CR-6 fail-safe contract for

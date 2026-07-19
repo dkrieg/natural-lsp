@@ -166,9 +166,11 @@ verified clean. Five issues were confirmed and re-planned:
    objects and extrapolated to tens of thousands; warm-start latency at very large scale remains a
    future optimization.
 
-Secondary: the `go install` path below does not match the module path in `go.mod` (install from
-a clone for now), and `scripts/smoke.sh` needs an explicit binary path — both addressed by
-[feature 23](docs/plans/features/23-distribution-hardening/plan.md).
+Secondary items were **addressed in
+[feature 23](docs/plans/features/23-distribution-hardening/plan.md):** the Go module was renamed to
+`github.com/dkrieg/natural-lsp` so the documented `go install` resolves, and `scripts/smoke.sh`'s
+no-argument binary resolution was fixed. (A Homebrew tap remains deferred — see the installation
+section.)
 
 ---
 
@@ -242,18 +244,18 @@ go build -o natural-lsp ./cmd/natural-lsp
 
 ### go install
 
-> **Known issue:** the command below does not currently work — `go.mod` declares the module as
-> bare `natural-lsp`, not `github.com/dkrieg/natural-lsp`, so the remote install path cannot
-> resolve. Until [feature 23](docs/plans/features/23-distribution-hardening/plan.md) reconciles
-> the module path, install from a clone: `git clone … && go build -o natural-lsp ./cmd/natural-lsp`.
+The module path is `github.com/dkrieg/natural-lsp`, so once a release tag is published this resolves:
 
 ```bash
 go install github.com/dkrieg/natural-lsp/cmd/natural-lsp@latest
 ```
 
-`go install` is the intended package-style install path. A native OS
-package-manager channel (Homebrew tap, Scoop) is **future work** and not yet
-provided.
+(`@latest` requires at least one pushed release tag; before the first release, install from a clone:
+`git clone https://github.com/dkrieg/natural-lsp && cd natural-lsp && go build -o natural-lsp ./cmd/natural-lsp`.)
+
+A native OS package-manager channel (Homebrew tap, Scoop) is **future work** — it needs a dedicated
+tap repository and a committed release cadence, deferred until the release line stabilizes. The
+pre-built binaries and `go install` cover installation in the meantime.
 
 ### Verify an install
 

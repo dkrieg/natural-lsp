@@ -20,9 +20,9 @@ with the LSP dependency choice recorded below.
 
 ## Project facts
 
-- Module: `natural-lsp` (`go.mod`), `go 1.26`. The README's `go install` path uses
-  `github.com/dkrieg/natural-lsp/cmd/natural-lsp` — module path vs. install path must be reconciled
-  before publishing.
+- Module: `github.com/dkrieg/natural-lsp` (`go.mod`), `go 1.26`. The module path matches the
+  repository, so `go install github.com/dkrieg/natural-lsp/cmd/natural-lsp@latest` resolves once a
+  release tag is pushed (renamed from the former bare `natural-lsp` in feature 23).
 - Core commands (from CLAUDE.md):
   - `go build -o natural-lsp ./cmd/natural-lsp` — build the binary
   - `go test ./...` — unit tests; `go test -run TestName ./internal/analysis/natural` — single test

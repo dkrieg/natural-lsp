@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/config"
 )
 
 const sentinelName = ".natural-lsp.toml"

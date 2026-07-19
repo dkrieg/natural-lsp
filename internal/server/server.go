@@ -16,15 +16,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dkrieg/natural-lsp/internal/analysis"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/document"
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 	gojson "github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
-	"natural-lsp/internal/analysis"
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/document"
-	"natural-lsp/internal/model"
-	"natural-lsp/internal/workspace"
 )
 
 // bgCtxHook is a test-only hook called after creating the background context.

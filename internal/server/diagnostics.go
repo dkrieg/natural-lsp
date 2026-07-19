@@ -16,7 +16,7 @@ import (
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // severityToProtocol maps a model.DiagnosticSeverity to a protocol.DiagnosticSeverity.

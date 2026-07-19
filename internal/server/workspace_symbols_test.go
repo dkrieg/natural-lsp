@@ -8,8 +8,8 @@ import (
 
 	"go.lsp.dev/protocol"
 
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/workspace"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // TestWorkspaceSymbols tests the workspace/symbol search functionality.

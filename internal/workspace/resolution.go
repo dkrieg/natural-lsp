@@ -22,8 +22,8 @@ import (
 	"sort"
 	"strings"
 
-	"natural-lsp/internal/config"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // UnresolvedReason classifies why an edge could not be resolved to a definition.

@@ -7,7 +7,7 @@ import (
 
 	"go.lsp.dev/protocol"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // buildModuleHover returns a Markdown hover card for a resolved module target.

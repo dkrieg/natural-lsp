@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/config"
 
 	"github.com/fsnotify/fsnotify"
 )

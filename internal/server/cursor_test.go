@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"natural-lsp/internal/analysis/natural"
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestCursorLookup_edgeContainment verifies that a cursor position maps to the

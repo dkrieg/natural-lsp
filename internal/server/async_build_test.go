@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dkrieg/natural-lsp/internal/analysis"
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
-	"natural-lsp/internal/analysis"
-	"natural-lsp/internal/model"
-	"natural-lsp/internal/workspace"
 )
 
 // lockedBuffer is a concurrency-safe bytes.Buffer wrapper: the dispatch loop and

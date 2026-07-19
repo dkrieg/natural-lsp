@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // isStaticLiteral reports whether a target can be resolved as a static

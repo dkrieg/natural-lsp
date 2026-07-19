@@ -4,7 +4,7 @@
 // analysis/natural). This keeps the backend replaceable (PRD NFR-15).
 package analysis
 
-import "natural-lsp/internal/model"
+import "github.com/dkrieg/natural-lsp/internal/model"
 
 // Analyzer extracts structured information from a single Natural source file.
 type Analyzer interface {

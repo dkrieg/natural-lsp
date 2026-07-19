@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestParser_StatementTypes verifies that the parser correctly parses all

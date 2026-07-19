@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/dkrieg/natural-lsp/internal/config"
 	"go.lsp.dev/jsonrpc2"
-	"natural-lsp/internal/config"
 )
 
 // TestMalformedDefinitionParams tests that textDocument/definition with malformed params

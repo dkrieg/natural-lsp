@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/dkrieg/natural-lsp/internal/model"
 	"go.lsp.dev/uri"
-	"natural-lsp/internal/model"
 )
 
 // AnalyzeFunc is the per-file analysis callback with FR-43 degradation guarantees.

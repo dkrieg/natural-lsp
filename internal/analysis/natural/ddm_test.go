@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
 // TestExtractDDMDefinitions_HeadersOnly verifies that a DDM file with only header
