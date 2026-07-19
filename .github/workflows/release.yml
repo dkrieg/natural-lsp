@@ -27,8 +27,11 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      CGO_ENABLED: "0"
+    # NOTE: do NOT set a job-level CGO_ENABLED=0 here. `just release` runs the
+    # full `verify` gate, whose `test` recipe uses `go test -race`, and the race
+    # detector requires cgo. The cross-compiled release binaries are kept static
+    # by the per-build `CGO_ENABLED=0 go build ...` in the `release` recipe
+    # itself, so the shipped artifacts are unaffected by leaving cgo enabled here.
     steps:
       - name: Validate version input
         env:
