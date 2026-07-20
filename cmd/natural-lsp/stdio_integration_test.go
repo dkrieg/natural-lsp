@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +18,17 @@ import (
 
 	"go.lsp.dev/jsonrpc2"
 )
+
+// serverBinaryName is the built server's file name for the current OS. Windows
+// requires an executable extension: `go build -o <dir>/natural-lsp` and the
+// subsequent exec must both use `natural-lsp.exe`, or the exec fails with
+// "executable file not found" (the binary has no PATHEXT-recognized extension).
+func serverBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "natural-lsp.exe"
+	}
+	return "natural-lsp"
+}
 
 // TestStdioHandshake is the first integration test (Feature 03, Task T9).
 // It validates the end-to-end stdio LSP handshake:
@@ -31,7 +43,7 @@ import (
 func TestStdioHandshake(t *testing.T) {
 	// Step 1: Build the binary to a temp directory
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "natural-lsp")
+	binaryPath := filepath.Join(tempDir, serverBinaryName())
 
 	// Locate the module root by walking up from the test's working directory
 	// (go test sets cwd to the package directory) until go.mod is found.
@@ -446,7 +458,7 @@ func (fr *framedReader) readFramedMessage() ([]byte, error) {
 func TestCrossWorkdirRootUri(t *testing.T) {
 	// Step 1: Build the binary to a temp directory
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "natural-lsp")
+	binaryPath := filepath.Join(tempDir, serverBinaryName())
 
 	moduleRoot, err := func() (string, error) {
 		dir, err := os.Getwd()
