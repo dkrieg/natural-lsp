@@ -1,0 +1,41 @@
+# Normalize line endings across platforms so checkouts are byte-identical on
+# Linux, macOS, and Windows. Without this, git's core.autocrlf on Windows CI
+# rewrites text files to CRLF at checkout, which breaks:
+#   - golden-file byte comparisons (config Sample() emits LF)
+#   - fixture-content string edits keyed on "\n" needles
+# Force LF for all text (auto-detected) and pin the source + testdata + fixture
+# file types the test suite reads verbatim.
+* text=auto eol=lf
+
+# Source and config
+*.go     text eol=lf
+*.mod    text eol=lf
+*.sum    text eol=lf
+*.toml   text eol=lf
+*.golden text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.sh     text eol=lf
+*.ts     text eol=lf
+*.js     text eol=lf
+
+# Natural object fixtures (all 15 exported extensions) — read verbatim by tests
+*.NSP    text eol=lf
+*.NSN    text eol=lf
+*.NSS    text eol=lf
+*.NSC    text eol=lf
+*.NSM    text eol=lf
+*.NSL    text eol=lf
+*.NSG    text eol=lf
+*.NSA    text eol=lf
+*.NSH    text eol=lf
+*.NSD    text eol=lf
+*.NS4    text eol=lf
+*.NS7    text eol=lf
+*.NS3    text eol=lf
+*.NS8    text eol=lf
+*.NST    text eol=lf
+
+# Windows-specific scripts, if ever added, must stay CRLF.
+*.bat    text eol=crlf
+*.cmd    text eol=crlf

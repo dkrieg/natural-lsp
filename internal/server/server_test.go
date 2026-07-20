@@ -1688,29 +1688,32 @@ func (sa *spyAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis,
 // - No error response is sent for the notification (notifications don't get responses)
 func TestTextDocumentDidOpen(t *testing.T) {
 	testCases := []struct {
-		name                  string
-		uri                   string
+		name string
+		// relPath is the workspace-relative path (forward-slash form). The test
+		// builds a host-valid absolute root via t.TempDir() and derives both the
+		// document URI (via uri.File, correct on Windows) and the expected analyzer
+		// relPath from it, so the assertion holds on every OS. It is also the
+		// expected analyzer path: the store normalizes to forward-slash (the
+		// canonical index keyspace, paths.NormalizeKey) on every OS.
+		relPath               string
 		version               int32
 		text                  string
-		expectAnalyzeCallPath string // path the analyzer should be called with
 		expectAnalyzeCallText string // content the analyzer should be called with
 		description           string
 	}{
 		{
 			name:                  "SimpleNSPFile",
-			uri:                   "file:///workspace/test.NSP",
+			relPath:               "test.NSP",
 			version:               1,
 			text:                  "PROGRAM FOO\nEND",
-			expectAnalyzeCallPath: "test.NSP",
 			expectAnalyzeCallText: "PROGRAM FOO\nEND",
 			description:           "didOpen should call analyzer with correct path and content",
 		},
 		{
 			name:                  "NestedPath",
-			uri:                   "file:///workspace/src/subsrc/hello.NSP",
+			relPath:               "src/subsrc/hello.NSP",
 			version:               2,
 			text:                  "PROGRAM HELLO\nEND",
-			expectAnalyzeCallPath: "src/subsrc/hello.NSP",
 			expectAnalyzeCallText: "PROGRAM HELLO\nEND",
 			description:           "didOpen derives correct relative path from nested URI",
 		},
@@ -1718,9 +1721,18 @@ func TestTextDocumentDidOpen(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// A host-valid absolute root (a drive-lettered path on Windows) so
+			// filepath.Rel can relativize the document path. The prior hardcoded
+			// "/workspace" root + "file:///workspace/..." URIs are drive-less on
+			// Windows, so filepath.Rel fails and the relPath is not stripped.
+			root := t.TempDir()
+			docURI := uri.File(filepath.Join(root, filepath.FromSlash(tc.relPath)))
+			// The canonical index key is forward-slash on every OS (paths.NormalizeKey).
+			expectAnalyzeCallPath := tc.relPath
+
 			// Arrange: build the message sequence: initialize → initialized → didOpen → shutdown → exit
 			initID := jsonrpc2.NewNumberID(1)
-			initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+			initParams := jsonrpc2.RawMessage(`{"processId":1234,"capabilities":{}}`)
 			initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
 
 			initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
@@ -1728,7 +1740,7 @@ func TestTextDocumentDidOpen(t *testing.T) {
 			// Build the didOpen notification with the test case URI, version, and text
 			didOpenParams := map[string]interface{}{
 				"textDocument": map[string]interface{}{
-					"uri":        tc.uri,
+					"uri":        string(docURI),
 					"languageId": "natural",
 					"version":    tc.version,
 					"text":       tc.text,
@@ -1767,7 +1779,7 @@ func TestTextDocumentDidOpen(t *testing.T) {
 				&inBuf,
 				&outBuf,
 				"0.0.0-test",
-				"/workspace",
+				root,
 				spy,
 				logger,
 			)
@@ -1820,8 +1832,8 @@ func TestTextDocumentDidOpen(t *testing.T) {
 			} else {
 				// Check the first call's path and content
 				call := spy.calls[0]
-				if call.path != tc.expectAnalyzeCallPath {
-					t.Errorf("analyzer path = %q, want %q", call.path, tc.expectAnalyzeCallPath)
+				if call.path != expectAnalyzeCallPath {
+					t.Errorf("analyzer path = %q, want %q", call.path, expectAnalyzeCallPath)
 				}
 				if string(call.content) != tc.expectAnalyzeCallText {
 					t.Errorf("analyzer content = %q, want %q", string(call.content), tc.expectAnalyzeCallText)
@@ -1868,9 +1880,16 @@ func TestTextDocumentDidChange(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// A host-valid absolute root so filepath.Rel can relativize the document
+			// path on every OS (the prior hardcoded "/workspace" root is drive-less
+			// on Windows, so filepath.Rel fails and applyDocumentChange is skipped,
+			// dropping the analyze count from 3 to 2).
+			root := t.TempDir()
+			docURI := string(uri.File(filepath.Join(root, "test.NSP")))
+
 			// Arrange: build the message sequence: initialize → initialized → didOpen → didChange → shutdown → exit
 			initID := jsonrpc2.NewNumberID(1)
-			initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+			initParams := jsonrpc2.RawMessage(`{"processId":1234,"capabilities":{}}`)
 			initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
 
 			initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
@@ -1878,7 +1897,7 @@ func TestTextDocumentDidChange(t *testing.T) {
 			// Build the didOpen notification
 			didOpenParams := map[string]interface{}{
 				"textDocument": map[string]interface{}{
-					"uri":        "file:///workspace/test.NSP",
+					"uri":        docURI,
 					"languageId": "natural",
 					"version":    1,
 					"text":       tc.openText,
@@ -1901,7 +1920,7 @@ func TestTextDocumentDidChange(t *testing.T) {
 			}
 			didChangeParams := map[string]interface{}{
 				"textDocument": map[string]interface{}{
-					"uri":     "file:///workspace/test.NSP",
+					"uri":     docURI,
 					"version": 2,
 				},
 				"contentChanges": contentChanges,
@@ -1939,7 +1958,7 @@ func TestTextDocumentDidChange(t *testing.T) {
 				&inBuf,
 				&outBuf,
 				"0.0.0-test",
-				"/workspace",
+				root,
 				spy,
 				logger,
 			)
@@ -2135,9 +2154,15 @@ func TestNotificationPanicRecovery(t *testing.T) {
 //
 // Sequence: initialize → initialized → didOpen → didChange → didClose → shutdown → exit
 func TestFR33DocumentLifecycle(t *testing.T) {
+	// A host-valid absolute root so filepath.Rel relativizes the document path on
+	// every OS (a drive-less "/workspace" root breaks filepath.Rel on Windows,
+	// skipping applyDocumentChange and dropping the analyze count).
+	root := t.TempDir()
+	docURI := string(uri.File(filepath.Join(root, "test.NSP")))
+
 	// Arrange: build the message sequence
 	initID := jsonrpc2.NewNumberID(1)
-	initParams := jsonrpc2.RawMessage(`{"processId":1234,"rootPath":"/workspace","capabilities":{}}`)
+	initParams := jsonrpc2.RawMessage(`{"processId":1234,"capabilities":{}}`)
 	initCall := jsonrpc2.NewCall(initID, "initialize", initParams)
 
 	initNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
@@ -2146,7 +2171,7 @@ func TestFR33DocumentLifecycle(t *testing.T) {
 	openedContent := "PROGRAM FOO\nEND"
 	didOpenParams := map[string]interface{}{
 		"textDocument": map[string]interface{}{
-			"uri":        "file:///workspace/test.NSP",
+			"uri":        docURI,
 			"languageId": "natural",
 			"version":    1,
 			"text":       openedContent,
@@ -2162,7 +2187,7 @@ func TestFR33DocumentLifecycle(t *testing.T) {
 	changedContent := "PROGRAM BAR\nEND"
 	didChangeParams := map[string]interface{}{
 		"textDocument": map[string]interface{}{
-			"uri":     "file:///workspace/test.NSP",
+			"uri":     docURI,
 			"version": 2,
 		},
 		"contentChanges": []interface{}{
@@ -2180,7 +2205,7 @@ func TestFR33DocumentLifecycle(t *testing.T) {
 	// Build the didClose notification
 	didCloseParams := map[string]interface{}{
 		"textDocument": map[string]interface{}{
-			"uri": "file:///workspace/test.NSP",
+			"uri": docURI,
 		},
 	}
 	didCloseParamsJSON, err := json.Marshal(didCloseParams)
@@ -2226,7 +2251,7 @@ func TestFR33DocumentLifecycle(t *testing.T) {
 		&inBuf,
 		&outBuf,
 		"0.0.0-test",
-		"/workspace",
+		root,
 		spy,
 		logger,
 	)
