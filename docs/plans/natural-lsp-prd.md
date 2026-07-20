@@ -223,6 +223,7 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
   cache stays valid across version-control checkouts.
 - **FR-39 (P1)** — Force a full rebuild when the cache format changes between product versions.
 - **FR-40 (P1)** — The cache must be safe to delete at any time and to exclude from version control.
+  (Its on-disk encoding must be compact — see NFR-16.)
 
 ### 6.9 Server lifecycle & protocol
 
@@ -242,6 +243,11 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
 - **FR-46 (P1)** — **Other editors**: document a supported configuration for additional LSP-capable
   editors (at minimum Neovim, Zed, and Helix), including file-type association and workspace-root
   detection.
+- **FR-52 (P1)** — The shipped JetBrains/**LSP4IJ template must be importable** — it must conform to
+  LSP4IJ's user-defined-language-server template schema (`id`, `name`, `programArgs`,
+  `fileTypeMappings[].fileType.patterns`/`languageId`) so "Import from custom template…" produces a
+  working server, and it must be validated against that schema so it cannot silently drift.
+  (Refines FR-45; planned as feature 25.)
 
 ---
 
@@ -273,6 +279,10 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
   without exhausting typical developer-machine memory.
 - **NFR-5 (P1)** — Indexing must not block editor responsiveness; progress must be visible while it
   runs.
+- **NFR-16 (P1)** — The persistent cache must use a **compact on-disk encoding**. Cache size scales
+  reasonably with workspace size (a small fraction of the current indented-JSON footprint) and does
+  not consume gigabytes for tens of thousands of objects; the encoding also should not regress — and
+  ideally improves — warm-start load time (NFR-2). (Planned as feature 24.)
 
 > Indicative cold-index targets (design goals, not guaranteed benchmarks):
 > ~3s @ 500 files · ~25s @ 5,000 files · ~3min @ 30,000 files; warm startup <1s in all cases.
@@ -362,8 +372,8 @@ broaden editor support, and deliver the parser-enabled interactive features.
 - Signature help for CALLNAT/PERFORM (FR-48).
 - Call hierarchy: incoming and outgoing call panels (FR-49).
 - External file-change watching (FR-34).
-- Persistent, content-hash-invalidated, version-gated cache (FR-37–40).
-- JetBrains client and documented config for other editors (FR-45, FR-46).
+- Persistent, content-hash-invalidated, version-gated cache (FR-37–40); compact cache encoding (NFR-16, feature 24).
+- JetBrains client and documented config for other editors (FR-45, FR-46); importable/validated LSP4IJ template (FR-52, feature 25).
 - Warm-startup, request-latency, non-blocking-indexing, cache-freshness, and regression-fixture
   NFRs (NFR-2, NFR-3, NFR-5, NFR-8, NFR-9); installation paths and observability
   (NFR-12, NFR-14, NFR-16).
