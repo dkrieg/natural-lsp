@@ -10,13 +10,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"go.lsp.dev/jsonrpc2"
+	"go.lsp.dev/uri"
 )
+
+// serverBinaryName is the built server's file name for the current OS. Windows
+// requires an executable extension: `go build -o <dir>/natural-lsp` and the
+// subsequent exec must both use `natural-lsp.exe`, or the exec fails with
+// "executable file not found" (the binary has no PATHEXT-recognized extension).
+func serverBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "natural-lsp.exe"
+	}
+	return "natural-lsp"
+}
 
 // TestStdioHandshake is the first integration test (Feature 03, Task T9).
 // It validates the end-to-end stdio LSP handshake:
@@ -31,7 +44,7 @@ import (
 func TestStdioHandshake(t *testing.T) {
 	// Step 1: Build the binary to a temp directory
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "natural-lsp")
+	binaryPath := filepath.Join(tempDir, serverBinaryName())
 
 	// Locate the module root by walking up from the test's working directory
 	// (go test sets cwd to the package directory) until go.mod is found.
@@ -100,9 +113,12 @@ func TestStdioHandshake(t *testing.T) {
 
 	// Build and send initialize request (as Content-Length-framed JSON)
 	initID := jsonrpc2.NewNumberID(1)
+	// Use a file:// URI (forward-slash, JSON-safe on all OSes) rather than a raw
+	// filesystem path: a Windows path like C:\Users\... contains backslashes that
+	// are invalid JSON escapes (e.g. \U). uri.File yields file:///C:/Users/... .
 	initParamsJSON := jsonrpc2.RawMessage(`{
 		"processId": 1234,
-		"rootPath": "` + workspaceDir + `",
+		"rootUri": "` + string(uri.File(workspaceDir)) + `",
 		"capabilities": {
 			"general": {
 				"positionEncodings": ["utf-8", "utf-16"]
@@ -446,7 +462,7 @@ func (fr *framedReader) readFramedMessage() ([]byte, error) {
 func TestCrossWorkdirRootUri(t *testing.T) {
 	// Step 1: Build the binary to a temp directory
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "natural-lsp")
+	binaryPath := filepath.Join(tempDir, serverBinaryName())
 
 	moduleRoot, err := func() (string, error) {
 		dir, err := os.Getwd()
@@ -545,11 +561,13 @@ func TestCrossWorkdirRootUri(t *testing.T) {
 	})
 
 	// Step 5: Send initialize with rootUri = workspaceDir
-	// (NOT rootPath; the rootUri is the deferred-bootstrap trigger)
+	// (NOT rootPath; the rootUri is the deferred-bootstrap trigger). Build the URI
+	// via uri.File so it is a valid, forward-slash, JSON-safe file:// URI on every
+	// OS — a raw "file://"+C:\Users\... path has backslashes that are invalid JSON.
 	initID := jsonrpc2.NewNumberID(1)
 	initParamsJSON := jsonrpc2.RawMessage(`{
 		"processId": 1234,
-		"rootUri": "file://` + workspaceDir + `",
+		"rootUri": "` + string(uri.File(workspaceDir)) + `",
 		"capabilities": {
 			"general": {
 				"positionEncodings": ["utf-8", "utf-16"]
@@ -595,7 +613,7 @@ func TestCrossWorkdirRootUri(t *testing.T) {
 	}
 
 	// Step 7: Send didOpen for HELLO.NSP
-	helloURI := "file://" + filepath.Join(workspaceDir, "HELLO.NSP")
+	helloURI := string(uri.File(filepath.Join(workspaceDir, "HELLO.NSP")))
 	helloContent, err := os.ReadFile(filepath.Join(workspaceDir, "HELLO.NSP"))
 	if err != nil {
 		t.Fatalf("failed to read HELLO.NSP: %v", err)
@@ -708,8 +726,8 @@ func TestCrossWorkdirRootUri(t *testing.T) {
 		t.Errorf("definition URI = %q, want to contain CALLGREET.NSN", uriVal)
 	}
 
-	if !strings.HasPrefix(uriVal, "file://"+workspaceDir) {
-		t.Errorf("definition URI = %q, want to be in workspace %s", uriVal, workspaceDir)
+	if !strings.HasPrefix(uriVal, string(uri.File(workspaceDir))) {
+		t.Errorf("definition URI = %q, want to be in workspace %s", uriVal, string(uri.File(workspaceDir)))
 	}
 
 	// Step 10: Send shutdown request. Use nextID (past any definition-retry ids)

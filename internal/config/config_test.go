@@ -15,6 +15,14 @@ import (
 
 const sentinelName = ".natural-lsp.toml"
 
+// normalizeEOL collapses CRLF to LF so byte comparisons are line-ending agnostic.
+// Windows checkouts may rewrite committed text/golden files to CRLF (mitigated by
+// .gitattributes, but this is defense-in-depth); the golden pins content, not the
+// line-ending style.
+func normalizeEOL(b []byte) []byte {
+	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+}
+
 // update regenerates the committed golden files (e.g. sample.golden.toml) when
 // set: go test ./internal/config/ -update. Without it, golden tests compare
 // against the committed bytes. Standard testdata determinism pattern (T8).
@@ -800,7 +808,13 @@ func TestSample(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadFile golden %q: %v (run with -update to regenerate)", sampleGoldenPath, err)
 		}
-		if !bytes.Equal(got, want) {
+		// Normalize CRLF→LF on both sides before comparing. Sample() always emits
+		// LF, but the committed golden file may be checked out with CRLF on Windows
+		// if git's autocrlf rewrites it (defense-in-depth alongside .gitattributes,
+		// which pins these files to LF on checkout). The line-ending style is not
+		// what this golden pins — the content is — so normalizing does not weaken
+		// the assertion.
+		if !bytes.Equal(normalizeEOL(got), normalizeEOL(want)) {
 			t.Errorf("Sample() output does not match golden %s\n got:\n%s\nwant:\n%s\n(run go test ./internal/config/ -update to regenerate)",
 				sampleGoldenPath, got, want)
 		}

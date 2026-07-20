@@ -710,9 +710,13 @@ func TestProvideCodeLens_IncrementalFreshness(t *testing.T) {
 		t.Fatalf("failed to read CALLER3.NSP: %v", err)
 	}
 
-	// Remove the CALLNAT 'SHARED' line from CALLER3
-	modifiedContent := strings.ReplaceAll(string(caller3Content), "CALLNAT 'SHARED'\n", "")
-	if string(caller3Content) == modifiedContent {
+	// Remove the CALLNAT 'SHARED' line from CALLER3. Normalize CRLF→LF first so
+	// the "\n"-terminated needle matches even when the fixture is checked out with
+	// CRLF on Windows (defense-in-depth alongside .gitattributes, which pins .NSP
+	// fixtures to LF).
+	normalized := strings.ReplaceAll(string(caller3Content), "\r\n", "\n")
+	modifiedContent := strings.ReplaceAll(normalized, "CALLNAT 'SHARED'\n", "")
+	if normalized == modifiedContent {
 		t.Fatal("failed to remove CALLNAT 'SHARED' from CALLER3.NSP content")
 	}
 

@@ -132,8 +132,16 @@ func TestRunStdioCallsBootstrap(t *testing.T) {
 	if !strings.Contains(got, "sentinel found: true") {
 		t.Errorf("run(--stdio) log = %q, want substring %q (Bootstrap not wired into initialize)", got, "sentinel found: true")
 	}
-	if !strings.Contains(got, resolved) {
-		t.Errorf("run(--stdio) log = %q, want it to name the client root %q", got, resolved)
+	// Prove the root came from the client rootUri (not the cwd) by matching the
+	// temp dir's leaf segment. We deliberately do NOT match the full absolute
+	// path: on Windows the logged path uses a lowercase drive letter and 8.3
+	// short names (e.g. c:\Users\RUNNER~1\...\001) that will not string-match the
+	// long, uppercase-drive form of `resolved`. The leaf segment is stable across
+	// that variance, and combined with "sentinel found: true" (the cwd fallback
+	// has no sentinel) it proves discovery ran against the client root.
+	leaf := filepath.Base(resolved)
+	if !strings.Contains(got, leaf) {
+		t.Errorf("run(--stdio) log = %q, want it to name the client-root leaf %q (from %q)", got, leaf, resolved)
 	}
 }
 

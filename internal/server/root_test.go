@@ -1,6 +1,7 @@
 package server
 
 import (
+	"path/filepath"
 	"testing"
 
 	"go.lsp.dev/protocol"
@@ -14,6 +15,12 @@ func TestResolveRootStart(t *testing.T) {
 		paramsJSON  string // Raw JSON to unmarshal into InitializeParams
 		cwdFallback string
 		expected    string
+		// fromURI marks expectations derived from a file URI's FsPath(), which is
+		// OS-native (backslash-separated on Windows). Such expectations are run
+		// through filepath.FromSlash so the forward-slash literals below match on
+		// every OS. Fallthrough cases return cwdFallback verbatim, so they leave
+		// fromURI false and compare literally.
+		fromURI bool
 	}{
 		{
 			name: "WorkspaceFoldersWins_IgnoresRootUri",
@@ -23,6 +30,7 @@ func TestResolveRootStart(t *testing.T) {
 			}`,
 			cwdFallback: "/fallback/cwd",
 			expected:    "/ws/a",
+			fromURI:     true,
 		},
 		{
 			name: "RootUriUsed_WhenWorkspaceFoldersNull",
@@ -32,6 +40,7 @@ func TestResolveRootStart(t *testing.T) {
 			}`,
 			cwdFallback: "/fallback/cwd",
 			expected:    "/ws/b",
+			fromURI:     true,
 		},
 		{
 			name: "CwdFallback_WhenBothAbsent",
@@ -49,6 +58,7 @@ func TestResolveRootStart(t *testing.T) {
 			}`,
 			cwdFallback: "/fallback/cwd",
 			expected:    "/ws/b",
+			fromURI:     true,
 		},
 		{
 			name: "FallThrough_OnEmptyFsPath",
@@ -58,6 +68,7 @@ func TestResolveRootStart(t *testing.T) {
 			}`,
 			cwdFallback: "/fallback/cwd",
 			expected:    "/ws/b",
+			fromURI:     true,
 		},
 		{
 			// RFC 8089 single-slash file URI form (file:/abs). The prior
@@ -70,6 +81,7 @@ func TestResolveRootStart(t *testing.T) {
 			}`,
 			cwdFallback: "/fallback/cwd",
 			expected:    "/ws/x",
+			fromURI:     true,
 		},
 		{
 			// A non-file scheme (with no rootUri) must still fall through to
@@ -91,9 +103,18 @@ func TestResolveRootStart(t *testing.T) {
 				t.Fatalf("failed to unmarshal test params: %v", err)
 			}
 
+			want := tc.expected
+			if tc.fromURI {
+				// resolveRootStart returns uri.FsPath() output, which is OS-native
+				// (backslash-separated on Windows) — it is used as a filesystem
+				// start path for config.Bootstrap/FindRoot. Convert the forward-slash
+				// literal to the native separator so the assertion holds on Windows
+				// without weakening it on Linux/macOS.
+				want = filepath.FromSlash(want)
+			}
 			result := resolveRootStart(params, tc.cwdFallback)
-			if result != tc.expected {
-				t.Errorf("resolveRootStart() = %q, want %q", result, tc.expected)
+			if result != want {
+				t.Errorf("resolveRootStart() = %q, want %q", result, want)
 			}
 		})
 	}
