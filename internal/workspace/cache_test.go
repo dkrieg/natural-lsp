@@ -2,12 +2,14 @@ package workspace
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
@@ -1323,5 +1325,96 @@ func TestLoad_CacheVersionBumpedForStructure(t *testing.T) {
 				t.Errorf("Load() did not mark test.NSP as stale: %v", stale)
 			}
 		})
+	}
+}
+
+// TestLoad_CanonicalizesBackslashKeys is the regression guard for ADR-027's
+// cache self-heal (Finding 2): a PRE-FIX cache written on Windows holds
+// backslash keys (e.g. "code\LIB1\MYSUB.NSN"). Load MUST canonicalize each
+// stored key through NormalizeKey before inserting it into the index, so that
+// (a) the index holds only the forward-slash key (no orphaned backslash key
+// that saveIndex would re-persist forever), and (b) the current-hash lookup
+// (keyed forward-slash by BuildWithCache) HITS, producing a proper warm hit /
+// re-analyze rather than leaving a duplicate entry.
+//
+// The bug's downstream consequence in a flat namespace: objectIdentity would
+// map BOTH "code\LIB1\MYSUB.NSN" and the real "code/LIB1/MYSUB.NSN" to the
+// same ("MYSUB","") name → two Candidates → a spurious ambiguity diagnostic +
+// a double-location definition, indefinitely. This test asserts exactly ONE
+// candidate for MYSUB.
+//
+// It is PLATFORM-INDEPENDENT: it hand-serializes a CacheFile with a literal
+// backslash key, so it exercises the Windows code path on Linux/macOS CI. It
+// is designed to FAIL if load-time normalization is removed (two keys / two
+// candidates).
+func TestLoad_CanonicalizesBackslashKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "cache.json")
+
+	const backslashKey = "code\\LIB1\\MYSUB.NSN"
+	const canonicalKey = "code/LIB1/MYSUB.NSN"
+
+	// Hand-build a PRE-FIX cache holding a backslash key (as a Windows build
+	// would have written before ADR-027). Serialize via the cache's own format.
+	cache := CacheFile{
+		Version: cacheFormatVersion,
+		Entries: map[string]cacheEntry{
+			backslashKey: {
+				ObjectType:  string(model.ObjectSubprogram),
+				ContentHash: "deadbeef",
+			},
+		},
+	}
+	data, err := json.MarshalIndent(cache, "", "    ")
+	if err != nil {
+		t.Fatalf("marshal cache: %v", err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	// currentHashes is keyed forward-slash (as BuildWithCache produces via
+	// NormalizeKey) and carries the SAME hash, so a correctly-normalized Load
+	// records a warm hit (no staleness) rather than a duplicate.
+	currentHashes := map[string]string{canonicalKey: "deadbeef"}
+
+	idx, stale, err := Load(cachePath, currentHashes, nil)
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if idx == nil {
+		t.Fatalf("Load() returned nil index for a same-version cache")
+	}
+
+	// (a) The index holds the canonical key and NOT the backslash key.
+	if _, ok := idx.Get(canonicalKey); !ok {
+		t.Errorf("index missing canonical key %q; keys present: %v", canonicalKey, idx.Keys())
+	}
+	if _, ok := idx.Get(backslashKey); ok {
+		t.Errorf("index still holds orphaned backslash key %q (load-time normalization missing)", backslashKey)
+	}
+	for _, k := range idx.Keys() {
+		if strings.Contains(k, "\\") {
+			t.Errorf("index key %q contains a backslash after Load; keys must be forward-slash canonical", k)
+		}
+	}
+
+	// The warm hit means the entry is NOT stale (the forward-slash currentHashes
+	// lookup matched the normalized key + identical hash).
+	for _, s := range stale {
+		if s == canonicalKey || s == backslashKey {
+			t.Errorf("Load() marked %q stale; the forward-slash hash lookup should HIT the normalized key", s)
+		}
+	}
+
+	// (b) LookupByName / resolution yields exactly ONE candidate for MYSUB — no
+	// spurious ambiguity from a duplicated backslash+forward-slash entry.
+	cfg := config.Defaults()
+	cands := idx.LookupByName("MYSUB", model.ObjectSubprogram, &cfg)
+	if len(cands) != 1 {
+		t.Fatalf("LookupByName(MYSUB) = %d candidates, want exactly 1 (orphaned backslash key would produce 2): %+v", len(cands), cands)
+	}
+	if cands[0].Path != canonicalKey {
+		t.Errorf("candidate Path = %q, want %q", cands[0].Path, canonicalKey)
 	}
 }

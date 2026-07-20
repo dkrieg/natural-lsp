@@ -9,6 +9,7 @@ import (
 	"go.lsp.dev/uri"
 
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 )
 
 // provideDefinition handles the textDocument/definition request (feature 10, T7).
@@ -95,8 +96,8 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 		}
 
 		// Handle inline PERFORM (target in same file): use the subroutine's SelectionRange
-		// Normalize both paths for comparison (convert backslashes to forward slashes)
-		normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+		// Normalize both paths for comparison (canonical index keyspace)
+		normalizedResPath := paths.NormalizeKey(resolution.Path)
 		if strings.EqualFold(normalizedResPath, relPath) {
 			// Same file: find the matching subroutine in Structure.Children
 			if targetFA.Structure != nil && targetFA.Structure.Children != nil {
@@ -154,7 +155,9 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 }
 
 // uriToRelPath converts an LSP file URI to an (absPath, relPath) pair relative
-// to the workspace root. relPath uses forward slashes (index key convention).
+// to the workspace root. relPath is canonicalized to the index keyspace
+// (forward-slash separators) via paths.NormalizeKey — the single source of
+// truth for the canonical form — so lookups match keys built on any OS.
 // Returns a non-nil error if the URI is outside the workspace root.
 func uriToRelPath(root string, fileURI uri.URI) (absPath, relPath string, err error) {
 	absPath = fileURI.FsPath()
@@ -162,7 +165,7 @@ func uriToRelPath(root string, fileURI uri.URI) (absPath, relPath string, err er
 	if err != nil {
 		return "", "", err
 	}
-	relPath = strings.ReplaceAll(relPath, "\\", "/")
+	relPath = paths.NormalizeKey(relPath)
 	return absPath, relPath, nil
 }
 

@@ -17,6 +17,7 @@ import (
 	"go.lsp.dev/uri"
 
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 )
 
 // severityToProtocol maps a model.DiagnosticSeverity to a protocol.DiagnosticSeverity.
@@ -209,8 +210,11 @@ func (hctx *handlerContext) publishFileDiagnostics(ctx context.Context, stream j
 			version := protocol.NewOptional(int32(doc.Version))
 
 			// Derive relPath from the snapshotted root for the resolution lookup.
+			// NormalizeKey (unconditional backslash→slash) is the canonical index
+			// keyspace form — NOT filepath.ToSlash, which is a no-op on non-Windows
+			// backslashes and would drift from the rest of the server (Windows fix).
 			relPath, _ := filepath.Rel(root, docURI.FsPath())
-			relPath = filepath.ToSlash(relPath)
+			relPath = paths.NormalizeKey(relPath)
 
 			resDiags := res.DiagnosticsFor(relPath) // nil-safe (resolution.go)
 			agg := aggregateDiagnostics(doc.Analysis, resDiags)

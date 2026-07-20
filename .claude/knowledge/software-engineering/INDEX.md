@@ -15,7 +15,7 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 | File | Covers | Overall status |
 |------|--------|----------------|
 | [lsp-protocol.md](lsp-protocol.md) | JSON-RPC base, lifecycle, capabilities per method, position-encoding negotiation, sync kind, ranges, push-vs-pull diagnostics, `$/cancelRequest`→context | verified (2026-06-21) (LSP 3.17 spec) |
-| [architecture-decisions.md](architecture-decisions.md) | ADR log: parser-based extraction (ADR-015 supersedes ADR-001), Analyzer seam, extraction↔resolution split, cache invalidation, position encoding, sync kind, transport lib, hash, index concurrency model, parser fuzzing, push diagnostics, in-memory line-width table (ADR-025), cached name index (ADR-026) | verified (2026-06-21) (internal docs + Go KB) — ADR-001 superseded 2026-06-21 |
+| [architecture-decisions.md](architecture-decisions.md) | ADR log: parser-based extraction (ADR-015 supersedes ADR-001), Analyzer seam, extraction↔resolution split, cache invalidation, position encoding, sync kind, transport lib, hash, index concurrency model, parser fuzzing, push diagnostics, in-memory line-width table (ADR-025), cached name index (ADR-026), canonical forward-slash index keyspace / `NormalizeKey` (ADR-027, Windows fix) | verified (2026-06-21) (internal docs + Go KB) — ADR-001 superseded 2026-06-21 |
 | [testing-strategy.md](testing-strategy.md) | Pyramid, table-driven, testdata fixtures, golden files (+determinism contract), Analyzer-seam fakes, fuzzing the parser | verified (2026-06-20) (internal docs; Go-fuzz fact: go.dev) |
 | [engineering-principles.md](engineering-principles.md) | SOLID, DRY/YAGNI/KISS, quality gates, reviews | verified (2026-06-20) (recognized literature + NFRs) |
 
@@ -28,6 +28,34 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 
 ## Changelog
 
+- 2026-07-20 — **architecture-decisions.md**: **ADR-027 refined** (two review findings on branch
+  `fix/windows-path-separator-index-keys`). **Finding 2 (cache self-heal):** `internal/workspace/cache.go`
+  `Load` now routes every stored entry key (and the content-hash-comparison key, and version-mismatch stale
+  keys) through `NormalizeKey` **at load time**, so a pre-fix Windows backslash key becomes the canonical
+  forward-slash key on load → the scan loop's forward-slash `currentHashes` lookup HITS (warm hit / re-analyze),
+  the old cache upgrades **in place** (corrected the prior "one-time full rebuild" wording), and there is **no
+  orphaned backslash entry** (which in a flat namespace would have doubled an object → a permanent spurious
+  ambiguity). New regression `TestLoad_CanonicalizesBackslashKeys` (hand-serialized backslash-key cache;
+  canonical-key + single-candidate assertions; proven load-bearing). **Finding 1 (relocation):** moved
+  `NormalizeKey` from `internal/workspace/paths.go` into a new stdlib-only **leaf package `internal/paths`**
+  (chosen over polluting `model`), so `internal/document` no longer imports `internal/workspace`
+  (`go list -deps` cycle-free; document now imports only config/model/paths). All importers
+  (workspace, document, server) + `TestNormalizeKey` moved to `internal/paths`. No `internal/model` change;
+  cache FORMAT/version still `0.6.0` (only cache CONTENT keys become canonical).
+- 2026-07-20 — **architecture-decisions.md**: recorded **ADR-027** (branch
+  `fix/windows-path-separator-index-keys`) — a Windows-only correctness fix. The index/resolution/
+  line-width/content-hash keyspace was inconsistent across OS: producers used `filepath.Rel` raw
+  (backslash keys on Windows) while the server's `uriToRelPath` normalized to forward slashes, so
+  `idx.Get`/`res.Get` MISSED for any subdirectory file on Windows → definition/references/module-hover
+  silently returned empty (masked on macOS/Linux where `filepath.Rel` yields `/`). Fix: ONE exported
+  canonical normalizer `workspace.NormalizeKey(rel) = strings.ReplaceAll(rel, "\\", "/")` (NOT
+  `filepath.ToSlash`, which is a no-op on backslashes off-Windows and untestable on CI), routed through
+  every `filepath.Rel`→key producer and lookup (workspace index.go, document sync.go/store.go, server
+  definition.go/server.go/diagnostics.go + the defensive index-path comparisons). Cache self-heals on
+  first post-fix Windows run (backslash keys treated as changed → one-time full rebuild → rewritten
+  canonical); **no cache-format bump (0.6.0), no model change.** Platform-independent regression tests
+  (literal-backslash `TestNormalizeKey` + subfolder-build invariant + Windows-mismatch simulation),
+  proven load-bearing by neutering `NormalizeKey` → tests fail → restore → pass.
 - 2026-07-18 — **architecture-decisions.md**: recorded **ADR-026** (feature 22 T7 / OQ-E, NFR-3) —
   cached the name→[]Candidate map on `workspace.Index`, invalidated (set nil) on `Add` (the sole
   `idx.entries` mutator; `Invalidate` is read-only). Turns `NamesWithPrefix` (completion, per-keystroke)

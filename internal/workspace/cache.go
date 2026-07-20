@@ -8,10 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/dkrieg/natural-lsp/internal/model"
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 )
 
 const cacheFormatVersion = "0.6.0"
@@ -150,7 +152,9 @@ func Load(path string, currentHashes map[string]string, logger *slog.Logger) (*I
 	if cache.Version != cacheFormatVersion {
 		stale := make([]string, 0, len(cache.Entries))
 		for path := range cache.Entries {
-			stale = append(stale, path)
+			// Canonical keyspace (ADR-027): staleMap in BuildWithCache is keyed by
+			// the normalized relPath, so report stale keys normalized too.
+			stale = append(stale, paths.NormalizeKey(path))
 		}
 		return nil, stale, nil
 	}
@@ -159,6 +163,16 @@ func Load(path string, currentHashes map[string]string, logger *slog.Logger) (*I
 	var stale []string
 
 	for path, entry := range cache.Entries {
+		// Canonicalize the stored key to the forward-slash index keyspace
+		// (ADR-027). A PRE-FIX cache written on Windows holds backslash keys
+		// (e.g. "code\LIB1\MYSUB.NSN"); normalizing at load time makes the entry
+		// land under the SAME canonical key the scan loop / currentHashes use, so
+		// the hash lookup below HITS (warm hit if unchanged, or re-analyze) rather
+		// than leaving an orphaned backslash entry that saveIndex would re-persist
+		// forever (and that would double a flat-namespace object → spurious
+		// ambiguity). Old cache upgrades in place — no forced full rebuild.
+		key := paths.NormalizeKey(path)
+
 		fa := model.FileAnalysis{
 			ObjectType:  model.ObjectType(entry.ObjectType),
 			Symbols:     entry.Symbols,
@@ -169,14 +183,16 @@ func Load(path string, currentHashes map[string]string, logger *slog.Logger) (*I
 			HostVarRefs: entry.HostVarRefs,
 			Structure:   entry.Structure,
 		}
-		idx.Add(path, fa)
+		idx.Add(key, fa)
 
-		// Check if content hash matches
-		if currentHash, ok := currentHashes[path]; ok {
+		// Check if content hash matches. currentHashes is keyed by the canonical
+		// (forward-slash) relPath, so compare against the normalized key. A stale
+		// entry is reported under its canonical key.
+		if currentHash, ok := currentHashes[key]; ok {
 			if currentHash != entry.ContentHash {
-				stale = append(stale, path)
+				stale = append(stale, key)
 				if logger != nil {
-					logger.Debug("cache: content hash mismatch", "path", path, "currentHash", currentHash, "storedHash", entry.ContentHash)
+					logger.Debug("cache: content hash mismatch", "path", key, "currentHash", currentHash, "storedHash", entry.ContentHash)
 				}
 			}
 		}

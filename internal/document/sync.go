@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dkrieg/natural-lsp/internal/config"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -75,6 +76,7 @@ func NewWatcher(ctx context.Context, root string, cfg *config.Config, analyze An
 			// If we can't compute relative path, skip this directory.
 			return nil
 		}
+		relPath = paths.NormalizeKey(relPath)
 
 		// Check if excluded; if so, skip this directory and its contents.
 		if cfg.IsExcluded(relPath) {
@@ -193,7 +195,7 @@ func NewWatcher(ctx context.Context, root string, cfg *config.Config, analyze An
 				if event.Has(fsnotify.Create) {
 					if fi, err := os.Stat(event.Name); err == nil && fi.IsDir() {
 						relPath, err := filepath.Rel(root, event.Name)
-						if err == nil && !cfg.IsExcluded(relPath) {
+						if err == nil && !cfg.IsExcluded(paths.NormalizeKey(relPath)) {
 							if err := fsw.Add(event.Name); err != nil {
 								logger.Error("failed to watch new directory", "path", event.Name, "error", err)
 							}
@@ -210,11 +212,15 @@ func NewWatcher(ctx context.Context, root string, cfg *config.Config, analyze An
 					continue
 				}
 
-				// Derive the relative path.
+				// Derive the relative path. Normalize to forward-slash separators
+				// so the key handed to the analyze callback (which flows into
+				// idx.Add) matches the canonical index keyspace on every OS
+				// (Windows backslash path fix).
 				relPath, err := filepath.Rel(root, event.Name)
 				if err != nil {
 					continue
 				}
+				relPath = paths.NormalizeKey(relPath)
 
 				// For Remove and Rename, signal removal with nil content. The file is
 				// already gone so we cannot stat it; the extension check above is sufficient.
