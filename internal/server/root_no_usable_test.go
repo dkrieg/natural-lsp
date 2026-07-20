@@ -164,11 +164,16 @@ func TestNoUsableRoot_EmptyRoot_StderrWarn(t *testing.T) {
 	if !strings.Contains(logText, "no indexable Natural files") {
 		t.Errorf("stderr log missing the empty-index phrase 'no indexable Natural files'.\nLog:\n%s", logText)
 	}
-	if !strings.Contains(logText, emptyRoot) {
-		t.Errorf("stderr log does not name the negotiated root path %q.\nLog:\n%s", emptyRoot, logText)
+	// Match the tempdir leaf segments rather than the full absolute paths: on
+	// Windows the logged path uses a lowercase drive letter and 8.3 short names
+	// that will not string-match the long uppercase-drive form of the tempdir.
+	// The leaf segment is stable across that variance and still proves the Warn
+	// names both the negotiated root and the cwd fallback.
+	if !strings.Contains(logText, filepath.Base(emptyRoot)) {
+		t.Errorf("stderr log does not name the negotiated root path %q (leaf %q).\nLog:\n%s", emptyRoot, filepath.Base(emptyRoot), logText)
 	}
-	if !strings.Contains(logText, emptyCwd) {
-		t.Errorf("stderr log does not name the cwd fallback path %q.\nLog:\n%s", emptyCwd, logText)
+	if !strings.Contains(logText, filepath.Base(emptyCwd)) {
+		t.Errorf("stderr log does not name the cwd fallback path %q (leaf %q).\nLog:\n%s", emptyCwd, filepath.Base(emptyCwd), logText)
 	}
 
 	// Emitted exactly once (no per-request spam).

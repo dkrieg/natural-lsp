@@ -89,15 +89,20 @@ func TestRootHandshakeNegotiatedRootDrivesIndex(t *testing.T) {
 	// 4-5. Drive initialize(rootUri=wsDir) → initialized → (await build) →
 	// shutdown → exit through the async-safe gated harness, with emptyDir as
 	// cwdFallback (NOT the workspace).
+	// Build the rootUri via uri.File so it is a valid file URI on every OS —
+	// hand-built "file://"+wsDir concatenation produces an unparseable URI on
+	// Windows (backslashes + drive letter), so FsPath() cannot recover the root
+	// and negotiation silently fails.
+	rootURI := testFileURI(t, wsDir)
 	initParamsJSON := fmt.Sprintf(`{
 		"processId": 1234,
-		"rootUri": "file://%s",
+		"rootUri": %q,
 		"capabilities": {
 			"general": {
 				"positionEncodings": ["utf-8"]
 			}
 		}
-	}`, wsDir)
+	}`, string(rootURI))
 	_, _ = runGatedHandshake(t, initParamsJSON, emptyDir, natural.New(nil))
 
 	// 6. Assert the index is non-empty and contains CALLGREET.
@@ -185,11 +190,15 @@ func TestRootHandshakeWatcherStartsAgainstNegotiatedRoot(t *testing.T) {
 	// 4. Build and run the handshake.
 	var reqBuf bytes.Buffer
 
+	// Build the rootUri via uri.File (valid file URI on every OS); hand-built
+	// "file://"+wsDir concatenation is unparseable on Windows so the root would
+	// never negotiate.
+	rootURI := testFileURI(t, wsDir)
 	initParamsJSON := fmt.Sprintf(`{
 		"processId": 1234,
-		"rootUri": "file://%s",
+		"rootUri": %q,
 		"capabilities": {}
-	}`, wsDir)
+	}`, string(rootURI))
 
 	initCall := jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), "initialize", jsonrpc2.RawMessage(initParamsJSON))
 	if err := writeFramedMessage(&reqBuf, initCall); err != nil {

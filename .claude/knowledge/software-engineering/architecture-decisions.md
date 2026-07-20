@@ -830,6 +830,41 @@ passthrough made both `TestNormalizeKey` and the simulation test fail; restoring
 **Source:** user-confirmed Windows bug report; branch `fix/windows-path-separator-index-keys`;
 `internal/server/definition.go` pre-existing `uriToRelPath` normalization as the canonical reference form.
 
+**Follow-up — Windows TEST-suite portability (branch `ci/windows-job`, PR #39, 2026-07-20).** After the
+production fix above, a new Windows CI job (`go test ./...` on windows-latest) went red — build+vet passed,
+so the failures were **test-artifact non-portability, NOT product bugs** (each failure was confirmed to be a
+Windows-unaware assertion/harness; production path handling via `paths.NormalizeKey` + `uri.File`/`filepath`
+is correct on Windows). Five failure classes, all fixed test-side + a `.gitattributes`:
+(1) **Forward-slash hardcoded expectations** — `TestResolveRootStart` compared against literal `"/ws/a"` but
+`resolveRootStart` returns `uri.FsPath()` (OS-native → backslash on Windows, correct, it feeds
+`config.Bootstrap`/`FindRoot`). Fixed by running only the URI-derived expectations through
+`filepath.FromSlash` (a new per-case `fromURI` flag; cwd-fallback cases pass through verbatim, so they stay
+literal). (2) **Drive-letter case + 8.3 short names in log-substring asserts** — `TestRunStdioCallsBootstrap`
+and `TestNoUsableRoot_EmptyRoot_StderrWarn` matched full absolute paths, but Windows logs a lowercase drive
++ `RUNNER~1`-style short names. Fixed by asserting on the tempdir's **`filepath.Base` leaf segment** (stable
+across that variance) plus a stable phrase (`"sentinel found: true"` / `"no indexable Natural files"`) — still
+proves the root/warn behavior. (3) **CRLF line endings** — `TestSample` golden byte-compare and
+`TestProvideCodeLens_IncrementalFreshness`'s `\n`-needle `strings.Replace` broke when git's autocrlf rewrote
+committed files to CRLF on Windows checkout. **Two-pronged, defense-in-depth:** a repo-root **`.gitattributes`
+(`* text=auto eol=lf` + explicit source/testdata/fixture pins; `*.bat`/`*.cmd` left CRLF)** so checkouts are
+LF on every OS, AND both tests made line-ending-tolerant (normalize `\r\n`→`\n` before compare/replace). The
+`.gitattributes` caused **zero renormalization on the existing tree** (all tracked files already LF, verified
+via `git ls-files --eol`) — its effect is purely on future Windows checkouts. (4) **Unix-style fabricated
+roots** — `TestTextDocumentDidOpen`/`TestTextDocumentDidChange`/`TestFR33DocumentLifecycle` used a hardcoded
+`"/workspace"` root + `file:///workspace/...` URIs; on Windows `/workspace` is drive-less so
+`filepath.Rel` cannot relativize the doc path → the relPath isn't stripped (analyzer path wrong) and the
+`didChange` handler's `filepath.Rel` error `continue`s past `applyDocumentChange` (analyze count 3→2). Fixed
+by using a real `t.TempDir()` root and building URIs via `uri.File(filepath.Join(root, …))`; expected relPath
+is forward-slash (the `NormalizeKey` canonical key). (5) **`"file://"+path` hand-built URIs** —
+`TestRootHandshake*` string-concatenated the rootUri, unparseable on Windows (backslashes + drive letter) so
+`FsPath()` returned nothing and root negotiation never fired. Fixed by `uri.File(tempDir)` (correct Windows
+`file:///C:/…` formatting) — the same pattern `TestInitializeCR6MalformedConfig` already used. A shared test
+helper `internal/server/pathtest_test.go` holds `testFileURI(t, path)` (URI-from-path via `uri.File`) and
+`samePath(a,b)` (case+slash-insensitive path compare). **NO product bug found** — all five are test/harness
+artifacts; the only production-adjacent change is the repo-root `.gitattributes`. Windows-green can only be
+confirmed by re-running Windows CI; the suite stays green on Linux/macOS (`just verify` OK, `-race` + `-tags
+integration` clean).
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.

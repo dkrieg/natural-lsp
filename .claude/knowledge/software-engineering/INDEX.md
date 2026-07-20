@@ -28,6 +28,17 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 
 ## Changelog
 
+- 2026-07-20 — **architecture-decisions.md**: **ADR-027 follow-up** (branch `ci/windows-job`, PR #39) —
+  the new Windows CI `go test ./...` job went red on **test-artifact non-portability, not product bugs**
+  (build+vet passed; every failure was a Windows-unaware assertion/harness). Fixed test-side across five
+  classes — forward-slash hardcoded expectations (`filepath.FromSlash` on URI-derived cases),
+  drive-case/8.3-short-name log-substring asserts (assert on `filepath.Base` leaf + stable phrase), CRLF
+  (a repo-root **`.gitattributes` `* text=auto eol=lf`** + `\r\n`→`\n`-tolerant golden/replace), Unix-style
+  fabricated `/workspace` roots (use `t.TempDir()` + `uri.File(filepath.Join(root, …))`), and
+  `"file://"+path` hand-built URIs (use `uri.File`). New shared helper `internal/server/pathtest_test.go`
+  (`testFileURI`, `samePath`). `.gitattributes` renormalized **zero** existing files (all tracked files
+  already LF). **NO product bug** — only production-adjacent change is `.gitattributes`. Suite green on
+  Linux/macOS; Windows-green pending CI re-run.
 - 2026-07-20 — **architecture-decisions.md**: **ADR-027 refined** (two review findings on branch
   `fix/windows-path-separator-index-keys`). **Finding 2 (cache self-heal):** `internal/workspace/cache.go`
   `Load` now routes every stored entry key (and the content-hash-comparison key, and version-mismatch stale
