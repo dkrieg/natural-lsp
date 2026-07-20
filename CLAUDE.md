@@ -38,6 +38,23 @@ feature-22 note below. Secondary: the README `go install` path contradicts the b
 binary — both **FIXED by feature 23** (see the feature-23 note below). **All assessment items
 (1–5 + secondary) are now closed.**
 
+**Post-release follow-ups (from real Windows usage).** After the initial release, running on Windows
+surfaced a shipped bug and two improvements: **(i)** a **Windows path-separator bug** — index/resolution
+keys were built with OS-native separators (backslash on Windows) but looked up forward-slash-normalized,
+so go-to-definition/references/hover silently missed for any file in a subdirectory (document outline
+still worked — it's served from the URI-keyed open-buffer store, which masked it). **Fixed** by a
+stdlib-only `internal/paths.NormalizeKey` (`strings.ReplaceAll(rel, "\\", "/")`, **not** `filepath.ToSlash`)
+routed through every key producer/consumer incl. cache load; `internal/document` no longer imports
+`internal/workspace` (ADR-027). **(ii)** A **Windows CI job** (`windows-latest`, `go build`/`vet`/`test`
++ scoped integration, `-race` omitted with rationale) was added so platform bugs can't reach a release
+again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
+**(iii)** Two follow-up features are **planned**: **feature 24 (cache-format-compaction)** — the on-disk
+cache is indented JSON (~1 GB for ~7,790 files); compact JSON + gzip (bump `cacheFormatVersion` 0.6.0→0.7.0)
+targets ~10–20× smaller and faster warm start (NFR-16); and **feature 25 (lsp4ij-template-validation)** —
+the shipped `editors/jetbrains/lsp4ij-template/template.json` uses invented field names and does not
+import; rewrite it to LSP4IJ's real schema (`id`/`name`/`programArgs`/`fileTypeMappings`) + a schema
+validation check (FR-52). See `docs/plans/features/24-*` and `25-*`.
+
 Feature 23 (distribution hardening) fixes the assessment's secondary findings and closes the
 backlog. **No `internal/model` change, no cache-format bump (still `0.6.0`), and no production
 logic change** — the Go changes are a mechanical module rename plus two test additions. **(a)** The
