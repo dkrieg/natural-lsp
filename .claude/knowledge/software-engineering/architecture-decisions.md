@@ -750,6 +750,86 @@ once per lookup burst.
 **Source:** feature-22 tasks.md (T7, Decision OQ-E); measured `just bench` output 2026-07-18;
 `.claude/knowledge/go/` RWMutex non-upgradability.
 
+## ADR-027 — Single canonical index keyspace: `workspace.NormalizeKey` (forward-slash on every OS) (Windows path-separator fix) (2026-07-20)
+`Status: verified` — 2026-07-20
+
+**Decision.** The workspace index / resolution / line-width / content-hash maps use ONE canonical key
+form — a workspace-relative path with **forward-slash separators on every OS** — and every site that
+turns a `filepath.Rel` result into such a key (or into a lookup against one) routes through a single
+exported helper `paths.NormalizeKey(rel string) string`, defined as `strings.ReplaceAll(rel, "\\", "/")`.
+
+**Home of the helper (Finding 1, 2026-07-20).** The helper lives in a dedicated **leaf package**
+`internal/paths` (`internal/paths/paths.go`), which imports nothing internal — only stdlib `strings`. This
+was chosen over `internal/model` (keep `model` a pure data contract, not a home for string utilities) and
+over the original `internal/workspace/paths.go` home, which forced `internal/document` to import
+`internal/workspace` merely to reach the normalizer. A leaf package everyone may import keeps
+`internal/document` free of a `workspace` dependency with **no import cycle** (`go list -deps` clean;
+`internal/document` now imports only `config`, `model`, `paths`). The core cross-platform test
+`TestNormalizeKey` moved to `internal/paths/paths_test.go`.
+
+**Problem (root-caused, user-confirmed on Windows).** The keyspace was inconsistent across OS. Producers
+(`workspace.BuildWithCache`'s scan loop, `ensureLineWidths`, the content-hash map; the `document`
+watcher's re-analyze path) used `filepath.Rel` **raw**, which on Windows yields backslash keys
+(`code\LIB1\MYSUB.NSN`). But the server's lookup (`uriToRelPath`) already normalized with
+`strings.ReplaceAll(..., "\\", "/")` → forward slashes. On Windows the two sides never matched for any
+file in a subdirectory, so `idx.Get`/`res.Get` MISSED → `textDocument/definition`, `references`, and
+module `hover` silently returned empty (FR-17 makes a miss non-erroring, so no crash, no diagnostic — a
+silent correctness failure). `documentSymbol` masked the bug because it is served from the URI-keyed
+open-buffer store, not the index. On macOS/Linux `filepath.Rel` already returns `/`, so both sides agreed
+— which is why it escaped CI.
+
+**Why `strings.ReplaceAll`, NOT `filepath.ToSlash`.** `filepath.ToSlash` replaces only the *current OS*
+separator, so on Linux/macOS (separator `/`) it is a **no-op on backslashes** — it would neither fix
+Windows behavior nor be testable on non-Windows CI, and it would drift from the server's existing
+`ReplaceAll`. `ReplaceAll` on the literal backslash byte is unconditional and OS-independent, so the
+regression tests are genuine cross-platform guards. One `filepath.ToSlash` call in
+`internal/server/diagnostics.go` was replaced by `NormalizeKey` for the same reason (it happened to work
+on Windows but was an inconsistent second definition of "canonical").
+
+**Sites routed through the helper.** Producers: `internal/workspace/index.go` (scan-loop key, content-hash
+map, `ensureLineWidths`, directory-exclusion), `internal/document/sync.go` (watcher re-analyze +
+directory-exclusion), `internal/document/store.go` `deriveRelPath` (the relPath passed to the analyzer).
+Server lookups: `definition.go` `uriToRelPath` (the single canonical definition — all other server
+providers route through it), `server.go` didChange/didChangeWatchedFiles, `diagnostics.go`. Defensive
+index-path comparisons in `references.go`/`hover.go`/`call_hierarchy.go`/`definition.go` (previously raw
+`ReplaceAll`) also route through it. The cache-load canonicalization in `internal/workspace/cache.go`
+`Load` (Finding 2, above) also routes through it. All of these now call `paths.NormalizeKey`;
+`internal/document` imports `paths` (a leaf), NOT `workspace` — cycle-free.
+
+**Cache self-heal (no format change, load-time normalization).** `cacheFormatVersion` stays `0.6.0` — no
+bump. A pre-existing Windows user's old cache holds backslash keys. `Load` (in `internal/workspace/cache.go`)
+now routes **every stored entry key through `paths.NormalizeKey` before `idx.Add`** (and normalizes the
+key used for the `currentHashes` content-hash comparison, and the stale keys in the version-mismatch
+branch). Consequence: a loaded backslash key becomes the canonical forward-slash key, so the scan loop's
+forward-slash `currentHashes` lookup **HITS** — a proper warm hit when the content is unchanged (no
+re-analysis, no forced full rebuild), or a normal re-analyze when it changed. The old cache thus **upgrades
+in place**. Crucially this leaves **no orphaned backslash entry**: without load-time normalization the old
+backslash key would never match the forward-slash scan key, would never be pruned, and `saveIndex`
+(`idx.ForEach`) would re-persist it indefinitely — and in a flat namespace `objectIdentity` would then map
+BOTH `code\LIB1\MYSUB.NSN` and the real `code/LIB1/MYSUB.NSN` to the same `("MYSUB","")` → two candidates →
+a spurious ambiguity diagnostic + double-location definition, forever. With normalization the index holds
+only canonical keys and `saveIndex` re-persists only canonical keys. (Earlier wording claimed a "one-time
+full rebuild"; that was the pre-refinement behavior and is no longer accurate — the upgrade is in place with
+a warm hit, no forced rebuild, no orphan.) Regression guard: `internal/workspace/cache_test.go`
+`TestLoad_CanonicalizesBackslashKeys` hand-serializes a `CacheFile` with a literal backslash key, `Load`s it
+against a forward-slash `currentHashes`, and asserts the index has the canonical key and NOT the backslash
+key, no spurious staleness, and exactly ONE `LookupByName` candidate — platform-independent, proven
+load-bearing (neutering the load-time `NormalizeKey` retains the backslash key and produces the duplicate →
+the test fails; restoring it passes).
+
+**Regression guards (platform-independent — run on Linux/macOS CI).**
+`internal/paths/paths_test.go` `TestNormalizeKey` (literal-backslash → forward-slash, idempotent on
+already-slash, mixed, empty — the core cross-platform teeth). `internal/workspace/windows_path_keys_test.go`:
+`TestBuildIndexKeys_NoBackslash_SubfolderResolves` (build over a temp workspace with a `code/LIB1/`
+subfolder; assert no index key contains `\` and the same-folder CALLNAT resolves to the subfolder callee
+key) and `TestBuildIndexKeys_WindowsMismatchSimulation` (add under a `NormalizeKey`-ed key, look up via a
+normalized backslash-form path — designed to FAIL if normalization is removed from either side; a raw
+backslash lookup must MISS the forward-slash key). Load-bearing proof: neutering `NormalizeKey` to a
+passthrough made both `TestNormalizeKey` and the simulation test fail; restoring it made them pass.
+
+**Source:** user-confirmed Windows bug report; branch `fix/windows-path-separator-index-keys`;
+`internal/server/definition.go` pre-existing `uriToRelPath` normalization as the canonical reference form.
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.

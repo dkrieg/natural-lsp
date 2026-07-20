@@ -8,6 +8,7 @@ import (
 	"go.lsp.dev/protocol"
 
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 )
 
 // buildModuleHover returns a Markdown hover card for a resolved module target.
@@ -368,7 +369,7 @@ func provideHover(hctx *handlerContext, params protocol.HoverParams) (*protocol.
 			}
 
 			// Check if this is an inline PERFORM (same file)
-			normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+			normalizedResPath := paths.NormalizeKey(resolution.Path)
 			if strings.EqualFold(normalizedResPath, relPath) {
 				// Inline PERFORM: look for the matching DEFINE SUBROUTINE in Structure.Children
 				if sourceFA.Structure != nil && sourceFA.Structure.Children != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/dkrieg/natural-lsp/internal/analysis"
 	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 )
 
 // Candidate represents a definition candidate returned by Index.LookupByName.
@@ -585,6 +586,7 @@ func BuildWithCache(ctx context.Context, root string, cfg config.Config, az anal
 			if relPath == "" {
 				relPath = path
 			}
+			relPath = paths.NormalizeKey(relPath)
 			if cfg.IsExcluded(relPath) {
 				return filepath.SkipDir
 			}
@@ -631,6 +633,7 @@ func BuildWithCache(ctx context.Context, root string, cfg config.Config, az anal
 				continue
 			}
 			relPath, _ := filepath.Rel(root, filePath)
+			relPath = paths.NormalizeKey(relPath)
 			currentHashes[relPath] = fmt.Sprintf("%x", sha256.Sum256(content))
 		}
 	}
@@ -694,6 +697,7 @@ func BuildWithCache(ctx context.Context, root string, cfg config.Config, az anal
 		}
 
 		relPath, _ := filepath.Rel(root, filePath)
+		relPath = paths.NormalizeKey(relPath)
 
 		// Invoke progress callback
 		if onProgress != nil {
@@ -777,6 +781,7 @@ func BuildWithCache(ctx context.Context, root string, cfg config.Config, az anal
 func ensureLineWidths(idx *Index, root string, files []string) {
 	for _, filePath := range files {
 		relPath, _ := filepath.Rel(root, filePath)
+		relPath = paths.NormalizeKey(relPath)
 		if _, inIndex := idx.Get(relPath); !inIndex {
 			continue
 		}

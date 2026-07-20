@@ -13,13 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/dkrieg/natural-lsp/internal/analysis"
 	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/document"
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 	"github.com/dkrieg/natural-lsp/internal/workspace"
 	gojson "github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
@@ -690,7 +690,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 										logger.Error("failed to compute relative path for didChange", "uri", u, "err", pathErr)
 										continue
 									}
-									relPath = strings.ReplaceAll(relPath, "\\", "/")
+									relPath = paths.NormalizeKey(relPath)
 
 									// Apply the change to the index and resolution
 									hctx.applyDocumentChange(relPath, []byte(whole.Text))
@@ -740,7 +740,7 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 									logger.Error("failed to compute relative path", "absPath", absPath, "root", hctx.root, "err", err)
 									continue
 								}
-								relPath = strings.ReplaceAll(relPath, "\\", "/")
+								relPath = paths.NormalizeKey(relPath)
 
 								// Handle file change type:
 								// - FileChangeTypeDeleted (3): pass nil content to signal removal

@@ -11,6 +11,7 @@ import (
 	"go.lsp.dev/uri"
 
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
@@ -270,7 +271,7 @@ func providePrepareCallHierarchy(hctx *handlerContext, params protocol.CallHiera
 			}
 
 			// Check if this is an inline PERFORM (target in same file)
-			normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+			normalizedResPath := paths.NormalizeKey(resolution.Path)
 			if strings.EqualFold(normalizedResPath, relPath) {
 				// Same file: find the matching subroutine in Structure.Children
 				if targetFA.Structure != nil && targetFA.Structure.Children != nil {
@@ -620,7 +621,7 @@ func provideOutgoingCalls(hctx *handlerContext, params protocol.CallHierarchyOut
 
 		// Determine the grouping key for this edge
 		var calleeKey string
-		normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
+		normalizedResPath := paths.NormalizeKey(resolution.Path)
 
 		// Handle inline PERFORM (same file, subroutine target)
 		if edge.Kind == model.EdgePerforms && strings.EqualFold(normalizedResPath, sourcePath) {

@@ -10,6 +10,7 @@ import (
 	"go.lsp.dev/uri"
 
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
@@ -229,8 +230,8 @@ func edgeMatchesTarget(resolution workspace.Resolution, targetPath string, targe
 	if !resolution.IsResolved() {
 		return false
 	}
-	normalizedResPath := strings.ReplaceAll(resolution.Path, "\\", "/")
-	normalizedTargetPath := strings.ReplaceAll(targetPath, "\\", "/")
+	normalizedResPath := paths.NormalizeKey(resolution.Path)
+	normalizedTargetPath := paths.NormalizeKey(targetPath)
 	if normalizedResPath != normalizedTargetPath {
 		return false
 	}

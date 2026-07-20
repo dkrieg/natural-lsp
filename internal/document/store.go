@@ -9,12 +9,14 @@ import (
 	"sync"
 
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/paths"
 	"go.lsp.dev/uri"
 )
 
 // AnalyzeFunc is the per-file analysis callback with FR-43 degradation guarantees.
-// relPath is the workspace-relative path using OS-native path separators (as returned
-// by filepath.Rel). content is the current in-memory document content.
+// relPath is the workspace-relative path using forward-slash separators (canonicalized
+// by paths.NormalizeKey, matching the index keyspace on every OS). content is the
+// current in-memory document content.
 // The Store wraps every call in panic recovery (FR-43); the function itself need not
 // protect against panics.
 type AnalyzeFunc func(relPath string, content []byte) model.FileAnalysis
@@ -160,8 +162,10 @@ func (s *Store) Close(u uri.URI) {
 
 // deriveRelPath derives the workspace-relative path from a URI and workspace root.
 // uri.URI.FsPath() converts the file:// URI to an absolute OS path; filepath.Rel
-// then computes the relative path using OS-native separators. If root is empty or
-// filepath.Rel fails (e.g. different drive on Windows), the absolute path is returned.
+// then computes the relative path, which is normalized to forward-slash separators
+// via paths.NormalizeKey so it matches the canonical index keyspace on every OS
+// (a Windows filepath.Rel yields backslashes). If root is empty or filepath.Rel
+// fails (e.g. different drive on Windows), the absolute path is returned.
 func deriveRelPath(u uri.URI, root string) string {
 	absPath := u.FsPath()
 	if root == "" {
@@ -171,7 +175,7 @@ func deriveRelPath(u uri.URI, root string) string {
 	if err != nil {
 		return absPath
 	}
-	return relPath
+	return paths.NormalizeKey(relPath)
 }
 
 // callAnalyzeWithRecovery calls the analyze function and recovers from any panic,
