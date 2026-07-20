@@ -1,0 +1,18 @@
+* perform-keyword-inline/MAIN.NSP — issue #41 regression fixture.
+* An inline DEFINE SUBROUTINE named after a Natural keyword (CLEAR), plus a
+* PERFORM CLEAR that must resolve to it. Before the fix the lexer emitted a
+* keyword token for CLEAR and the parser dropped the name, so the subroutine
+* had no identity and go-to-definition on PERFORM CLEAR returned nothing.
+
+DEFINE DATA
+LOCAL
+  1 RESULT (A10)
+END DEFINE
+
+DEFINE SUBROUTINE CLEAR
+  MOVE 'INLINE' TO RESULT
+END SUBROUTINE
+
+PERFORM CLEAR
+
+END

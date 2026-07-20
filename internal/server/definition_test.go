@@ -221,6 +221,21 @@ func TestProvideDefinitionEndToEnd(t *testing.T) {
 			expectedKind:   model.ObjectExternalSubroutine,
 			description:    "cursor on PERFORM 'SHARED-SUB' (external) → resolves to SHARED-SUB.NSS",
 		},
+		{
+			// Issue #41: a subroutine named after a Natural keyword (CLEAR). Before the
+			// fix the keyword name was dropped, so PERFORM CLEAR resolved to nothing.
+			// End-to-end proof that the user-facing go-to-definition now works for a
+			// keyword-named inline subroutine.
+			name:           "PERFORM_keyword_named_inline",
+			fixtureRoot:    filepath.Join("testdata", "..", "..", "workspace", "testdata", "resolution", "perform-keyword-inline"),
+			sourceFile:     "MAIN.NSP",
+			cursorLine:     16, // PERFORM CLEAR
+			cursorColumn:   11, // within 'CLEAR' (PERFORM<space> = 8 cols, CLEAR starts at 9)
+			wantResolved:   true,
+			wantTargetFile: "MAIN.NSP",
+			expectedKind:   model.ObjectProgram,
+			description:    "cursor on PERFORM 'CLEAR' (keyword-named inline subroutine) → resolves to same file's DEFINE SUBROUTINE (issue #41)",
+		},
 	}
 
 	for _, tc := range tt {

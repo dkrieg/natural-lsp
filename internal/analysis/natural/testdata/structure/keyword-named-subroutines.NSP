@@ -1,0 +1,24 @@
+* Fixture: Subroutines named after Natural keywords
+* Tests that extractStructure produces SymbolSubroutine children with correct names
+* for subroutines named CLEAR, RESET, and MY-SUB (control).
+* Issue #41: parseSubroutine was checking only TokenIdentifier for the name,
+* missing TokenKeyword cases.
+
+DEFINE DATA
+LOCAL
+  1 STATUS-CODE (N2)
+END DEFINE
+
+DEFINE SUBROUTINE CLEAR
+  WRITE 'Clearing'
+END-SUBROUTINE
+
+DEFINE SUBROUTINE RESET
+  WRITE 'Resetting'
+END SUBROUTINE
+
+DEFINE SUBROUTINE MY-SUB
+  WRITE 'Processing'
+END-SUBROUTINE
+
+END

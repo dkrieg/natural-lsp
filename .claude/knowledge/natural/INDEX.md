@@ -12,6 +12,7 @@ holds verified facts with sources. Read this index first, then the relevant topi
 |------|--------|----------------|
 | [file-extensions.md](file-extensions.md) | `.NSx` object types and what each maps to | verified (2026-06-23) |
 | [calls-and-resolution.md](calls-and-resolution.md) | CALLNAT / PERFORM / FETCH / RUN / INCLUDE, steplib resolution | verified (2026-06-30) |
+| [identifiers-and-keywords.md](identifiers-and-keywords.md) | Identifier naming rules (length/first-char/`#`/`&`/`+`/hyphen/case); keywords are **context-sensitive not hard-reserved**; keyword-spelled subroutine names in `DEFINE SUBROUTINE`/`PERFORM` name positions (issue #41); KCHECK; natls `canBeIdentifier` re-tagging | verified (2026-07-20) |
 | [embedded-sql.md](embedded-sql.md) | Native Natural SQL (SELECT/INSERT/…) + PROCESS SQL / flexible `<<…>>`, host-var colon rule (optional in native / mandatory in flexible), FROM-table→`.NSD` DDM binding, backends, error handling | verified (2026-06-30); no open items |
 | [data-definition.md](data-definition.md) | DEFINE DATA, LDA/GDA/PDA, level structure | verified (2026-06-20); array/REDEFINE grammar confirmed |
 | [ddm-format.md](ddm-format.md) | `.NSD` exported DDM file: fixed-column report layout (byte offsets), header/TYPE lines, group/PE/MU, super/sub/phonetic descriptors, `DataDefinition` mapping (no model change), line-scanner parsing notes | verified (2026-07-06) |
@@ -37,6 +38,26 @@ holds verified facts with sources. Read this index first, then the relevant topi
 
 ## Changelog
 
+- 2026-07-20 — ADDED topic `identifiers-and-keywords.md` to ground a parser fix (issue #41: keyword-
+  spelled subroutine names, e.g. `DEFINE SUBROUTINE CLEAR ... END-SUBROUTINE` / `PERFORM CLEAR`). Key
+  VERIFIED findings: (1) Natural keywords are **context-sensitive, not hard-reserved** — no absolute
+  lex-time prohibition; the docs give a *strong recommendation* against keyword-spelled names plus a
+  narrower **ambiguity** concern for the *statement/system-function* subset (`ADD`, `FIND`, `ABS`,
+  `SUM`, …) that bites ONLY in *optional-operand* positions (`CALLNAT 'MYSUB' ADD 4` reads `ADD` as the
+  statement). KCHECK only *flags* the subset; it doesn't change legality; off by default. (2) A
+  subroutine name follows **user-defined-variable naming rules** (identifier, ≤32 significant chars,
+  first char `A`–`Z`/`#`/`+`/`&`, embedded `-`/`_`/`/`/`@`/`$`) — it is an *identifier*, not a string
+  constant. `PERFORM PRINT` (PRINT a keyword) appears verbatim in the DEFINE SUBROUTINE doc. (3) **Parser
+  rule:** in the `DEFINE SUBROUTINE <name>` and `PERFORM <name>` name-mandatory positions, ACCEPT a
+  keyword token as the name (re-tag it to identifier) — no keyword can start a different construct there,
+  so no ambiguity. Guardrails: do NOT globally treat keywords as identifiers (breaks operand parsing);
+  `PERFORM BREAK` is a distinct statement (disambiguate first); keyword-spelled variable target →
+  dynamic; never emit a parse diagnostic for it (at most a lint). (4) Cross-checked natls: it does
+  exactly this via `SyntaxKind.canBeIdentifier` + `consumeIdentifierTokenOnly().withKind(IDENTIFIER)` in
+  both `subroutine()` and `perform()`; `CLEAR`/`HALT` aren't even keyword tokens in natls (lexed as
+  identifiers), and keyword-as-identifier is only its lint `NL011`, never a parse error. Sources:
+  use_rules.htm, pg_keyw.htm (KCHECK/ambiguity subset), pg_defi_dv.htm, definesu.htm, natls
+  AbstractParser/StatementListParser/SyntaxKind.
 - 2026-07-13 — VERIFIED FETCH/RUN parameter-passing model for a **signature-help** design decision.
   Key finding: a program invoked by `FETCH`/`FETCH RETURN`/`FETCH REPEAT`/`RUN` receives caller data
   as **untyped positional values on the Natural stack, read via `INPUT`** — there is **NO declared

@@ -433,8 +433,8 @@ func (p *Parser) parseSubroutine(ast *Program, startPos model.Position) {
 	// Consume SUBROUTINE keyword
 	p.advance()
 
-	// Parse the subroutine name (should be an identifier).
-	if p.matches(TokenIdentifier) {
+	// Parse the subroutine name (identifier or keyword in name-mandatory position, issue #41).
+	if p.isNameToken() {
 		sub.Name = p.current.Literal
 		// Capture the name range for SelectionRange (feature 18, T6a)
 		nameStartPos := model.Position{Line: p.current.Line, Column: p.current.Column}
@@ -711,7 +711,21 @@ func (p *Parser) parsePerformStatement(ast *Program) {
 		return
 	}
 
-	if p.matches(TokenIdentifier) {
+	// Guard: PERFORM BREAK is a different statement (break processing), not a subroutine call.
+	// If the token is the keyword "BREAK", do not capture it as a subroutine target.
+	// natls checks performBreak() before perform() for exactly this reason.
+	// A subroutine literally named BREAK is pathological; PERFORM BREAK takes precedence.
+	if p.matches(TokenKeyword, "BREAK") {
+		// This is a PERFORM BREAK statement, not a subroutine call.
+		// Leave perform.Target empty and skip remaining tokens.
+		p.skipToNextStatement()
+		perform.EndPos = p.prevPos()
+		ast.Performs = append(ast.Performs, perform)
+		return
+	}
+
+	// Capture the target as an identifier or keyword in name-mandatory position (issue #41).
+	if p.isNameToken() {
 		tok := p.current
 		perform.Target = tok.Literal
 		perform.TargetRange = tokenRange(tok)
@@ -955,6 +969,15 @@ func (p *Parser) matchesLiteral(literals ...string) bool {
 		}
 	}
 	return false
+}
+
+// isNameToken checks if the current token can be used as a user-defined name in a
+// mandatory-name position (e.g., DEFINE SUBROUTINE <name> or PERFORM <name>).
+// In these positions, a keyword token may be re-tagged as an identifier since there
+// is no competing statement interpretation — the grammar requires a name here.
+// Returns true for both TokenIdentifier and TokenKeyword (issue #41).
+func (p *Parser) isNameToken() bool {
+	return p.current.Type == TokenIdentifier || p.current.Type == TokenKeyword
 }
 
 // skipToNextStatement advances past tokens that do not start a new top-level
