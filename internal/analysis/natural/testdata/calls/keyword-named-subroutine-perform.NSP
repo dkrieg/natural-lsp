@@ -1,0 +1,26 @@
+* Fixture: PERFORM call to a keyword-named subroutine
+* Tests that PERFORM resolves to a subroutine named after a Natural keyword (CLEAR, RESET)
+* Issue #41: keyword-named subroutines were losing their identity due to parseSubroutine
+* checking only TokenIdentifier, not TokenKeyword.
+
+DEFINE SUBROUTINE CLEAR
+  WRITE 'In CLEAR subroutine'
+END-SUBROUTINE
+
+DEFINE SUBROUTINE RESET
+  WRITE 'In RESET subroutine'
+END SUBROUTINE
+
+* External PERFORM to keyword-named subroutines
+PERFORM CLEAR
+
+PERFORM RESET
+
+* Control: non-keyword subroutine names still work
+DEFINE SUBROUTINE MY-SUB
+  WRITE 'In MY-SUB'
+END-SUBROUTINE
+
+PERFORM MY-SUB
+
+END
