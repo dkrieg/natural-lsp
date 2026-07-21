@@ -31,8 +31,12 @@ the opened file for a `.natural-lsp.toml` sentinel (see the root README's
 
 This repository ships an importable LSP4IJ **user-defined language-server
 template** under [`lsp4ij-template/`](./lsp4ij-template/). Importing it pre-fills
-the server name, the `natural-lsp --stdio` command, and all 15 Natural
-file-name-pattern mappings, so the setup is reproducible instead of hand-typed.
+the server `id`/`name` (`natural-lsp` / `Natural LSP`), the `programArgs` launch
+command (`natural-lsp --stdio`, with a `windows` variant `natural-lsp.exe --stdio`),
+and the 15 `fileType.patterns` (`*.NSP … *.NST`) all mapped to language id `natural`
+— so the setup is reproducible instead of hand-typed. No
+`initializationOptions.json` or `settings.json` sibling is shipped because no
+initialization options are currently needed; add one if a real option arises.
 
 1. Install **LSP4IJ** from the JetBrains Marketplace
    (*Settings/Preferences → Plugins → Marketplace → search "LSP4IJ"*), then
@@ -40,9 +44,9 @@ file-name-pattern mappings, so the setup is reproducible instead of hand-typed.
 2. Open **Settings/Preferences → Languages & Frameworks → Language Servers**.
 3. Click **[+] → Template → Import from custom template…** and select this
    repo's `editors/jetbrains/lsp4ij-template/` directory.
-4. Confirm the **Command** shows `natural-lsp --stdio` and the **Mappings** tab
-   lists the 15 file-name patterns below, all mapped to language id `natural`.
-   Click **OK / Apply**.
+4. Confirm the **Command** shows `natural-lsp --stdio` (Windows: `natural-lsp.exe
+   --stdio`) and the **Mappings** tab lists the 15 file-name patterns below, all
+   mapped to language id `natural`. Click **OK / Apply**.
 
 ### Option B — configure by hand
 
@@ -64,7 +68,9 @@ If you cannot point the import dialog at this repo, create the server manually:
    File-name patterns are used (rather than a custom IntelliJ file type) because
    Community editions do not register a Natural file type — patterns work in
    every edition. Note LSP4IJ patterns are **case-sensitive**; if your exports
-   use lower-case suffixes, add the lower-case variants (e.g. `*.nsp`) too.
+   use lower-case suffixes, add the lower-case variants (e.g. `*.nsp`) in the
+   **Mappings** tab — or, if using the template, add them under `fileType.patterns`
+   in `lsp4ij-template/template.json` before importing.
 5. Click **OK / Apply**.
 
 ## Verify
@@ -80,6 +86,16 @@ scripts/smoke.sh "$(command -v natural-lsp)"
 
 Then, in the IDE, using this repo's sample workspace
 (`docs/plans/features/15-editor-clients/sample-workspace/`):
+
+**Post-import checks (manual — GUI import cannot be automated in CI):**
+
+- [ ] After importing the template (Option A, step 3), confirm that the **Command**
+      field is populated with `natural-lsp --stdio` (or `natural-lsp.exe --stdio` on
+      Windows) and that the **Mappings** tab lists all 15 `*.NSx` patterns mapped to
+      language id `natural`. This verifies the `programArgs` and `fileTypeMappings`
+      fields were imported correctly from `template.json`.
+
+**Server smoke-test:**
 
 - [ ] Open the sample-workspace directory as the project (it contains the
       `.natural-lsp.toml` sentinel).
