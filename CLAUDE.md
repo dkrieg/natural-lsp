@@ -48,12 +48,26 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 `internal/workspace` (ADR-027). **(ii)** A **Windows CI job** (`windows-latest`, `go build`/`vet`/`test`
 + scoped integration, `-race` omitted with rationale) was added so platform bugs can't reach a release
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
-**(iii)** Two follow-up features are **planned**: **feature 24 (cache-format-compaction)** — the on-disk
-cache is indented JSON (~1 GB for ~7,790 files); compact JSON + gzip (bump `cacheFormatVersion` 0.6.0→0.7.0)
-targets ~10–20× smaller and faster warm start (NFR-16); and **feature 25 (lsp4ij-template-validation)** —
-the shipped `editors/jetbrains/lsp4ij-template/template.json` uses invented field names and does not
-import; rewrite it to LSP4IJ's real schema (`id`/`name`/`programArgs`/`fileTypeMappings`) + a schema
-validation check (FR-52). See `docs/plans/features/24-*` and `25-*`.
+**(iii)** **Feature 25 (lsp4ij-template-validation) is shipped** (see the feature-25 note below);
+**feature 24 (cache-format-compaction)** remains **planned** — the on-disk cache is indented JSON
+(~1 GB for ~7,790 files); compact JSON + gzip (bump `cacheFormatVersion` 0.6.0→0.7.0) targets ~10–20×
+smaller and faster warm start (NFR-16). See `docs/plans/features/24-*`.
+
+Feature 25 (lsp4ij-template-validation) fixes a real-user-reported bug: the shipped LSP4IJ template
+(`editors/jetbrains/lsp4ij-template/template.json`) **did not import** because every field name was
+invented (`serverName`/`command`/`mappings[{fileNamePatterns,languageId}]`) rather than LSP4IJ's real
+schema. **No Go / `internal/model` / cache-format change** (mirrors feature 15 — editor-client + docs +
+a Node test only; cache stays `0.6.0`, nothing crosses the Analyzer seam). The template is rewritten to
+the externally-verified LSP4IJ schema — top-level `id`/`name`, an OS-keyed `programArgs`
+(`default: "natural-lsp --stdio"` + `windows: "natural-lsp.exe --stdio"`), and
+`fileTypeMappings[{fileType.{name,patterns},languageId}]` with all 15 `.NSx` patterns → `languageId`
+`natural` (the misplaced inline `initializationOptions` was dropped; no sibling files are shipped — none
+needed). A pure Mocha unit test (`editors/vscode/src/test/unit/template.test.ts`, no `vscode`/electron
+API, no running IDE) asserts the real-schema shape, the **absence** of the old invented keys, and full
+15-extension coverage; it runs in the existing `vscode-extension` CI job via the `out/test/unit/**` glob
+with **no CI-yaml change** (FR-52). The three JetBrains doc surfaces (`editors/jetbrains/README.md`, the
+template's `README.md`, and the root README JetBrains section) were aligned to the real field names, and
+a manual GUI-import verification checklist was added (Story 1 AC3 — GUI import can't be CI-automated).
 
 Feature 23 (distribution hardening) fixes the assessment's secondary findings and closes the
 backlog. **No `internal/model` change, no cache-format bump (still `0.6.0`), and no production

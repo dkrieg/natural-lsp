@@ -454,7 +454,8 @@ sentinel, so run Helix from within your Natural project.
 JetBrains does not auto-discover LSP servers the way VS Code does. The recommended route — which works in
 **all** JetBrains IDEs including the free **Community** editions — is the free
 **[LSP4IJ](https://github.com/redhat-developer/lsp4ij)** plugin. This repo ships an importable LSP4IJ
-server template (all 15 Natural file types, command `natural-lsp --stdio`) so setup is reproducible:
+server template (all 15 Natural file types; `programArgs` set to `natural-lsp --stdio`, with a `windows`
+variant `natural-lsp.exe --stdio`) so setup is reproducible:
 
 1. Install **LSP4IJ** from the JetBrains Marketplace.
 2. **Settings/Preferences → Languages & Frameworks → Language Servers → [+] → Template → Import from

@@ -204,8 +204,11 @@ here because they are real, easy-to-get-wrong integration facts (not Go craft):
 - **JetBrains** (incl. Community editions) via **LSP4IJ** (Red Hat), not the paid native LSP API.
   LSP4IJ maps files by **file-name pattern** (case-sensitive; e.g. `*.NSP`) with a `languageId`,
   and supports an **importable user-defined-server template** (a directory with `template.json`
-  holding `serverName`/`command`/`mappings[{fileNamePatterns,languageId}]`, optional `README.md`).
-  Committed at `editors/jetbrains/lsp4ij-template/` so setup is reproducible by import.
+  holding `id`/`name`/`programArgs.{default,windows}`/`fileTypeMappings[{fileType.{name,patterns},languageId}]`,
+  optional `README.md`). Committed at `editors/jetbrains/lsp4ij-template/` so setup is reproducible by
+  import. (Feature 25 corrected an earlier template that used invented field names —
+  `serverName`/`command`/`mappings`/`fileNamePatterns` — and would not import; a Mocha schema-validation
+  test now guards the real schema in CI.)
 **Verification ceiling:** Full editor-GUI verification (filetype recognized + go-to-definition
 navigates) is a documented **human** step and cannot be automated in this repo's CI. The
 **automatable lower bound** for every editor is the server-side stdio smoke — `scripts/smoke.sh`
