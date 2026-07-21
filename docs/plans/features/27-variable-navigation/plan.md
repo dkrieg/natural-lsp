@@ -46,9 +46,10 @@ gains an additive **`NameRange`** (mirroring `DataAccessEntry.NameRange`); becau
 persisted this bumps **`cacheFormatVersion` `0.7.0` → `0.8.0`** (one-time rebuild via the existing version
 gate) — the first model/cache change since feature 24. Binding itself is **recomputed from cached
 edges/refs** (per feature 07 ADR/OQ-1, resolution is not persisted), so Phase B adds **no further cache
-bump**. Variable use-sites are computed **on demand from the buffer** (not persisted — Phase A). No new LSP
-capability or method (extends the existing `textDocument/definition`/`references`/`hover` providers), so the
-locked `TestInitialize` allow-list is unchanged.
+bump**. Variable use-sites are computed **on demand from the buffer** (not persisted — Phase A). It extends
+the existing `textDocument/definition`/`references`/`hover` providers and adds **one new capability**,
+`documentHighlightProvider` (Story 2b — highlight a symbol's occurrences in the file), so the locked
+`TestInitialize` allow-list gains exactly that one entry.
 
 ## Research findings (grounded; `.claude/knowledge/natural/data-definition.md`, features 07/08b as-built)
 
@@ -106,6 +107,23 @@ without a parser rewrite. `#GROUP.FIELD` = 3 tokens, `#ARR(1)` = 4 tokens.
 - [ ] Complete w.r.t. the file's tokens (fixture-backed); never a false match inside a **comment** or
       **string literal**, a substring, or a `*`-system variable; group-qualified/subscripted occurrences
       count as references.
+
+#### Story 2b — Document highlight of a variable (FR-54, refines FR-25)
+**As a** developer, **I want** every occurrence of the symbol under the cursor highlighted in the file
+**so that** I can see a variable's uses at a glance while reading — the near-free companion to references.
+
+**Acceptance criteria:**
+- [ ] The server advertises `documentHighlightProvider` and handles **`textDocument/documentHighlight`**,
+      returning every occurrence of the variable under the cursor **in the current file**, reusing the
+      Story-2 use-site scan (no separate machinery).
+- [ ] Each highlight carries a `DocumentHighlightKind`: the **declaration/read** sites as `Read` and a
+      **write** target (assignment / `MOVE … TO` / `STORE`) as `Write` where the read/write distinction is
+      available (else `Text`).
+- [ ] Highlight also works on a **call/subroutine name** (reusing the existing edge sites) so it is useful
+      before Phase-A variables land; a `*`-system variable / dynamic / no-target cursor → empty, no error
+      (FR-17/FR-43).
+- [ ] `TestInitialize`'s capability allow-list is updated to include `documentHighlightProvider`
+      (explicit, reviewed). No model/cache change (reuses the on-demand references).
 
 #### Story 3 — Declarations gain a precise name range (enabler)
 **As a** maintainer, **I want** each `DEFINE DATA` field to carry the range of just its **name token**.
@@ -200,7 +218,8 @@ same LSP providers and the same intra-object field-lookup helper.
 ## Notes
 - **First model/cache-format change since feature 24** (`0.7.0` → `0.8.0`, additive `DataDefinition.NameRange`
   only). Binding/resolution is recomputed from cached edges/refs (feature 07 OQ-1) → no extra cache bump.
-- No new LSP capability/method — extends `textDocument/definition`/`references`/`hover`; json/v2 marshaling
+- One new LSP capability (`documentHighlightProvider`, Story 2b); otherwise extends
+  `textDocument/definition`/`references`/`hover`; json/v2 marshaling
   (feature 19); providers stay store-first (features 10–13).
 - **Closes feature 08b's binding deferral and its OQs** (DDM-namespace reuse; host-var direction) — reference
   this plan from the 08b follow-up note when it lands.

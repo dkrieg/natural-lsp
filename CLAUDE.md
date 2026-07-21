@@ -49,9 +49,13 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 + scoped integration, `-race` omitted with rationale) was added so platform bugs can't reach a release
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
 **(iii)** **Features 24 (cache-format-compaction) and 25 (lsp4ij-template-validation) are both
-shipped** (see their notes below). Three follow-ups are now **planned**: **feature 26
-(lsp-tracing-and-logging)**, **feature 27 (variable & reference navigation)**, and **feature 28
-(rich symbol detail & `VIEW OF` binding)**. **Feature 26
+shipped** (see their notes below). Several follow-ups are now **planned** (features **26–34**): the
+higher-value ones with full notes below — **26 (lsp-tracing-and-logging)**, **27 (variable & reference
+navigation)**, **28 (rich symbol detail & `VIEW OF` binding)**, **29 (semantic tokens)** — plus a set of
+smaller **P2 LSP-capability** plans, **30 (pull diagnostics)**, **31 (declaration & type-definition
+navigation)**, **32 (document links)**, **33 (execute-command / server commands)**, and **34 (moniker —
+documented non-goal, deferred)** (see their `docs/plans/features/` dirs; summarized after the feature-29
+note). **Feature 26
 (lsp-tracing-and-logging)** — the server's only observability channel today is stderr `slog` (plus
 feature 20's one-shot `window/showMessage`), so nothing it does is visible inside the editor. Mirroring
 the tracing conventions of other LSP4IJ servers (gopls/typescript-language-server/clangd), feature 26
@@ -81,8 +85,10 @@ kinds: locating an *object* (data area / DDM) reuses feature 07's chain unchange
 within* an object is a **new intra-object name→`DataDefinition` lookup**. This is the **first
 model/cache-format change since feature 24**: an additive `model.DataDefinition.NameRange` (precise
 name-token span, mirroring `DataAccessEntry.NameRange`) bumps `cacheFormatVersion` `0.7.0` → `0.8.0`;
-binding is recomputed from cached edges/refs (feature 07 OQ-1) so Phase B adds no further bump; no new LSP
-capability/method (extends the existing providers). See `docs/plans/features/27-variable-navigation/`.
+binding is recomputed from cached edges/refs (feature 07 OQ-1) so Phase B adds no further bump. It also
+adds **`textDocument/documentHighlight`** (highlight a symbol's occurrences in the file, read/write kinds,
+reusing the reference scan) — the one new capability; otherwise extends the existing providers. See
+`docs/plans/features/27-variable-navigation/`.
 
 **Feature 28 (rich symbol detail & `VIEW OF` binding)** — enriches the document-outline
 (`textDocument/documentSymbol`) export. **Phase A (typed outline):** `DEFINE DATA` field **type**
@@ -98,6 +104,37 @@ resolution + intra-object field lookup (the binding target is always the `.NSD`,
 DB2; `TYPE: SQL` DDM parsing in `ddm.go` is a recorded limit). Adds persisted model fields (Symbol detail +
 `DataDefinition.ViewOfDDM`/REDEFINE marker) → a cache-format bump **coordinated with feature 27** by merge
 order; no new LSP capability/method. See `docs/plans/features/28-symbol-detail-and-view-binding/`.
+
+**Feature 29 (semantic tokens)** — adds a **`semanticTokensProvider`** for server-driven, AST-aware
+highlighting (the biggest visible upgrade over the VS Code extension's basic TextMate grammar; JetBrains/
+LSP4IJ has no Natural grammar today). Two tiers: **Phase A (lexical)** maps the lexer's typed tokens
+(keyword/comment/string/number/operator) directly — works on any file, even unparseable (FR-43); **Phase B
+(semantic)** reclassifies `TokenIdentifier` from the AST — data variable → `variable` (PARAMETER →
+`parameter`), CALLNAT/FETCH/RUN/PERFORM target → `function`, DDM/view → `type`, DDM/view field →
+`property`, `*`-system var → `defaultLibrary`, with `declaration`/`definition`/`readonly`/`modification`
+modifiers (write-modifier reuses feature 27). Computed **on demand from the open buffer** (semantic tokens
+are only needed for open files) → **no `internal/model` persisted field and no cache-format bump**; the
+classification is produced behind the Analyzer seam (a new on-demand analyzer entry returning classified
+spans, so `internal/server` imports no parser internals) and the server encodes the LSP relative 5-int
+stream (encoding-aware via `position.go`). This **adds a new server capability** (`semanticTokensProvider`
++ legend) — the first capability addition since feature 18 — so the locked `TestInitialize` allow-list is
+extended. `full` (and likely `range`); `full/delta` deferred. See `docs/plans/features/29-semantic-tokens/`.
+
+**Features 30–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
+server-layer only, **no `internal/model`/cache change** (all reuse existing extraction/resolution), and each
+adds one new capability (so `TestInitialize` grows by one) except 34: **30 (pull diagnostics,
+`textDocument/diagnostic`+`workspace/diagnostic`)** exposes feature 14's existing diagnostics through the
+LSP 3.17 pull model (push stays); **31 (declaration & type-definition)** are thin providers over features
+10/27/28 resolution (`declaration` mirrors `definition` + variable-use→`DEFINE DATA`; `typeDefinition`
+jumps a field to its DDM) — sequence after 27/28; **32 (document links)** renders resolved CALLNAT/INCLUDE/
+FETCH/RUN targets as clickable links (largely redundant with go-to-definition — value is discoverability,
+build on demand); **33 (execute-command)** is a command-dispatch substrate shipped with a first concrete
+command (reindex workspace, reusing feature 21's background build) — the enabler for future code actions;
+**34 (moniker)** is a **documented non-goal / deferral record** — no use case in a filesystem-scoped
+single-workspace product, revisit only alongside an LSIF/SCIP export. See their
+`docs/plans/features/30..34-*` dirs. (Capabilities still absent and NOT planned: incremental
+`textDocumentSync` — a deliberate Full-sync choice; `implementation`, formatting, `inlineValue`,
+`typeHierarchy`, `linkedEditingRange`, color — niche/N-A for Natural.)
 
 Feature 24 (cache-format-compaction) fixes a real-user-reported bug: the on-disk workspace cache was
 **~1 GB for ~7,790 files** because it was serialized as **indented** JSON (`json.MarshalIndent`) of the

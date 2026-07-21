@@ -269,7 +269,9 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
   **Phase A** is **same-file** variable navigation (declaration and uses are intra-file); **Phase B** binds
   cross-file — variables declared in external data areas (`LOCAL/PARAMETER/GLOBAL USING
   <.NSL/.NSA/.NSG>`), SQL host variables, and SQL-sourced DDM names — through the existing steplib chain
-  (reusing feature 07), closing feature 08b's deferred binding gap. (Refines FR-24/FR-25/FR-28; planned as
+  (reusing feature 07), closing feature 08b's deferred binding gap. It also adds
+  **`textDocument/documentHighlight`** — highlighting every occurrence of the symbol under the cursor in
+  the file (read/write kinds), reusing the same reference machinery. (Refines FR-24/FR-25/FR-28; planned as
   feature 27.)
 
 - **FR-55 (P1)** — **Rich symbol detail & `VIEW OF` binding** — enrich the document-outline export
@@ -281,6 +283,38 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
   (through the same DDM namespace/steplib chain as `READ`/`FIND`, reusing feature 27). The binding target
   is always the `.NSD` (which may map to Adabas or DB2); `TYPE: SQL` DDM parsing is a recorded limit.
   (Refines FR-23/FR-27, connects FR-19/FR-28; planned as feature 28.)
+
+- **FR-56 (P1)** — **Semantic tokens** (`textDocument/semanticTokens`) — server-driven, AST-aware syntax
+  highlighting, delivered in two tiers: a lexical tier (keyword/comment/string/number/operator, works on
+  any file incl. unparseable) and a semantic tier that classifies identifiers by role (data **variable** /
+  **parameter**, call/subroutine → **function**, DDM/view → **type**, DDM/view field → **property**,
+  system variable → `defaultLibrary`), with modifiers (`declaration`/`definition`/`readonly`/
+  `modification`). Computed on demand for the open buffer (no persisted state); adds a
+  `semanticTokensProvider` capability with a legend. Gives real highlighting in editors that lack a Natural
+  grammar (JetBrains/LSP4IJ) and consistent coloring in VS Code. (New capability; planned as feature 29.)
+
+- **FR-57 (P2)** — **Pull diagnostics** (`textDocument/diagnostic` + `workspace/diagnostic`) — expose the
+  existing diagnostics (FR-30/FR-31) through the LSP 3.17 pull model via a `diagnosticProvider`, for
+  clients that prefer pull over the current push (`publishDiagnostics`). Same content, added delivery
+  mechanism. (Complements feature 14; planned as feature 30.)
+
+- **FR-58 (P2)** — **Declaration & type-definition navigation** (`textDocument/declaration`,
+  `textDocument/typeDefinition`) — thin providers over existing resolution: `declaration` mirrors
+  `definition` (plus variable-use → `DEFINE DATA` line), and `typeDefinition` jumps a field to the DDM that
+  types it (reusing features 27/28). (Refines FR-24; planned as feature 31.)
+
+- **FR-59 (P2)** — **Document links** (`textDocument/documentLink`) — render resolved CALLNAT/INCLUDE/
+  FETCH/RUN/PERFORM targets as clickable links (largely redundant with go-to-definition; value is
+  discoverability). (Planned as feature 32.)
+
+- **FR-60 (P2)** — **Server commands** (`workspace/executeCommand`) — a command-dispatch substrate plus a
+  first concrete command (reindex workspace); the enabler for future server-driven code actions. (Planned
+  as feature 33.)
+
+- **FR-61 (P2, deferred)** — **Monikers** (`textDocument/moniker`) — cross-repository symbol identities for
+  LSIF/SCIP-style index interchange. **Documented non-goal for the foreseeable future** — no use case in a
+  filesystem-scoped single-workspace product; revisit only alongside an index-export feature. (Decision
+  record; feature 34.)
 
 ---
 
@@ -416,6 +450,8 @@ broaden editor support, and deliver the parser-enabled interactive features.
   completes the FR-19/20/21 binding half) (FR-54, refines FR-24/FR-25/FR-28, feature 27).
 - Rich symbol detail & `VIEW OF` binding: typed/leveled/array/REDEFINE detail in the outline, and view
   fields decoded to their DDM logical fields (FR-55, refines FR-23/FR-27, feature 28).
+- Semantic tokens: server-driven AST-aware highlighting (lexical + semantic identifier classification)
+  (FR-56, feature 29); document highlight ships with feature 27.
 - Warm-startup, request-latency, non-blocking-indexing, cache-freshness, and regression-fixture
   NFRs (NFR-2, NFR-3, NFR-5, NFR-8, NFR-9); installation paths and observability
   (NFR-12, NFR-14, NFR-16).
@@ -428,6 +464,9 @@ broaden editor support, and deliver the parser-enabled interactive features.
 - Runtime name-substitution handling in literal targets (FR-18).
 - Folding ranges (FR-50).
 - Inlay hints (FR-51).
+- Pull diagnostics (FR-57, feature 30); declaration & type-definition navigation (FR-58, feature 31);
+  document links (FR-59, feature 32); server commands / execute-command (FR-60, feature 33).
+- Monikers (FR-61, feature 34) — documented non-goal; revisit only with an LSIF/SCIP export.
 
 ---
 
