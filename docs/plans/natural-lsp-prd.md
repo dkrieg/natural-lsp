@@ -247,7 +247,40 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
   LSP4IJ's user-defined-language-server template schema (`id`, `name`, `programArgs`,
   `fileTypeMappings[].fileType.patterns`/`languageId`) so "Import from custom template…" produces a
   working server, and it must be validated against that schema so it cannot silently drift.
-  (Refines FR-45; planned as feature 25.)
+  (Refines FR-45; shipped as feature 25.)
+
+- **FR-53 (P1)** — **LSP-native observability & tracing** — the server must surface its operational
+  activity through the standard LSP log/trace channels, mirroring the conventions of other LSP4IJ
+  servers (gopls, typescript-language-server, clangd): emit **`window/logMessage`** (severity-tagged)
+  for index build begin/end, cache hit vs. rebuild, per-file skips, resolution ambiguities, and request
+  errors — so events appear in the LSP4IJ **Logs tab** / VS Code output channel, not only on stderr —
+  and honor the **trace handshake** (`InitializeParams.trace`, the `$/setTrace` notification) by emitting
+  **`$/logTrace`** for per-RPC tracing gated on the `off`/`messages`/`verbose` level (off by default).
+  Emission is fire-and-forget and never blocks, fails, or panics a request (FR-43), and adds no server
+  capability. (Realizes the editor-facing side of NFR-14; planned as feature 26.)
+
+- **FR-54 (P1)** — **Variable & reference navigation** — extend go-to-definition, find-references, and
+  hover to **data variables and host variables**, and complete the **binding half** of the SQL extraction
+  (FR-19/FR-20/FR-21): from a variable use-site (`#CUSTOMER-NAME`, group-qualified `#GROUP.FIELD`, array
+  `#T(I)`) or a SQL host variable navigate to its `DEFINE DATA` declaration and find all use-sites, and
+  resolve SQL-sourced DDM table names to their `.NSD` like an Adabas view. Matching is case-insensitive,
+  strips array subscripts, honors group qualification, excludes `*`-system variables, and treats
+  `&`-dynamic/undeclared names as modeled gaps (empty, not errors — FR-17). Delivered in two phases:
+  **Phase A** is **same-file** variable navigation (declaration and uses are intra-file); **Phase B** binds
+  cross-file — variables declared in external data areas (`LOCAL/PARAMETER/GLOBAL USING
+  <.NSL/.NSA/.NSG>`), SQL host variables, and SQL-sourced DDM names — through the existing steplib chain
+  (reusing feature 07), closing feature 08b's deferred binding gap. (Refines FR-24/FR-25/FR-28; planned as
+  feature 27.)
+
+- **FR-55 (P1)** — **Rich symbol detail & `VIEW OF` binding** — enrich the document-outline export
+  (`textDocument/documentSymbol`) so `DEFINE DATA` fields show their **type** (`A26`, `P9,2`, `(A)
+  DYNAMIC`), **level**, **array** index ranges (`(1:10)`), and **REDEFINE** overlays (incl. `FILLER nX`
+  gaps) — metadata already extracted but currently dropped before the outline — and parse the **`VIEW
+  OF <ddm>`** construct so a database view's fields **decode into typed logical fields**: a bare view
+  field inherits its type from the DDM and go-to-definition on it reaches the `.NSD` field declaration
+  (through the same DDM namespace/steplib chain as `READ`/`FIND`, reusing feature 27). The binding target
+  is always the `.NSD` (which may map to Adabas or DB2); `TYPE: SQL` DDM parsing is a recorded limit.
+  (Refines FR-23/FR-27, connects FR-19/FR-28; planned as feature 28.)
 
 ---
 
@@ -312,7 +345,9 @@ Each requirement carries a **priority**: **P0** (MVP — must ship in the first 
 - **NFR-13 (P0)** — Setup for a new workspace should require only placing the sentinel file and
   installing the binary/client.
 - **NFR-14 (P1)** — The product must make its own limits legible: what was indexed, what was skipped,
-  what could not be resolved, and why.
+  what could not be resolved, and why. This legibility must reach the editor through the standard LSP
+  log/trace channels (`window/logMessage`, `$/logTrace`), not only the stderr stream (see FR-53,
+  feature 26).
 
 ### 8.5 Maintainability & extensibility
 
@@ -374,6 +409,13 @@ broaden editor support, and deliver the parser-enabled interactive features.
 - External file-change watching (FR-34).
 - Persistent, content-hash-invalidated, version-gated cache (FR-37–40); compact cache encoding (NFR-16, feature 24).
 - JetBrains client and documented config for other editors (FR-45, FR-46); importable/validated LSP4IJ template (FR-52, feature 25).
+- LSP-native observability & tracing: `window/logMessage` events + the `trace`/`$/setTrace`/`$/logTrace`
+  handshake, mirroring other LSP4IJ servers (FR-53, NFR-14, feature 26).
+- Variable & reference navigation: go-to-definition/find-references/hover for data variables and SQL
+  host variables (same-file first, then cross-file `USING`/host-var/DDM binding via the steplib chain —
+  completes the FR-19/20/21 binding half) (FR-54, refines FR-24/FR-25/FR-28, feature 27).
+- Rich symbol detail & `VIEW OF` binding: typed/leveled/array/REDEFINE detail in the outline, and view
+  fields decoded to their DDM logical fields (FR-55, refines FR-23/FR-27, feature 28).
 - Warm-startup, request-latency, non-blocking-indexing, cache-freshness, and regression-fixture
   NFRs (NFR-2, NFR-3, NFR-5, NFR-8, NFR-9); installation paths and observability
   (NFR-12, NFR-14, NFR-16).

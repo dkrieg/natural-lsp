@@ -14,7 +14,7 @@ holds verified facts with sources. Read this index first, then the relevant topi
 | [calls-and-resolution.md](calls-and-resolution.md) | CALLNAT / PERFORM / FETCH / RUN / INCLUDE, steplib resolution | verified (2026-06-30) |
 | [identifiers-and-keywords.md](identifiers-and-keywords.md) | Identifier naming rules (length/first-char/`#`/`&`/`+`/hyphen/case); keywords are **context-sensitive not hard-reserved**; keyword-spelled subroutine names in `DEFINE SUBROUTINE`/`PERFORM` name positions (issue #41); KCHECK; natls `canBeIdentifier` re-tagging | verified (2026-07-20) |
 | [embedded-sql.md](embedded-sql.md) | Native Natural SQL (SELECT/INSERT/…) + PROCESS SQL / flexible `<<…>>`, host-var colon rule (optional in native / mandatory in flexible), FROM-table→`.NSD` DDM binding, backends, error handling | verified (2026-06-30); no open items |
-| [data-definition.md](data-definition.md) | DEFINE DATA, LDA/GDA/PDA, level structure | verified (2026-06-20); array/REDEFINE grammar confirmed |
+| [data-definition.md](data-definition.md) | DEFINE DATA, LDA/GDA/PDA, level structure; **variable referencing/scope/qualification** (`group.field` period rule, array-subscript stripping, REDEFINE aliases, same-object-vs-cross-file scopes, `*`-sysvar exclusion) for variable go-to-definition/references; **`VIEW OF` view-definition** (DDM subset, format/length inherited-from-DDM, REDEFINE-in-view, array index notation, DB2-DDM angle, view-field→`.NSD` binding) for outline enrichment | verified (2026-07-21) |
 | [ddm-format.md](ddm-format.md) | `.NSD` exported DDM file: fixed-column report layout (byte offsets), header/TYPE lines, group/PE/MU, super/sub/phonetic descriptors, `DataDefinition` mapping (no model change), line-scanner parsing notes | verified (2026-07-06) |
 | [modes-and-dialects.md](modes-and-dialects.md) | structured vs reporting mode, mainframe vs Linux/NaturalONE | verified (2026-06-23); column rules confirmed free-format |
 | [example-projects.md](example-projects.md) | public Natural source corpora & fixture candidates (licenses) | verified (2026-06-20) |
@@ -38,6 +38,42 @@ holds verified facts with sources. Read this index first, then the relevant topi
 
 ## Changelog
 
+- 2026-07-21 — EXTENDED `data-definition.md` with a "VIEW OF (view-definition)" section to scope an
+  **outline-enrichment + VIEW OF binding** feature. VERIFIED findings: (1) `level view-name VIEW [OF]
+  ddm-name` binds to a **DDM (`.NSD`)**; view field lines are an explicit **SELECTION (subset)** of the
+  DDM's fields. (2) **Format/length are inherited from the DDM** when omitted on the view line (exact
+  rule quoted: *"If omitted, these are taken from the DDM. In structured mode, the definition of format
+  and length (if supplied) must be the same as those in the DDM."*) — so the authoritative type lives
+  in the DDM; "decoding a record layout into logical fields" = resolving each bare view field to its
+  DDM field definition (`ddm.go` `DataDefinition`). (3) A DDM can be over **Adabas OR a DB2 table/view**
+  (SYSDDM/NSB generation) — the "DB2 view" angle; the `.NSD` is always the binding target, never reach
+  past it to the DB2 catalog; SQL-typed DDMs (`TYPE: SQL`) use a different column layout that `ddm.go`
+  currently skips (scoping limit). (4) **REDEFINE inside a view** carves a DDM field into user
+  sub-fields (verified `REDEFINE BIRTH → BIRTH-YEAR/MONTH/DAY`); `FILLER nX` = skipped bytes,
+  trailing-filler optional; sub-fields are aliases over the same storage; view-local redefine
+  sub-fields have NO DDM declaration (definition is the view's own line). (5) Arrays use **index ranges,
+  NOT `OCCURS`**: `(1:2)`, `(A20/1:2)`, multi-dim `(1:10,1:5)`, single `(2)`, variable `(#K:#K+1)`;
+  render compactly as `A20 (1:2)`/`P9,2`. (6) **Go-to-definition on a view field → the DDM field
+  declaration in `.NSD`**, resolved via the **same DDM namespace/steplib chain as READ/FIND** (feature
+  27 binding); view name → its own VIEW OF line. Sources: defineda_view.htm (view syntax + format/length
+  rule + EMP examples), defineda_redef.htm (REDEFINE/FILLER/BIRTH example), pg_obj_ddm.htm (DDM =
+  logical view; ddm-name vs view-name), ndb-ddm.htm/nsb-ddm.htm (DB2-DDM generation).
+- 2026-07-21 — EXTENDED `data-definition.md` with a "Variable referencing, scope & qualification"
+  section to scope a **variable go-to-definition / find-references** LSP feature. VERIFIED findings:
+  (1) **Scopes:** inline `LOCAL`/`PARAMETER`/`INDEPENDENT`(+AIV)/`CONTEXT`/`OBJECT` defs are
+  same-object; `LOCAL USING`/`PARAMETER USING`/`GLOBAL USING` live in separate `.NSL`/`.NSA`/`.NSG`
+  data-area objects → cross-file bind. (2) **Qualification is a period:** `group-name.field-name`,
+  qualifier must be a **level-1** element; required only when a sub-field name is non-unique across
+  groups (verified `FULL-NAME.LAST-NAME` / `OUTPUT-NAME.LAST-NAME` example). A non-unique unqualified
+  reference is genuinely ambiguous → surface all candidates. (3) **Array `#T(1:10)`/`#T(I)`** →
+  definition is `#T`; strip subscript; an index variable `I` is its own reference. (4) **REDEFINE**
+  sub-fields are distinct named aliases (own declaration lines; feature-08 models them as `Children`).
+  (5) **No lexical shadowing** — namespace is flat per run unit, disambiguated by qualification not
+  nesting; a valid module has ≤1 declaration per unqualified name path. (6) **System variables**
+  (`*DATX`/`*LANGUAGE`/…) are predefined + read-only, never in `DEFINE DATA` → EXCLUDE from
+  user-variable navigation. Recommended first-version scope: same-file `DEFINE DATA` inline blocks
+  only; defer `USING` LDA/PDA/GDA cross-file binding. Sources: pg_defi.htm (qualify/REDEFINE),
+  pg_defi_array.htm + pg_output_index.htm (index notation), vari/sysenv.htm (sysvars read-only).
 - 2026-07-20 — ADDED topic `identifiers-and-keywords.md` to ground a parser fix (issue #41: keyword-
   spelled subroutine names, e.g. `DEFINE SUBROUTINE CLEAR ... END-SUBROUTINE` / `PERFORM CLEAR`). Key
   VERIFIED findings: (1) Natural keywords are **context-sensitive, not hard-reserved** — no absolute
