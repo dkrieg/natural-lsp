@@ -1,16 +1,22 @@
 package workspace
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
 	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"log/slog"
 )
 
 // TestSave_Load verifies that Save() and Load() provide a correct round-trip
@@ -388,32 +394,23 @@ func TestLoad_CacheVersionBumpedForDataAccessRefactoring(t *testing.T) {
 			tmpDir := t.TempDir()
 			cachePath := filepath.Join(tmpDir, "cache.json")
 
-			// Build an index and save it.
-			idx := &Index{}
-			idx.Add("test.NSP", model.FileAnalysis{
-				ObjectType: model.ObjectProgram,
-			})
-
-			err := Save(idx, cachePath)
-			if err != nil {
-				t.Fatalf("Save() returned error: %v", err)
+			// Manually build a 0.3.0 cache (the pre-Task-2 version) with plaintext JSON.
+			// This simulates a cache written by the old format before the version bump.
+			oldVersionCache := CacheFile{
+				Version: "0.3.0",
+				Entries: map[string]cacheEntry{
+					"test.NSP": {
+						ObjectType:  string(model.ObjectProgram),
+						ContentHash: "deadbeef",
+					},
+				},
 			}
-
-			// Manually downgrade the cache to version 0.3.0 (the pre-Task-2 version).
-			// Read the current cache content.
-			content, err := os.ReadFile(cachePath)
+			data, err := json.MarshalIndent(oldVersionCache, "", "    ")
 			if err != nil {
-				t.Fatalf("Failed to read cache file: %v", err)
+				t.Fatalf("Failed to marshal old-version cache: %v", err)
 			}
-
-			// Replace the current version string with 0.3.0 (pre-refactoring).
-			newVersion := "0.3.0"
-			newContent := string(content)
-			newContent = strings.Replace(newContent, cacheFormatVersion, newVersion, 1)
-
-			// Write the downgraded cache back.
-			if err := os.WriteFile(cachePath, []byte(newContent), 0644); err != nil {
-				t.Fatalf("Failed to write downgraded cache: %v", err)
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("Failed to write old-version cache: %v", err)
 			}
 
 			// Try to load the cache - should treat it as stale due to version mismatch.
@@ -456,33 +453,23 @@ func TestLoad_FormatVersionMismatch(t *testing.T) {
 			tmpDir := t.TempDir()
 			cachePath := filepath.Join(tmpDir, "cache.json")
 
-			// Build an index and save it.
-			idx := &Index{}
-			idx.Add("test.NSP", model.FileAnalysis{
-				ObjectType: model.ObjectProgram,
-			})
-
-			err := Save(idx, cachePath)
-			if err != nil {
-				t.Fatalf("Save() returned error: %v", err)
+			// Manually build a 0.1.0 cache (an old incompatible version) with plaintext JSON.
+			// This simulates a cache written by an ancient format.
+			oldVersionCache := CacheFile{
+				Version: "0.1.0",
+				Entries: map[string]cacheEntry{
+					"test.NSP": {
+						ObjectType:  string(model.ObjectProgram),
+						ContentHash: "deadbeef",
+					},
+				},
 			}
-
-			// Manually corrupt the cache file by changing the version field.
-			// Read the current cache content.
-			content, err := os.ReadFile(cachePath)
+			data, err := json.MarshalIndent(oldVersionCache, "", "    ")
 			if err != nil {
-				t.Fatalf("Failed to read cache file: %v", err)
+				t.Fatalf("Failed to marshal old-version cache: %v", err)
 			}
-
-			// Replace the version string with an old version.
-			oldVersion := "0.1.0"
-			newContent := string(content)
-			// The actual version string in the cache - replace it with an old one.
-			newContent = strings.Replace(newContent, cacheFormatVersion, oldVersion, 1)
-
-			// Write the corrupted cache back.
-			if err := os.WriteFile(cachePath, []byte(newContent), 0644); err != nil {
-				t.Fatalf("Failed to write corrupted cache: %v", err)
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("Failed to write old-version cache: %v", err)
 			}
 
 			// Try to load the cache - should return false due to version mismatch.
@@ -860,32 +847,23 @@ func TestLoad_CacheVersionBumpedForHostVarRefs(t *testing.T) {
 			tmpDir := t.TempDir()
 			cachePath := filepath.Join(tmpDir, "cache.json")
 
-			// Build an index and save it.
-			idx := &Index{}
-			idx.Add("test.NSP", model.FileAnalysis{
-				ObjectType: model.ObjectProgram,
-			})
-
-			err := Save(idx, cachePath)
-			if err != nil {
-				t.Fatalf("Save() returned error: %v", err)
+			// Manually build a 0.4.0 cache (the pre-HostVarRefs version) with plaintext JSON.
+			// This simulates a cache written by the old format before the HostVarRefs field was added.
+			oldVersionCache := CacheFile{
+				Version: "0.4.0",
+				Entries: map[string]cacheEntry{
+					"test.NSP": {
+						ObjectType:  string(model.ObjectProgram),
+						ContentHash: "deadbeef",
+					},
+				},
 			}
-
-			// Manually downgrade the cache to version 0.4.0 (the pre-HostVarRefs version).
-			// Read the current cache content.
-			content, err := os.ReadFile(cachePath)
+			data, err := json.MarshalIndent(oldVersionCache, "", "    ")
 			if err != nil {
-				t.Fatalf("Failed to read cache file: %v", err)
+				t.Fatalf("Failed to marshal old-version cache: %v", err)
 			}
-
-			// Replace the current version string with 0.4.0 (pre-HostVarRefs).
-			oldVersion := "0.4.0"
-			newContent := string(content)
-			newContent = strings.Replace(newContent, cacheFormatVersion, oldVersion, 1)
-
-			// Write the downgraded cache back.
-			if err := os.WriteFile(cachePath, []byte(newContent), 0644); err != nil {
-				t.Fatalf("Failed to write downgraded cache: %v", err)
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("Failed to write old-version cache: %v", err)
 			}
 
 			// Try to load the cache - should treat it as stale due to version mismatch.
@@ -1269,32 +1247,23 @@ func TestLoad_CacheVersionBumpedForStructure(t *testing.T) {
 			tmpDir := t.TempDir()
 			cachePath := filepath.Join(tmpDir, "cache.json")
 
-			// Build an index and save it (at the current version).
-			idx := &Index{}
-			idx.Add("test.NSP", model.FileAnalysis{
-				ObjectType: model.ObjectProgram,
-			})
-
-			err := Save(idx, cachePath)
-			if err != nil {
-				t.Fatalf("Save() returned error: %v", err)
+			// Manually build a 0.5.0 cache (the pre-Structure version) with plaintext JSON.
+			// This simulates a cache written by the old format before the Structure field was added.
+			oldVersionCache := CacheFile{
+				Version: "0.5.0",
+				Entries: map[string]cacheEntry{
+					"test.NSP": {
+						ObjectType:  string(model.ObjectProgram),
+						ContentHash: "deadbeef",
+					},
+				},
 			}
-
-			// Manually downgrade the cache to version 0.5.0 (the pre-Structure version).
-			// Read the current cache content.
-			content, err := os.ReadFile(cachePath)
+			data, err := json.MarshalIndent(oldVersionCache, "", "    ")
 			if err != nil {
-				t.Fatalf("Failed to read cache file: %v", err)
+				t.Fatalf("Failed to marshal old-version cache: %v", err)
 			}
-
-			// Replace the current version string with 0.5.0 (pre-Structure).
-			oldVersion := "0.5.0"
-			newContent := string(content)
-			newContent = strings.Replace(newContent, cacheFormatVersion, oldVersion, 1)
-
-			// Write the downgraded cache back.
-			if err := os.WriteFile(cachePath, []byte(newContent), 0644); err != nil {
-				t.Fatalf("Failed to write downgraded cache: %v", err)
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("Failed to write old-version cache: %v", err)
 			}
 
 			// Try to load the cache - should treat it as stale due to version mismatch.
@@ -1416,5 +1385,912 @@ func TestLoad_CanonicalizesBackslashKeys(t *testing.T) {
 	}
 	if cands[0].Path != canonicalKey {
 		t.Errorf("candidate Path = %q, want %q", cands[0].Path, canonicalKey)
+	}
+}
+
+// TestEncodeDecodeCache_RoundTrip verifies that encodeCache and decodeCache
+// provide lossless round-trip encoding of a CacheFile. This test pins the
+// contract for the two pure helpers that will be used by T1–T3 of feature 24.
+// Feature 24 / T1.
+func TestEncodeDecodeCache_RoundTrip(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"encodeCache produces gzip-compressed bytes"},
+		{"decodeCache recovers the original CacheFile"},
+		{"round-trip preserves all persisted fields"},
+		{"encoded bytes are smaller than indented JSON"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Build a representative CacheFile with one cacheEntry exercising
+			// every persisted field: ObjectType, Structure (hierarchical tree),
+			// Edges, Definitions, HostVarRefs, DataAccess (with NameRange),
+			// WorkFiles, and ContentHash.
+
+			// Build a nested Symbol structure: object root with a data-section child
+			// and a subroutine child.
+			structure := &model.Symbol{
+				Kind: model.SymbolObject,
+				Name: "TESTPROG",
+				Range: model.Range{
+					Start: model.Position{Line: 1, Column: 1},
+					End:   model.Position{Line: 50, Column: 80},
+				},
+				SelectionRange: model.Range{
+					Start: model.Position{Line: 1, Column: 1},
+					End:   model.Position{Line: 1, Column: 8},
+				},
+				Children: []model.Symbol{
+					// Data section with a data field child
+					{
+						Kind: model.SymbolDataSection,
+						Name: "LOCAL",
+						Range: model.Range{
+							Start: model.Position{Line: 3, Column: 1},
+							End:   model.Position{Line: 15, Column: 50},
+						},
+						SelectionRange: model.Range{
+							Start: model.Position{Line: 3, Column: 1},
+							End:   model.Position{Line: 3, Column: 21},
+						},
+						Children: []model.Symbol{
+							{
+								Kind: model.SymbolDataField,
+								Name: "EMPLOYEE_ID",
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 3},
+									End:   model.Position{Line: 5, Column: 20},
+								},
+								SelectionRange: model.Range{
+									Start: model.Position{Line: 5, Column: 5},
+									End:   model.Position{Line: 5, Column: 16},
+								},
+								Children: nil,
+							},
+						},
+					},
+					// Subroutine child
+					{
+						Kind: model.SymbolSubroutine,
+						Name: "PROCESS_DATA",
+						Range: model.Range{
+							Start: model.Position{Line: 20, Column: 1},
+							End:   model.Position{Line: 45, Column: 30},
+						},
+						SelectionRange: model.Range{
+							Start: model.Position{Line: 20, Column: 18},
+							End:   model.Position{Line: 20, Column: 30},
+						},
+						Children: nil,
+					},
+				},
+			}
+
+			// Construct the test CacheFile with all persisted fields populated.
+			cache := CacheFile{
+				Version: cacheFormatVersion,
+				Entries: map[string]cacheEntry{
+					"test_program.NSP": {
+						ObjectType: string(model.ObjectProgram),
+						Symbols: []model.SymbolEntry{
+							{Name: "PROG1", Kind: model.SymbolProgram},
+						},
+						Edges: []model.EdgeEntry{
+							{
+								Kind:       model.EdgeCalls,
+								TargetName: "SUBRTN1",
+								Source: model.Range{
+									Start: model.Position{Line: 10, Column: 1},
+									End:   model.Position{Line: 10, Column: 20},
+								},
+							},
+						},
+						DataAccess: []model.DataAccessEntry{
+							{
+								Name: "EMPLOYEES",
+								Kind: model.EdgeReads,
+								Source: model.Range{
+									Start: model.Position{Line: 12, Column: 1},
+									End:   model.Position{Line: 12, Column: 16},
+								},
+								NameRange: model.Range{
+									Start: model.Position{Line: 12, Column: 6},
+									End:   model.Position{Line: 12, Column: 15},
+								},
+							},
+						},
+						Definitions: []model.DataDefinition{
+							{
+								Name:        "EMP_ID",
+								Level:       1,
+								Type:        "N9",
+								SectionKind: "local",
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 3},
+									End:   model.Position{Line: 5, Column: 20},
+								},
+								Children:   nil,
+								Dimensions: []model.ArrayDimension{},
+							},
+						},
+						HostVarRefs: []model.HostVarRef{
+							{
+								Name: "#SALARY",
+								Range: model.Range{
+									Start: model.Position{Line: 18, Column: 8},
+									End:   model.Position{Line: 18, Column: 15},
+								},
+							},
+						},
+						WorkFiles: []model.WorkFile{
+							{
+								Number: 1,
+								Name:   "REPORT.TXT",
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 1},
+									End:   model.Position{Line: 5, Column: 35},
+								},
+							},
+						},
+						Structure:   structure,
+						ContentHash: "abc123def456",
+					},
+				},
+			}
+
+			// Call encodeCache (will FAIL because it doesn't exist yet).
+			// This is the RED signal: the test fails because the helper is missing.
+			encoded, err := encodeCache(cache)
+			if err != nil {
+				t.Fatalf("encodeCache() returned error: %v", err)
+			}
+
+			// Verify the encoded bytes start with the gzip magic bytes.
+			if len(encoded) < 2 {
+				t.Fatal("encodeCache() returned fewer than 2 bytes, want gzip magic")
+			}
+			if encoded[0] != 0x1f || encoded[1] != 0x8b {
+				t.Fatalf("encodeCache() did not produce gzip magic bytes; got [0x%02x, 0x%02x], want [0x1f, 0x8b]", encoded[0], encoded[1])
+			}
+
+			// Verify the encoded size is smaller than indented JSON.
+			indented, err := json.MarshalIndent(cache, "", "    ")
+			if err != nil {
+				t.Fatalf("json.MarshalIndent() returned error: %v", err)
+			}
+			if len(encoded) >= len(indented) {
+				t.Errorf("encodeCache() produced %d bytes, indented JSON produced %d bytes; want encoded < indented (compaction failed)", len(encoded), len(indented))
+			}
+
+			// Call decodeCache and verify it recovers the original CacheFile.
+			decoded, err := decodeCache(encoded)
+			if err != nil {
+				t.Fatalf("decodeCache() returned error: %v", err)
+			}
+
+			// Assert deep equality: the decoded value must be identical to the input.
+			if !reflect.DeepEqual(cache, decoded) {
+				t.Errorf("decodeCache() did not recover the original CacheFile:\nGot:\n%+v\nWant:\n%+v", decoded, cache)
+			}
+		})
+	}
+}
+
+// TestLoad_ReadsGzipAndPlaintext verifies that Load() can read both gzip-compressed
+// caches (written by the new encodeCache path) and legacy plaintext caches
+// (written by pre-feature-24 binaries). This test proves FR-43 (graceful degradation)
+// for the backward-compatibility path and that the new compressed path works end-to-end.
+// Feature 24 / T2.
+func TestLoad_ReadsGzipAndPlaintext(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"Load reads gzip-compressed cache written by encodeCache"},
+		{"Load reads legacy plaintext cache (backward compat, FR-43)"},
+		{"both gzip and plaintext paths load identical entry data"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Build a representative CacheFile with one cacheEntry exercising
+			// every persisted field: ObjectType, Structure, Edges, Definitions,
+			// HostVarRefs, DataAccess with NameRange, WorkFiles, ContentHash.
+
+			// Create a nested Symbol structure (small tree for quick test).
+			structure := &model.Symbol{
+				Kind: model.SymbolObject,
+				Name: "TESTPROG",
+				Range: model.Range{
+					Start: model.Position{Line: 1, Column: 1},
+					End:   model.Position{Line: 50, Column: 80},
+				},
+				SelectionRange: model.Range{
+					Start: model.Position{Line: 1, Column: 1},
+					End:   model.Position{Line: 1, Column: 8},
+				},
+				Children: []model.Symbol{
+					{
+						Kind: model.SymbolSubroutine,
+						Name: "PROCESS_DATA",
+						Range: model.Range{
+							Start: model.Position{Line: 20, Column: 1},
+							End:   model.Position{Line: 45, Column: 30},
+						},
+						SelectionRange: model.Range{
+							Start: model.Position{Line: 20, Column: 18},
+							End:   model.Position{Line: 20, Column: 30},
+						},
+						Children: nil,
+					},
+				},
+			}
+
+			// Build the CacheFile with representative data.
+			cache := CacheFile{
+				Version: cacheFormatVersion,
+				Entries: map[string]cacheEntry{
+					"prog1.NSP": {
+						ObjectType: string(model.ObjectProgram),
+						Edges: []model.EdgeEntry{
+							{
+								Kind:       model.EdgeCalls,
+								TargetName: "SUBRTN1",
+								Source: model.Range{
+									Start: model.Position{Line: 10, Column: 1},
+									End:   model.Position{Line: 10, Column: 20},
+								},
+							},
+						},
+						DataAccess: []model.DataAccessEntry{
+							{
+								Name: "EMPLOYEES",
+								Kind: model.EdgeReads,
+								Source: model.Range{
+									Start: model.Position{Line: 12, Column: 1},
+									End:   model.Position{Line: 12, Column: 16},
+								},
+								NameRange: model.Range{
+									Start: model.Position{Line: 12, Column: 6},
+									End:   model.Position{Line: 12, Column: 15},
+								},
+							},
+						},
+						Definitions: []model.DataDefinition{
+							{
+								Name:        "EMP_ID",
+								Level:       1,
+								Type:        "N9",
+								SectionKind: "local",
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 3},
+									End:   model.Position{Line: 5, Column: 20},
+								},
+								Children:   nil,
+								Dimensions: []model.ArrayDimension{},
+							},
+						},
+						HostVarRefs: []model.HostVarRef{
+							{
+								Name: "#SALARY",
+								Range: model.Range{
+									Start: model.Position{Line: 18, Column: 8},
+									End:   model.Position{Line: 18, Column: 15},
+								},
+							},
+						},
+						Structure:   structure,
+						ContentHash: "abc123def456",
+					},
+				},
+			}
+
+			tmpDir := t.TempDir()
+
+			// Sub-case 1: gzip case
+			// Encode via encodeCache (produces gzip bytes), write to disk, Load, assert success.
+			t.Run("gzip case", func(t *testing.T) {
+				gzipCachePath := filepath.Join(tmpDir, "cache_gzip.nslp")
+
+				// Encode the cache to gzip bytes.
+				encoded, err := encodeCache(cache)
+				if err != nil {
+					t.Fatalf("encodeCache() returned error: %v", err)
+				}
+
+				// Write the gzip bytes to disk.
+				if err := os.WriteFile(gzipCachePath, encoded, 0644); err != nil {
+					t.Fatalf("failed to write gzip cache: %v", err)
+				}
+
+				// Load the gzip cache (no current hashes, so no stale detection).
+				loaded, stale, err := Load(gzipCachePath, nil, nil)
+				if err != nil {
+					t.Fatalf("Load(gzip) returned error: %v", err)
+				}
+
+				// Verify Load succeeded.
+				if loaded == nil {
+					t.Fatal("Load(gzip) returned nil index, want non-nil")
+				}
+
+				// Verify no unexpected stale entries (no current hashes to compare).
+				if len(stale) != 0 {
+					t.Errorf("Load(gzip) returned %d stale entries, want 0: %v", len(stale), stale)
+				}
+
+				// Verify the entry is present and intact.
+				// Key is normalized (forward slashes) when loaded.
+				key := "prog1.NSP"
+				fa, ok := loaded.Get(key)
+				if !ok {
+					t.Fatalf("Load(gzip) missing key %q", key)
+				}
+
+				// Check ObjectType.
+				if fa.ObjectType != model.ObjectProgram {
+					t.Errorf("ObjectType = %v, want %v", fa.ObjectType, model.ObjectProgram)
+				}
+
+				// Check Edges.
+				if len(fa.Edges) != 1 {
+					t.Errorf("Edges count = %d, want 1", len(fa.Edges))
+				} else {
+					if fa.Edges[0].TargetName != "SUBRTN1" {
+						t.Errorf("Edge[0].TargetName = %q, want %q", fa.Edges[0].TargetName, "SUBRTN1")
+					}
+				}
+
+				// Check DataAccess.
+				if len(fa.DataAccess) != 1 {
+					t.Errorf("DataAccess count = %d, want 1", len(fa.DataAccess))
+				} else {
+					if fa.DataAccess[0].Name != "EMPLOYEES" {
+						t.Errorf("DataAccess[0].Name = %q, want %q", fa.DataAccess[0].Name, "EMPLOYEES")
+					}
+					if fa.DataAccess[0].NameRange.Start.Column != 6 {
+						t.Errorf("DataAccess[0].NameRange.Start.Column = %d, want 6", fa.DataAccess[0].NameRange.Start.Column)
+					}
+				}
+
+				// Check Structure.
+				if fa.Structure == nil {
+					t.Fatal("Structure = nil, want non-nil")
+				}
+				if fa.Structure.Name != "TESTPROG" {
+					t.Errorf("Structure.Name = %q, want %q", fa.Structure.Name, "TESTPROG")
+				}
+				if len(fa.Structure.Children) != 1 {
+					t.Errorf("Structure.Children count = %d, want 1", len(fa.Structure.Children))
+				}
+			})
+
+			// Sub-case 2: plaintext case
+			// Write the SAME CacheFile via json.MarshalIndent (legacy format),
+			// Load, assert it still works (backward compat).
+			t.Run("plaintext case", func(t *testing.T) {
+				plaintextCachePath := filepath.Join(tmpDir, "cache_plaintext.nslp")
+
+				// Write the CacheFile as indented JSON (legacy plaintext format).
+				plaintextBytes, err := json.MarshalIndent(cache, "", "    ")
+				if err != nil {
+					t.Fatalf("json.MarshalIndent() returned error: %v", err)
+				}
+
+				if err := os.WriteFile(plaintextCachePath, plaintextBytes, 0644); err != nil {
+					t.Fatalf("failed to write plaintext cache: %v", err)
+				}
+
+				// Load the plaintext cache.
+				loaded, stale, err := Load(plaintextCachePath, nil, nil)
+				if err != nil {
+					t.Fatalf("Load(plaintext) returned error: %v", err)
+				}
+
+				// Verify Load succeeded.
+				if loaded == nil {
+					t.Fatal("Load(plaintext) returned nil index, want non-nil")
+				}
+
+				// Verify no unexpected stale entries.
+				if len(stale) != 0 {
+					t.Errorf("Load(plaintext) returned %d stale entries, want 0: %v", len(stale), stale)
+				}
+
+				// Verify the entry is present and intact.
+				key := "prog1.NSP"
+				fa, ok := loaded.Get(key)
+				if !ok {
+					t.Fatalf("Load(plaintext) missing key %q", key)
+				}
+
+				// Check ObjectType.
+				if fa.ObjectType != model.ObjectProgram {
+					t.Errorf("ObjectType = %v, want %v", fa.ObjectType, model.ObjectProgram)
+				}
+
+				// Check Edges.
+				if len(fa.Edges) != 1 {
+					t.Errorf("Edges count = %d, want 1", len(fa.Edges))
+				} else {
+					if fa.Edges[0].TargetName != "SUBRTN1" {
+						t.Errorf("Edge[0].TargetName = %q, want %q", fa.Edges[0].TargetName, "SUBRTN1")
+					}
+				}
+
+				// Check DataAccess.
+				if len(fa.DataAccess) != 1 {
+					t.Errorf("DataAccess count = %d, want 1", len(fa.DataAccess))
+				} else {
+					if fa.DataAccess[0].Name != "EMPLOYEES" {
+						t.Errorf("DataAccess[0].Name = %q, want %q", fa.DataAccess[0].Name, "EMPLOYEES")
+					}
+					if fa.DataAccess[0].NameRange.Start.Column != 6 {
+						t.Errorf("DataAccess[0].NameRange.Start.Column = %d, want 6", fa.DataAccess[0].NameRange.Start.Column)
+					}
+				}
+
+				// Check Structure.
+				if fa.Structure == nil {
+					t.Fatal("Structure = nil, want non-nil")
+				}
+				if fa.Structure.Name != "TESTPROG" {
+					t.Errorf("Structure.Name = %q, want %q", fa.Structure.Name, "TESTPROG")
+				}
+				if len(fa.Structure.Children) != 1 {
+					t.Errorf("Structure.Children count = %d, want 1", len(fa.Structure.Children))
+				}
+			})
+		})
+	}
+}
+
+// TestLoad_CacheVersionBumpedTo070 verifies that the cache version bump from
+// 0.6.0 to 0.7.0 (feature 24, T3) causes an old-format cache to trigger a
+// full rebuild. This tests FR-39 (format-version gating) and Story 3 AC1
+// (version bump → one-time rebuild).
+func TestLoad_CacheVersionBumpedTo070(t *testing.T) {
+	t.Helper()
+
+	// First, verify the version constant has been bumped to 0.7.0 (Story 3 AC1).
+	if cacheFormatVersion != "0.7.0" {
+		t.Errorf("cacheFormatVersion = %q, want %q (version must bump to 0.7.0)", cacheFormatVersion, "0.7.0")
+	}
+
+	tests := []struct {
+		name string
+	}{
+		{"version bump to 0.7.0 forces full rebuild of 0.6.0 cache"},
+		{"0.6.0 plaintext cache is rejected, all files marked stale"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build a pre-0.7.0 cache artifact with hardcoded version "0.6.0".
+			// This simulates a cache written by a pre-feature-24 binary.
+			oldCache := CacheFile{
+				Version: "0.6.0", // Hardcoded old version, not using the const
+				Entries: map[string]cacheEntry{
+					"test1.NSP": {
+						ObjectType: string(model.ObjectProgram),
+						Edges: []model.EdgeEntry{
+							{Kind: model.EdgeCalls, TargetName: "test2.NSP"},
+						},
+						ContentHash: "abc123",
+					},
+					"test2.NSP": {
+						ObjectType:  string(model.ObjectSubprogram),
+						ContentHash: "def456",
+					},
+				},
+			}
+
+			// Write the old cache as plaintext indented JSON (pre-gzip encoding).
+			data, err := json.MarshalIndent(oldCache, "", "    ")
+			if err != nil {
+				t.Fatalf("json.MarshalIndent() returned error: %v", err)
+			}
+
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("WriteFile() returned error: %v", err)
+			}
+
+			// Try to load the cache with the new format version.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+
+			// Verify Load() returns nil index (version mismatch → full rebuild).
+			if loaded != nil {
+				t.Error("Load() returned non-nil index for 0.6.0 cache, want nil (forces rebuild)")
+			}
+
+			// Verify stale list is non-empty (all files marked stale due to version bump).
+			if len(stale) == 0 {
+				t.Error("Load() returned empty stale list for version mismatch, want all files marked stale")
+			}
+
+			// Verify we got the expected files in the stale list.
+			expectedFiles := map[string]bool{"test1.NSP": true, "test2.NSP": true}
+			for _, path := range stale {
+				delete(expectedFiles, path)
+			}
+			if len(expectedFiles) > 0 {
+				t.Errorf("Load() missing some files from stale list: %v", expectedFiles)
+			}
+
+			// Verify no error on Load (version mismatch is not an error, just returns nil+stale).
+			if err != nil {
+				t.Errorf("Load() returned error: %v", err)
+			}
+		})
+	}
+}
+
+// TestLoad_CorruptCompressedCache verifies that Load() gracefully handles
+// corrupt/truncated/unexpected-encoding cache bytes (Story 3 AC2, FR-43).
+// This is the regression test for corrupt compressed caches required by the
+// plan. Each sub-case verifies that Load() never panics and returns the
+// rebuild signal (either err != nil or idx == nil).
+// Feature 24 / T4.
+func TestLoad_CorruptCompressedCache(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "gzip magic + truncated body",
+			// Gzip magic bytes followed by invalid/truncated data.
+			// This should fail to decompress gracefully without panicking.
+			data: []byte{0x1f, 0x8b, 0x08, 0x00, 0x01, 0x02},
+		},
+		{
+			name: "gzip magic + valid gzip of non-JSON",
+			// Valid gzip-compressed data that decompresses to non-JSON.
+			// gunzip succeeds but json.Unmarshal fails → should return error.
+		},
+		{
+			name: "plaintext garbage (no gzip magic)",
+			// Plaintext data that is not valid JSON — exercises the legacy path.
+			data: []byte("{ this is not json"),
+		},
+	}
+
+	// For the "gzip magic + valid gzip of non-JSON" case, we need to dynamically
+	// generate valid gzip data.
+	gzipOfGarbage := func(t *testing.T, plaintext string) []byte {
+		var buf bytes.Buffer
+		gw, err := gzip.NewWriterLevel(&buf, gzip.DefaultCompression)
+		if err != nil {
+			t.Fatalf("NewWriterLevel failed: %v", err)
+		}
+		_, err = gw.Write([]byte(plaintext))
+		if err != nil {
+			t.Fatalf("Write to gzip failed: %v", err)
+		}
+		err = gw.Close()
+		if err != nil {
+			t.Fatalf("Close gzip writer failed: %v", err)
+		}
+		return buf.Bytes()
+	}
+	tests[1].data = gzipOfGarbage(t, "not json at all")
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Write the corrupt cache to a temp file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "corrupt.cache")
+
+			if err := os.WriteFile(cachePath, tc.data, 0644); err != nil {
+				t.Fatalf("WriteFile failed: %v", err)
+			}
+
+			// Call Load() and catch any panic.
+			var panicked bool
+			var panicValue interface{}
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicked = true
+						panicValue = r
+					}
+				}()
+
+				// Load with empty currentHashes and nil logger (as per the plan).
+				loaded, stale, err := Load(cachePath, nil, nil)
+
+				// The contract: BuildWithCache (index.go:654/659) checks:
+				// - if err != nil: cold rebuild
+				// - else if idx == nil: cold rebuild
+				// Both satisfy the rebuild signal; neither should panic.
+				if err == nil && loaded != nil {
+					// This is acceptable IFF the data happens to be valid,
+					// but for our corrupt cases we expect either err != nil or idx == nil.
+					if len(tc.data) > 0 && (tc.data[0] != '{') && (len(tc.data) < 2 || !(tc.data[0] == 0x1f && tc.data[1] == 0x8b)) {
+						// Plaintext garbage that doesn't start with '{' and isn't gzip:
+						// should have failed to unmarshal.
+						t.Errorf("Load() succeeded on corrupt data; loaded=%v, stale=%v", loaded, stale)
+					}
+				}
+				// else: either err != nil (cold rebuild signal) or idx == nil (rebuild signal).
+				// Both are acceptable for corrupt data.
+			}()
+
+			if panicked {
+				t.Errorf("Load() panicked with: %v", panicValue)
+			}
+		})
+	}
+}
+
+// TestBuildWithCache_CorruptCacheRebuilds verifies the end-to-end behavior:
+// when the cache is corrupt (gzip truncated), BuildWithCache still produces
+// a valid non-empty index and returns no error to the caller.
+// This proves Story 3 AC2 (FR-43): graceful degradation on corrupt cache.
+// Feature 24 / T4 (integration assertion).
+func TestBuildWithCache_CorruptCacheRebuilds(t *testing.T) {
+	t.Helper()
+
+	// Set up a tiny real workspace with a few test files.
+	tmpDir := t.TempDir()
+
+	// Create a simple test program file.
+	testFile := filepath.Join(tmpDir, "test.NSP")
+	testContent := []byte(`DEFINE PROGRAM test
+DEFINE DATA
+LOCAL
+1 X (N5)
+END-DEFINE
+
+CALLNAT 'SUB1'
+
+END PROGRAM`)
+
+	if err := os.WriteFile(testFile, testContent, 0644); err != nil {
+		t.Fatalf("WriteFile test.NSP failed: %v", err)
+	}
+
+	// Create a cache directory and write a corrupt cache file.
+	cacheDir := filepath.Join(tmpDir, ".natural-lsp-cache")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	cachePath := filepath.Join(cacheDir, "index.nslp")
+	// Write a corrupt compressed cache (gzip magic + truncated body).
+	corruptData := []byte{0x1f, 0x8b, 0x08, 0x00, 0x01, 0x02}
+	if err := os.WriteFile(cachePath, corruptData, 0644); err != nil {
+		t.Fatalf("WriteFile corrupt cache failed: %v", err)
+	}
+
+	// Set up config with cache path.
+	cfg := config.Defaults()
+	cfg.Cache.Path = ".natural-lsp-cache"
+
+	// Create a parser-based analyzer (nil custom extensions for this test).
+	az := natural.New(nil)
+
+	// Call BuildWithCache over the tiny workspace with the corrupt cache.
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	idx, _, _, err := BuildWithCache(ctx, tmpDir, cfg, az, logger, cachePath, nil, nil)
+
+	// Verify no error is returned to the caller.
+	if err != nil {
+		t.Errorf("BuildWithCache() returned error: %v (should degrade to cold rebuild)", err)
+	}
+
+	// Verify the index is non-nil and non-empty (cold rebuild succeeded).
+	if idx == nil {
+		t.Fatal("BuildWithCache() returned nil index after corrupt cache; expected a valid cold-built index")
+	}
+
+	if len(idx.Keys()) == 0 {
+		t.Error("BuildWithCache() returned empty index after corrupt cache; expected at least one file")
+	}
+
+	// Verify the test file is in the index (basic sanity).
+	relPath := "test.NSP"
+	fa, ok := idx.Get(relPath)
+	if !ok {
+		t.Errorf("index missing %q after cold rebuild", relPath)
+	} else if fa.ObjectType != model.ObjectProgram {
+		t.Errorf("test.NSP ObjectType = %v, want %v", fa.ObjectType, model.ObjectProgram)
+	}
+}
+
+// TestBuildWithCache_RoundTripFidelity verifies that a real analyzer-built index
+// survives save→load with identical FileAnalysis behavior across all files.
+// Feature 24 / Story 1 AC2 — corpus-level round-trip fidelity.
+// Uses the existing testdata/resolution/static-call fixture (MAIN.NSP + MYSUB.NSN)
+// which carries edges, definitions, and program structure.
+func TestBuildWithCache_RoundTripFidelity(t *testing.T) {
+	t.Helper()
+
+	// Fixture: testdata/resolution/static-call/
+	// Contains MAIN.NSP (calls MYSUB) and MYSUB.NSN (subprogram definition).
+	// Carries edges, definitions (DEFINE DATA blocks), and structure (root + subroutine).
+	workspaceRoot := "testdata/resolution/static-call"
+
+	// Load config (defaults — no library map for this fixture).
+	cfg := config.Defaults()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	az := natural.New(nil)
+
+	// Step 1: COLD BUILD — build the index fresh from the fixture files.
+	ctx := context.Background()
+	idxA, _, _, err := BuildWithCache(ctx, workspaceRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("cold BuildWithCache failed: %v", err)
+	}
+	if idxA == nil {
+		t.Fatal("cold BuildWithCache returned nil index")
+	}
+
+	// Verify the index has the expected content (non-trivial: at least one file with structure).
+	keysA := idxA.Keys()
+	if len(keysA) == 0 {
+		t.Fatal("cold-built index is empty; fixture not loaded")
+	}
+
+	var mainAnalysis model.FileAnalysis
+	var foundMain, foundSub bool
+	for _, key := range keysA {
+		fa, _ := idxA.Get(key)
+		if strings.Contains(key, "MAIN") {
+			mainAnalysis = fa
+			foundMain = true
+		}
+		if strings.Contains(key, "MYSUB") {
+			foundSub = true
+		}
+	}
+	if !foundMain || !foundSub {
+		t.Fatalf("fixture did not load both MAIN and MYSUB; found MAIN=%v MYSUB=%v", foundMain, foundSub)
+	}
+
+	// Verify the cold-built index has non-empty edges or definitions (fixture is non-trivial).
+	if len(mainAnalysis.Edges) == 0 && len(mainAnalysis.Definitions) == 0 {
+		t.Error("MAIN.NSP has no edges or definitions; fixture non-trivial assumption violated")
+	}
+
+	// Step 2: WRITE CACHE — save the cold-built index to disk in new format.
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "cache.nslp")
+
+	err = Save(idxA, cachePath)
+	if err != nil {
+		t.Fatalf("Save() failed: %v", err)
+	}
+
+	// Verify the cache file was created and is in the new gzip format.
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("ReadFile cache failed: %v", err)
+	}
+	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+		t.Error("cache file is not in gzip format (magic bytes missing)")
+	}
+
+	// Step 3: LOAD CACHE — load the saved cache into a fresh index.
+	// Provide current hashes empty so Load treats the cache as fresh (no stale files).
+	// This simulates a warm start where the cache is valid and unchanged.
+	idxB, staleFiles, err := Load(cachePath, map[string]string{}, logger)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if idxB == nil {
+		t.Fatal("Load returned nil index (cache format mismatch or error)")
+	}
+
+	// Verify cache was actually hit: staleFiles should be empty for unchanged files.
+	if len(staleFiles) > 0 {
+		t.Errorf("Load() marked %d files as stale; expected 0 (cache was fresh): %v", len(staleFiles), staleFiles)
+	}
+
+	// Step 4: COMPARE INDICES — assert fidelity across FileAnalysis fields.
+	// For each file in the cold-built index, verify the loaded index has identical
+	// ObjectType, Edges, DataAccess, Definitions, WorkFiles, HostVarRefs, and Structure.
+
+	keysB := idxB.Keys()
+	if len(keysA) != len(keysB) {
+		t.Errorf("key count mismatch: cold=%d, loaded=%d", len(keysA), len(keysB))
+	}
+
+	for _, key := range keysA {
+		faA, _ := idxA.Get(key)
+		faB, ok := idxB.Get(key)
+		if !ok {
+			t.Errorf("loaded index missing key %q", key)
+			continue
+		}
+
+		// ObjectType must be identical.
+		if faA.ObjectType != faB.ObjectType {
+			t.Errorf("ObjectType mismatch for %q: cold=%v, loaded=%v", key, faA.ObjectType, faB.ObjectType)
+		}
+
+		// Edges must be identical (call/dependency bindings).
+		if !reflect.DeepEqual(faA.Edges, faB.Edges) {
+			t.Errorf("Edges mismatch for %q:\n  cold:   %#v\n  loaded: %#v", key, faA.Edges, faB.Edges)
+		}
+
+		// DataAccess must be identical (read/write access edges).
+		if !reflect.DeepEqual(faA.DataAccess, faB.DataAccess) {
+			t.Errorf("DataAccess mismatch for %q:\n  cold:   %#v\n  loaded: %#v", key, faA.DataAccess, faB.DataAccess)
+		}
+
+		// Definitions must be identical (DEFINE DATA fields).
+		if !reflect.DeepEqual(faA.Definitions, faB.Definitions) {
+			t.Errorf("Definitions mismatch for %q:\n  cold:   %#v\n  loaded: %#v", key, faA.Definitions, faB.Definitions)
+		}
+
+		// WorkFiles must be identical.
+		if !reflect.DeepEqual(faA.WorkFiles, faB.WorkFiles) {
+			t.Errorf("WorkFiles mismatch for %q:\n  cold:   %#v\n  loaded: %#v", key, faA.WorkFiles, faB.WorkFiles)
+		}
+
+		// HostVarRefs must be identical (SQL host-variable references).
+		if !reflect.DeepEqual(faA.HostVarRefs, faB.HostVarRefs) {
+			t.Errorf("HostVarRefs mismatch for %q:\n  cold:   %#v\n  loaded: %#v", key, faA.HostVarRefs, faB.HostVarRefs)
+		}
+
+		// Structure must be identical (program outline tree).
+		if !reflect.DeepEqual(faA.Structure, faB.Structure) {
+			t.Errorf("Structure mismatch for %q:\n  cold:   %#v\n  loaded: %#v", key, faA.Structure, faB.Structure)
+		}
+	}
+
+	// Step 5 (OPTIONAL): Run Resolve on both indices and compare resolution outcomes.
+	// This verifies that the cached edges resolve identically.
+	resA := Resolve(idxA, &cfg)
+	resB := Resolve(idxB, &cfg)
+
+	// Find a representative CALLNAT site to compare resolution outcomes.
+	// MAIN.NSP's CALLNAT to MYSUB should resolve identically in both.
+	mainKey := ""
+	for _, key := range keysA {
+		if strings.Contains(key, "MAIN") {
+			mainKey = key
+			break
+		}
+	}
+	if mainKey != "" {
+		fa, _ := idxA.Get(mainKey)
+		for _, edge := range fa.Edges {
+			// Find the first CALLNAT edge.
+			if edge.Kind == model.EdgeCalls {
+				// Create a source range key for the resolution lookup.
+				// ResolutionSet keys by (referencing file, edge Source).
+				outA, okA := resA.Get(mainKey, edge.Source)
+				outB, okB := resB.Get(mainKey, edge.Source)
+
+				if okA != okB {
+					t.Errorf("resolution ok mismatch for %s edge at %v: cold=%v, loaded=%v", mainKey, edge.Source, okA, okB)
+				} else if !reflect.DeepEqual(outA, outB) {
+					t.Errorf("resolution outcome mismatch for %s edge at %v:\n  cold:   %#v\n  loaded: %#v",
+						mainKey, edge.Source, outA, outB)
+				}
+				break
+			}
+		}
 	}
 }

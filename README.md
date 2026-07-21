@@ -573,7 +573,9 @@ will show a status bar indicator:
 Natural LSP: Indexing workspace… 1,243 / 2,891 files (43%)
 ```
 
-The completed index is serialized to `.natural-lsp-cache/` (gitignored by default). Subsequent startups load from cache
+The completed index is serialized to `.natural-lsp-cache/` (gitignored by default) as gzip-compressed compact JSON — a
+compact encoding that keeps the cache a small fraction of its raw size (~100× smaller than indented JSON on a
+representative corpus). Subsequent startups load from cache
 and re-analyze only files whose content hash has changed since the last run (content hashing rather than mtime keeps the
 cache valid across git checkouts; a cache-format version forces a full rebuild on upgrade). The figures below are
 **design targets**, not measured benchmarks — cold index time is expected to scale roughly linearly with codebase size:

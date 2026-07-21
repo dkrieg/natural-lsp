@@ -5,9 +5,12 @@
 package workspace
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,7 +19,7 @@ import (
 	"github.com/dkrieg/natural-lsp/internal/paths"
 )
 
-const cacheFormatVersion = "0.6.0"
+const cacheFormatVersion = "0.7.0"
 
 // CacheFile represents the on-disk cache format.
 type CacheFile struct {
@@ -75,9 +78,9 @@ func saveIndex(idx *Index, root, cachePath string) error {
 	})
 
 	cache := CacheFile{Version: cacheFormatVersion, Entries: entries}
-	data, err := json.MarshalIndent(cache, "", "    ")
+	data, err := encodeCache(cache)
 	if err != nil {
-		return fmt.Errorf("failed to marshal cache: %w", err)
+		return fmt.Errorf("failed to encode cache: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
@@ -119,9 +122,9 @@ func Save(idx *Index, path string) error {
 		Entries: entries,
 	}
 
-	data, err := json.MarshalIndent(cache, "", "    ")
+	data, err := encodeCache(cache)
 	if err != nil {
-		return fmt.Errorf("failed to marshal cache: %w", err)
+		return fmt.Errorf("failed to encode cache: %w", err)
 	}
 
 	err = os.WriteFile(path, data, 0644)
@@ -142,10 +145,9 @@ func Load(path string, currentHashes map[string]string, logger *slog.Logger) (*I
 		return nil, nil, fmt.Errorf("failed to read cache file: %w", err)
 	}
 
-	var cache CacheFile
-	err = json.Unmarshal(data, &cache)
+	cache, err := decodeCache(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal cache: %w", err)
+		return nil, nil, fmt.Errorf("failed to decode cache: %w", err)
 	}
 
 	// Check version mismatch - return nil index and all files as stale
@@ -199,4 +201,73 @@ func Load(path string, currentHashes map[string]string, logger *slog.Logger) (*I
 	}
 
 	return idx, stale, nil
+}
+
+// encodeCache encodes a CacheFile as compact (non-indented) JSON and compresses
+// it with gzip (BestCompression). It returns the gzip-compressed bytes suitable
+// for writing to disk, or an error if encoding or compression fails.
+// Feature 24 / T1.
+func encodeCache(cache CacheFile) ([]byte, error) {
+	// Marshal to compact JSON (not indented)
+	jsonBytes, err := json.Marshal(cache)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal cache: %w", err)
+	}
+
+	// Compress with gzip at BestCompression
+	var buf bytes.Buffer
+	gw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gzip writer: %w", err)
+	}
+
+	_, err = gw.Write(jsonBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write to gzip: %w", err)
+	}
+
+	// Close the gzip writer to flush
+	err = gw.Close()
+	if err != nil {
+		return nil, fmt.Errorf("failed to close gzip writer: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeCache decodes a byte stream produced by encodeCache. It detects gzip
+// magic bytes (0x1f 0x8b) and gunzips if present; otherwise it treats the data
+// as plaintext JSON (for backward compatibility with pre-gzip caches).
+// It returns the decoded CacheFile or an error if decoding fails.
+// Feature 24 / T1.
+func decodeCache(data []byte) (CacheFile, error) {
+	var jsonBytes []byte
+
+	// Check for gzip magic bytes
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		// Decompress gzip
+		gr, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return CacheFile{}, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer gr.Close()
+
+		var err2 error
+		jsonBytes, err2 = io.ReadAll(gr)
+		if err2 != nil {
+			return CacheFile{}, fmt.Errorf("failed to read gzip data: %w", err2)
+		}
+	} else {
+		// Plain JSON
+		jsonBytes = data
+	}
+
+	// Unmarshal JSON
+	var cache CacheFile
+	err := json.Unmarshal(jsonBytes, &cache)
+	if err != nil {
+		return CacheFile{}, fmt.Errorf("failed to unmarshal cache: %w", err)
+	}
+
+	return cache, nil
 }
