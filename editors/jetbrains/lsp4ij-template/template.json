@@ -8,7 +8,6 @@
   "fileTypeMappings": [
     {
       "fileType": {
-        "name": "Natural",
         "patterns": [
           "*.NSP",
           "*.NSN",
