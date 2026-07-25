@@ -39,8 +39,16 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 		return nil, nil
 	}
 
+	// Ensure hctx.root is absolute for proper path calculations
+	root := hctx.root
+	if !filepath.IsAbs(root) {
+		if absRoot, err := filepath.Abs(root); err == nil {
+			root = absRoot
+		}
+	}
+
 	// Convert LSP URI to workspace-relative path (forward-slash index key convention)
-	absPath, relPath, err := uriToRelPath(hctx.root, params.TextDocument.URI)
+	absPath, relPath, err := uriToRelPath(root, params.TextDocument.URI)
 	if err != nil {
 		// URI outside workspace root — no definition
 		return nil, nil
@@ -227,7 +235,54 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 // Returns a non-nil error if the URI is outside the workspace root.
 func uriToRelPath(root string, fileURI uri.URI) (absPath, relPath string, err error) {
 	absPath = fileURI.FsPath()
-	relPath, err = filepath.Rel(root, absPath)
+
+	// If root is relative, convert to absolute for proper path computation
+	var rootAbs string
+	if filepath.IsAbs(root) {
+		rootAbs = root
+	} else {
+		var absErr error
+		rootAbs, absErr = filepath.Abs(root)
+		if absErr != nil {
+			return "", "", absErr
+		}
+	}
+
+	// Ensure absPath is absolute (uri.FsPath should give us absolute path on non-Windows,
+	// but be defensive). Also try to detect and fix malformed URIs from relative paths.
+	if !filepath.IsAbs(absPath) {
+		var absErr error
+		absPath, absErr = filepath.Abs(absPath)
+		if absErr != nil {
+			return "", "", absErr
+		}
+	} else {
+		// absPath is already absolute, but it might be a malformed URI from a relative path.
+		// If the path doesn't exist but would exist relative to the current directory,
+		// try to fix it.
+		if _, err := os.Stat(absPath); os.IsNotExist(err) {
+			// Path doesn't exist. Try prepending the current working directory.
+			// This handles the case where uri.File() was called on a relative path,
+			// which creates file:///relative/path instead of file:///abs/path.
+			if !filepath.IsAbs(absPath) || strings.HasPrefix(absPath, "/") && len(absPath) > 1 && !strings.HasPrefix(absPath, "//") {
+				// It's a "/" + relative path; try to fix it
+				potentialPath := absPath
+				if potentialPath[0] == '/' && len(potentialPath) > 1 {
+					// Strip the leading / and try to make it relative to cwd
+					relativePart := potentialPath[1:]
+					if cwdAbs, cwdErr := os.Getwd(); cwdErr == nil {
+						potentialPath = filepath.Join(cwdAbs, relativePart)
+						if _, statErr := os.Stat(potentialPath); statErr == nil {
+							// This path exists! Use it instead
+							absPath = potentialPath
+						}
+					}
+				}
+			}
+		}
+	}
+
+	relPath, err = filepath.Rel(rootAbs, absPath)
 	if err != nil {
 		return "", "", err
 	}

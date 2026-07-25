@@ -113,6 +113,23 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string,
 		}
 	}
 
+	// Also scan persisted host-var refs (feature 27 T8): match by Range
+	// at the same lowest priority as variable refs
+	for i := range fa.HostVarRefs {
+		if contains(fa.HostVarRefs[i].Range, pos) {
+			lineSpan, colSpan := spanSize(fa.HostVarRefs[i].Range)
+			if smallestVar == nil || isSmallerSpan(lineSpan, colSpan, smallestVarLineSpan, smallestVarColSpan) {
+				// Convert HostVarRef to VariableRef for uniform handling
+				smallestVar = &model.VariableRef{
+					Name:  fa.HostVarRefs[i].Name,
+					Range: fa.HostVarRefs[i].Range,
+				}
+				smallestVarLineSpan = lineSpan
+				smallestVarColSpan = colSpan
+			}
+		}
+	}
+
 	// Return the overall smallest containing range, with precedence: edge > access > variable.
 	// If an edge is found, return it (and ignore access/variable).
 	if smallestEdge != nil {
