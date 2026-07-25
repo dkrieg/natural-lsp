@@ -102,7 +102,24 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 
 	// Find the edge (data-access, or variable ref) at the cursor position
 	// Pass content and analyzer for on-demand variable ref extraction
-	edge, _, varRef := findCursorTarget(sourceFA, cursorPos, string(sourceContent), hctx.az)
+	edge, dataAccess, varRef := findCursorTarget(sourceFA, cursorPos, string(sourceContent), hctx.az)
+
+	// Handle DDM data-access case (feature 27 T9): resolve SQL-sourced DDM table names
+	if dataAccess != nil {
+		// Acquire read lock to read idx safely
+		hctx.idxResMu.RLock()
+		idx := hctx.idx
+		hctx.idxResMu.RUnlock()
+
+		if idx != nil {
+			loc := provideDDMDefinition(hctx.root, relPath, dataAccess, idx, &hctx.cfg, hctx.posEncoding)
+			if loc != nil {
+				return []protocol.Location{*loc}, nil
+			}
+		}
+		// Unresolved DDM; return empty (FR-17)
+		return nil, nil
+	}
 
 	// Handle variable reference case (feature 27 T3)
 	if varRef != nil {
@@ -581,4 +598,50 @@ func findVariableDeclarationAtCursor(fa *model.FileAnalysis, pos model.Position)
 	}
 
 	return search(fa.Definitions)
+}
+
+// provideDDMDefinition resolves a DDM data-access entry to its .NSD definition.
+// It resolves the DDM name via idx.LookupByName and returns a Location pointing
+// to the DDM file's object root (Structure.SelectionRange).
+// Returns nil if the DDM cannot be resolved (FR-17).
+// Feature 27, T9.
+func provideDDMDefinition(
+	root string,
+	referencingRelPath string,
+	dataAccess *model.DataAccessEntry,
+	idx *workspace.Index,
+	cfg *config.Config,
+	enc protocol.PositionEncodingKind,
+) *protocol.Location {
+	if dataAccess == nil || dataAccess.Name == "" {
+		return nil
+	}
+
+	// Look up the DDM name
+	// LookupByName returns all candidates matching the name and type
+	candidates := idx.LookupByName(dataAccess.Name, model.ObjectDDM, cfg)
+	if len(candidates) == 0 {
+		// DDM not found; return nil (FR-17)
+		return nil
+	}
+
+	// Use first candidate (flat namespace or library map resolved by LookupByName)
+	targetPath := candidates[0].Path
+
+	// Fetch the DDM file's analysis
+	ddmFA, ok := idx.Get(targetPath)
+	if !ok {
+		return nil
+	}
+
+	// Read the DDM file content for range conversion
+	ddmAbsPath := filepath.Join(root, targetPath)
+	ddmContent, err := os.ReadFile(ddmAbsPath)
+	if err != nil {
+		return nil
+	}
+
+	// Build the Location using definitionLocation helper
+	loc := definitionLocation(root, targetPath, ddmFA, string(ddmContent), enc)
+	return &loc
 }

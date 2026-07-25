@@ -195,13 +195,16 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 		targetName = edge.TargetName
 		targetType = resolution.Type
 	} else if dataAccess != nil {
-		// We found a data-access entry; treat it as a reference to a DDM/view
-		// For now, use the data-access name as the target
-		// DDM resolution is not yet implemented; matching is by name only.
-		targetPath = "" // TODO (future): resolve data-access to DDM path
+		// We found a data-access entry; resolve it to a DDM/view path (feature 27 T9)
+		// Resolve the DDM name via the steplib chain
+		candidates := idx.LookupByName(dataAccess.Name, model.ObjectDDM, &hctx.cfg)
+		if len(candidates) > 0 {
+			// Use the first candidate (LookupByName respects library map)
+			targetPath = candidates[0].Path
+		}
+		// If unresolved, targetPath remains "" and referenceSites will use name-based matching
 		targetName = dataAccess.Name
 		targetType = model.ObjectDDM
-		// Proceed with name-based matching (DDM resolution is future work)
 	} else {
 		// Should not reach here (all cases covered above)
 		return nil, nil
