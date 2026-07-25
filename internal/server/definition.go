@@ -8,8 +8,10 @@ import (
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
+	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/model"
 	"github.com/dkrieg/natural-lsp/internal/paths"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // provideDefinition handles the textDocument/definition request (feature 10, T7 + feature 27 T3).
@@ -96,8 +98,22 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 
 	// Handle variable reference case (feature 27 T3)
 	if varRef != nil {
+		// First try same-file resolution
 		locations := resolveVariableDefinition(varRef, &sourceFA, string(sourceContent), absPath, hctx.posEncoding)
-		return locations, nil
+		if len(locations) > 0 {
+			return locations, nil
+		}
+
+		// If not found in same file and we have an index, try cross-file USING resolution (feature 27 T7)
+		if idx != nil && len(sourceFA.DataAreaRefs) > 0 {
+			locations := resolveVariableDefinitionCrossFile(varRef, &sourceFA, relPath, idx, hctx.root, string(sourceContent), hctx.posEncoding, &hctx.cfg)
+			if len(locations) > 0 {
+				return locations, nil
+			}
+		}
+
+		// Not found anywhere; return empty (FR-17)
+		return nil, nil
 	}
 
 	// Handle variable declaration case (feature 27 T3, idempotent):
@@ -353,6 +369,88 @@ func resolveVariableDefinition(varRef *model.VariableRef, sourceFA *model.FileAn
 	})
 
 	return candidates
+}
+
+// resolveVariableDefinitionCrossFile resolves a variable via cross-file USING references.
+// It searches the source file's DataAreaRefs and attempts to resolve each USING reference
+// via the workspace resolver (workspace.ResolveDataAreaField), returning the field's location
+// in the resolved data-area object if found.
+// Returns nil if no USING reference resolves the variable, per FR-17.
+// Feature 27, T7.
+func resolveVariableDefinitionCrossFile(
+	varRef *model.VariableRef,
+	sourceFA *model.FileAnalysis,
+	referencingRelPath string,
+	idx *workspace.Index,
+	root string,
+	content string,
+	enc protocol.PositionEncodingKind,
+	cfg *config.Config,
+) []protocol.Location {
+	if idx == nil || cfg == nil || len(sourceFA.DataAreaRefs) == 0 {
+		return nil
+	}
+
+	// Try each USING reference in the source file's data-area refs
+	for _, dataAreaRef := range sourceFA.DataAreaRefs {
+		// Call the workspace resolver to find the field in the data area
+		fieldRange := workspace.ResolveDataAreaField(varRef.Name, dataAreaRef, idx, referencingRelPath, cfg)
+
+		// If the field was found, build a Location in the data-area object
+		if fieldRange.Start.Line > 0 || fieldRange.End.Line > 0 {
+			// Resolve the data-area object path for the Location URI
+			// ResolveDataAreaField returns the field's NameRange, but we need the data-area object path
+			// We'll look it up from the index using the dataAreaRef name
+			dataAreaPath := lookupDataAreaPath(dataAreaRef.Name, idx, referencingRelPath, cfg)
+			if dataAreaPath == "" {
+				// Couldn't locate data-area object; skip
+				continue
+			}
+
+			// Read the data-area object's content for position conversion
+			dataAreaAbsPath := filepath.Join(root, dataAreaPath)
+			dataAreaContent, err := os.ReadFile(dataAreaAbsPath)
+			if err != nil {
+				// Can't read data-area file; skip
+				continue
+			}
+
+			// Build a Location pointing to the field in the data-area object
+			loc := protocol.Location{
+				URI:   uri.File(dataAreaAbsPath),
+				Range: toProtocolRange(fieldRange, string(dataAreaContent), enc),
+			}
+			return []protocol.Location{loc}
+		}
+	}
+
+	return nil
+}
+
+// lookupDataAreaPath resolves a data-area object name to its workspace-relative path.
+// It tries all three data-area types (.NSL, .NSA, .NSG) and returns the path of the first
+// resolved candidate via the steplib chain, or empty string if not found.
+// Helper for resolveVariableDefinitionCrossFile (feature 27, T7).
+func lookupDataAreaPath(dataAreaName string, idx *workspace.Index, referencingRelPath string, cfg *config.Config) string {
+	// Try each data-area object type in order
+	candidates := idx.LookupByName(dataAreaName, model.ObjectLocalDataArea, cfg)
+	if len(candidates) == 0 {
+		candidates = idx.LookupByName(dataAreaName, model.ObjectParameterDataArea, cfg)
+	}
+	if len(candidates) == 0 {
+		candidates = idx.LookupByName(dataAreaName, model.ObjectGlobalDataArea, cfg)
+	}
+
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	// For now, return the first candidate (may need steplib chain resolution in future)
+	if len(candidates) > 0 {
+		return candidates[0].Path
+	}
+
+	return ""
 }
 
 // findDeclaration recursively searches a Definitions tree for declarations matching the given name.

@@ -1,0 +1,4 @@
+[resolution]
+[[resolution.library]]
+path = "."
+steplibs = ["SYSTEM"]

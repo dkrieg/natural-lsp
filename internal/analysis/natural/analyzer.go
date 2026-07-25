@@ -125,8 +125,13 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 		// with no prior entries to merge; just assign directly.
 		result.HostVarRefs = extractHostVarRefs(ast)
 
+		// Extract data-area references from USING clauses in DEFINE DATA sections.
+		// This is a new field with no prior entries to merge; just assign directly.
+		// Used for feature 27, T7 (cross-file field resolution via external data areas).
+		result.DataAreaRefs = extractDataAreaRefs(ast)
+
 		// Wire extractStructure into the analysis pipeline (Feature 09, Task 5).
-		// Call after all extractors (Edges, DataAccess, Definitions, WorkFiles, HostVarRefs)
+		// Call after all extractors (Edges, DataAccess, Definitions, WorkFiles, HostVarRefs, DataAreaRefs)
 		// and after all sorting is complete, so DataAccess slice is final.
 		result.Structure = extractStructure(path, ast, result.Definitions, result.DataAccess)
 	}

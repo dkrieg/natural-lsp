@@ -375,6 +375,13 @@ type FileAnalysis struct {
 	// persisted in the workspace cache (0.6.0+).
 	Structure *Symbol
 
+	// DataAreaRefs holds references to external data areas from USING clauses in DEFINE DATA sections.
+	// Each entry captures the data-area name, the section kind that carries the USING,
+	// and the source range of the name token. Used for cross-file field resolution (feature 27, T7).
+	// Populated by the analyzer's data-area reference extraction (feature 27, T7);
+	// persisted in the cache (0.8.0).
+	DataAreaRefs []DataAreaRef
+
 	// AST holds the parsed AST for this file. Populated by the parser
 	// backend when available; nil when the parser is not integrated.
 	AST any
@@ -432,4 +439,23 @@ type HostVarRef struct {
 type VariableRef struct {
 	Name  string
 	Range Range
+}
+
+// DataAreaRef represents a USING data-area reference from a DEFINE DATA section.
+// This captures the external data-area name from a LOCAL/PARAMETER/GLOBAL USING <name>
+// clause, enabling cross-file field resolution (feature 27, phase B, T7).
+//
+// Name is the normalized (upper-case) identifier of the data area (e.g., CUSTLDA).
+// SectionKind is the section keyword (local/parameter/global) that carries the USING reference.
+// Range is the source span of the data-area name token in the USING clause.
+//
+// This type is additive and persisted in the cache (feature 27, T7 GREEN).
+// However, the cache-format version is not bumped for this persistence (0.8.0 handles both
+// DataDefinition.NameRange and DataAreaRefs in a single bump). DataAreaRefs are used for
+// field-resolution binding but do not affect the stable cache key (unlike feature 07 where
+// resolution is not persisted).
+type DataAreaRef struct {
+	Name        string
+	SectionKind string
+	Range       Range
 }

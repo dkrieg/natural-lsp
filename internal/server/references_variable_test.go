@@ -934,3 +934,104 @@ func TestProvideReferences_VariableExisting_NotBroken(t *testing.T) {
 	}
 	// (Empty is also acceptable for a position with no symbol)
 }
+
+// TestProvideReferences_VariableCrossFileUsing tests find-references for variables
+// declared in an external data area and referenced via USING.
+// CALLER.NSP declares "LOCAL USING CUSTLDA" and references #CUST-ID, which should
+// return both the use-sites in CALLER.NSP and the declaration in CUSTLDA.NSL.
+// Feature 27, T7 (cross-file USING variable references).
+func TestProvideReferences_VariableCrossFileUsing(t *testing.T) {
+	// Setup
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the cross-file USING fixture
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "variablenav")
+
+	// Build the workspace index from the fixture (holds both CALLER and CUSTLDA)
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	// Resolve the workspace edges
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext with the index
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+		az:          az,
+	}
+
+	// Open the CALLER.NSP file
+	callerFile := filepath.Join(fixtureRoot, "CALLER.NSP")
+
+	// Test finding references to #CUST-ID
+	// Line 5: MOVE 42 TO #CUST-ID.
+	// Cursor on #CUST-ID — should return:
+	//   - Use-site in CALLER.NSP (line 5)
+	//   - Use-site in CALLER.NSP (line 7, in IF condition)
+	//   - Declaration in CUSTLDA.NSL (when includeDeclaration is true)
+	params := protocol.ReferenceParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(callerFile),
+			},
+			Position: protocol.Position{
+				Line:      uint32(5 - 1), // Line 5 (1-based) → 4 (0-based)
+				Character: uint32(15),    // Column pointing at #CUST-ID
+			},
+		},
+		Context: protocol.ReferenceContext{
+			IncludeDeclaration: true,
+		},
+	}
+
+	locations, err := provideReferences(hctx, params)
+
+	// Assert: no error
+	if err != nil {
+		t.Fatalf("provideReferences failed: %v", err)
+	}
+
+	// Assert: expect at least 2 locations (the 2 use-sites in CALLER + 1 declaration in CUSTLDA = 3)
+	// But we're lenient and check for at least 2 (the use-sites)
+	if locations == nil || len(locations) < 2 {
+		t.Errorf("expected at least 2 reference locations (use-sites + declaration), got %d", len(locations))
+		if locations != nil {
+			for i, loc := range locations {
+				t.Logf("  [%d]: %s:%d:%d", i, loc.URI.FsPath(), loc.Range.Start.Line, loc.Range.Start.Character)
+			}
+		}
+		return
+	}
+
+	// Assert: verify we have locations in both CALLER.NSP and CUSTLDA.NSL
+	var hasCallerRef, hasCustldaRef bool
+	for _, loc := range locations {
+		path := loc.URI.FsPath()
+		if filepath.Base(path) == "CALLER.NSP" {
+			hasCallerRef = true
+		} else if filepath.Base(path) == "CUSTLDA.NSL" {
+			hasCustldaRef = true
+		}
+	}
+
+	if !hasCallerRef {
+		t.Errorf("expected reference in CALLER.NSP, not found")
+	}
+	if !hasCustldaRef {
+		t.Errorf("expected declaration in CUSTLDA.NSL, not found")
+	}
+}

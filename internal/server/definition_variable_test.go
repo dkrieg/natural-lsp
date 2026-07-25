@@ -740,3 +740,142 @@ func TestProvideDefinition_VariableExisting_NotBroken(t *testing.T) {
 		t.Errorf("regression: expected target MYSUB.NSN, got %q", targetPath)
 	}
 }
+
+// TestProvideDefinition_VariableCrossFileUsing tests cross-file go-to-definition for
+// variables declared in an external data area and referenced via USING.
+// CALLER.NSP declares "LOCAL USING CUSTLDA" and references #CUST-ID, which should
+// resolve to the field declaration in CUSTLDA.NSL, not to a same-file declaration.
+// Feature 27, T7 (cross-file USING variable navigation).
+func TestProvideDefinition_VariableCrossFileUsing(t *testing.T) {
+	// Setup
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: load the cross-file USING fixture
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "variablenav")
+
+	// Build the workspace index from the fixture (holds both CALLER and CUSTLDA)
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	// Resolve the workspace edges
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Build the handlerContext with the index
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+		az:          az,
+	}
+
+	// Open the CALLER.NSP file
+	callerFile := filepath.Join(fixtureRoot, "CALLER.NSP")
+	callerContent, err := os.ReadFile(callerFile)
+	if err != nil {
+		t.Fatalf("failed to read CALLER.NSP: %v", err)
+	}
+	_ = callerContent // Placeholder for future use if needed
+
+	tt := []struct {
+		name           string
+		cursorLine     int
+		cursorColumn   int
+		wantVarName    string
+		wantTargetFile string // Expected target file (basename)
+		description    string
+	}{
+		{
+			// Line 5: MOVE 42 TO #CUST-ID.
+			// #CUST-ID starts at 0-based 11, middle of token at 0-based 15
+			name:           "cust_id_use",
+			cursorLine:     5,
+			cursorColumn:   15, // 0-based middle of #CUST-ID token
+			wantVarName:    "#CUST-ID",
+			wantTargetFile: "CUSTLDA.NSL",
+			description:    "cursor on #CUST-ID use → resolves to CUSTLDA.NSL field declaration",
+		},
+		{
+			// Line 6: MOVE "SMITH" TO #CUST-NAME.
+			// #CUST-NAME starts at 0-based 16, middle of token at 0-based 21
+			name:           "cust_name_use",
+			cursorLine:     6,
+			cursorColumn:   21, // 0-based middle of #CUST-NAME token
+			wantVarName:    "#CUST-NAME",
+			wantTargetFile: "CUSTLDA.NSL",
+			description:    "cursor on #CUST-NAME use → resolves to CUSTLDA.NSL field declaration",
+		},
+		{
+			// Line 7: IF #CUST-ID > 0
+			// #CUST-ID starts at 0-based 3, middle of token at 0-based 7
+			name:           "cust_id_condition",
+			cursorLine:     7,
+			cursorColumn:   7, // 0-based middle of #CUST-ID token
+			wantVarName:    "#CUST-ID",
+			wantTargetFile: "CUSTLDA.NSL",
+			description:    "cursor on #CUST-ID in IF condition → resolves to CUSTLDA.NSL",
+		},
+		{
+			// Line 8: MOVE "100 Main St" TO #CUST-ADDR.#STREET
+			// #STREET starts at 0-based 35, middle of token at 0-based 38
+			name:           "cust_addr_street",
+			cursorLine:     8,
+			cursorColumn:   38, // 0-based middle of #STREET token
+			wantVarName:    "#STREET",
+			wantTargetFile: "CUSTLDA.NSL",
+			description:    "cursor on #STREET (qualified via #CUST-ADDR group) → resolves to CUSTLDA.NSL sub-field",
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Act: call provideDefinition with the cursor position
+			params := protocol.DefinitionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(callerFile),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine - 1), // Convert 1-based to 0-based
+						Character: uint32(tc.cursorColumn - 1),
+					},
+				},
+			}
+
+			locations, err := provideDefinition(hctx, params)
+
+			// Assert: no error
+			if err != nil {
+				t.Fatalf("provideDefinition failed: %v", err)
+			}
+
+			// Assert: expect exactly one location (cross-file reference should resolve to one field)
+			if locations == nil || len(locations) == 0 {
+				t.Errorf("%s: expected non-empty locations for variable %q in cross-file USING, got nil", tc.description, tc.wantVarName)
+				return
+			}
+
+			if len(locations) > 1 {
+				t.Errorf("%s: expected 1 location (single field in CUSTLDA), got %d", tc.description, len(locations))
+			}
+
+			// Assert: the location should point to the CUSTLDA.NSL file
+			loc := locations[0]
+			targetPath := loc.URI.FsPath()
+			if !strings.HasSuffix(targetPath, tc.wantTargetFile) {
+				t.Errorf("%s: expected target file %q, got %q", tc.description, tc.wantTargetFile, targetPath)
+			}
+		})
+	}
+}

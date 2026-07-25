@@ -1,0 +1,8 @@
+DEFINE DATA
+LOCAL
+  1 #CUST-ID       (N8)
+  1 #CUST-NAME     (A50)
+  1 #CUST-ADDR
+    2 #STREET      (A30)
+    2 #CITY        (A25)
+END-DEFINE

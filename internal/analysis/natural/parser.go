@@ -157,17 +157,26 @@ func (p *Parser) parseDataSection(ast *Program, startPos model.Position) {
 		p.advance()
 
 		// Handle optional USING clause (GLOBAL USING <gda-name>).
-		// The GDA name is consumed but not stored; it will be bound in feature 08b.
+		// Capture the GDA name and its range for feature 27, T7 (cross-file field resolution).
+		var usingName string
+		var usingRange model.Range
 		if p.matchesLiteral("USING") {
 			p.advance()
 			if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
+				usingName = p.current.Literal
+				usingStart := p.currentPos()
+				usingEnd := p.currentPos()
+				usingEnd.Column += len(p.current.Literal)
+				usingRange = model.Range{Start: usingStart, End: usingEnd}
 				p.advance()
 			}
 		}
 
 		section := &DataSection{
-			StartPos: sectionStartPos,
-			Kind:     sectionKind,
+			StartPos:   sectionStartPos,
+			Kind:       sectionKind,
+			Using:      usingName,
+			UsingRange: usingRange,
 		}
 
 		// Parse field lines until the next section boundary.

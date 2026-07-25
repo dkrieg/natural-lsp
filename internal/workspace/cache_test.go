@@ -897,6 +897,120 @@ func TestLoad_CacheVersionBumpedForHostVarRefs(t *testing.T) {
 	}
 }
 
+// TestSave_Load_DataAreaRefs verifies that FileAnalysis.DataAreaRefs (data-area references from USING clauses)
+// are persisted correctly through a cache Save→Load round-trip.
+// This tests Task 1 (feature 27 T7): DataAreaRef persistence.
+func TestSave_Load_DataAreaRefs(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"persists DataAreaRefs across round-trip"},
+		{"preserves Name, SectionKind and Range fields in DataAreaRefs"},
+		{"DataAreaRefs maintains case-normalized names"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build an index with DataAreaRefs carrying normalized names and ranges.
+			idx := &Index{}
+			idx.Add("caller.NSP", model.FileAnalysis{
+				ObjectType: model.ObjectProgram,
+				DataAreaRefs: []model.DataAreaRef{
+					{
+						Name:        "CUSTLDA",
+						SectionKind: "local",
+						Range: model.Range{
+							Start: model.Position{Line: 5, Column: 20},
+							End:   model.Position{Line: 5, Column: 27},
+						},
+					},
+					{
+						Name:        "EMPDATA",
+						SectionKind: "parameter",
+						Range: model.Range{
+							Start: model.Position{Line: 8, Column: 22},
+							End:   model.Position{Line: 8, Column: 29},
+						},
+					},
+					{
+						Name:        "GLOBALSYS",
+						SectionKind: "global",
+						Range: model.Range{
+							Start: model.Position{Line: 12, Column: 19},
+							End:   model.Position{Line: 12, Column: 28},
+						},
+					},
+				},
+			})
+
+			// Save the index.
+			err := Save(idx, cachePath)
+			if err != nil {
+				t.Fatalf("Save() returned error: %v", err)
+			}
+
+			// Load the index.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			if loaded == nil {
+				t.Fatal("Load() returned nil index")
+			}
+
+			if len(stale) != 0 {
+				t.Errorf("Load() returned %d stale files, want 0: %v", len(stale), stale)
+			}
+
+			// Verify DataAreaRefs entries round-trip correctly.
+			fa, ok := loaded.Get("caller.NSP")
+			if !ok {
+				t.Fatal("Load() missing file caller.NSP")
+			}
+
+			if len(fa.DataAreaRefs) != 3 {
+				t.Fatalf("Load() returned %d DataAreaRefs, want 3", len(fa.DataAreaRefs))
+			}
+
+			// Verify the first data-area reference
+			if fa.DataAreaRefs[0].Name != "CUSTLDA" {
+				t.Errorf("DataAreaRef[0].Name = %q, want %q", fa.DataAreaRefs[0].Name, "CUSTLDA")
+			}
+			if fa.DataAreaRefs[0].SectionKind != "local" {
+				t.Errorf("DataAreaRef[0].SectionKind = %q, want %q", fa.DataAreaRefs[0].SectionKind, "local")
+			}
+			if fa.DataAreaRefs[0].Range.Start.Line != 5 || fa.DataAreaRefs[0].Range.Start.Column != 20 {
+				t.Errorf("DataAreaRef[0].Range.Start = {%d,%d}, want {5,20}", fa.DataAreaRefs[0].Range.Start.Line, fa.DataAreaRefs[0].Range.Start.Column)
+			}
+
+			// Verify the second data-area reference
+			if fa.DataAreaRefs[1].Name != "EMPDATA" {
+				t.Errorf("DataAreaRef[1].Name = %q, want %q", fa.DataAreaRefs[1].Name, "EMPDATA")
+			}
+			if fa.DataAreaRefs[1].SectionKind != "parameter" {
+				t.Errorf("DataAreaRef[1].SectionKind = %q, want %q", fa.DataAreaRefs[1].SectionKind, "parameter")
+			}
+
+			// Verify the third data-area reference
+			if fa.DataAreaRefs[2].Name != "GLOBALSYS" {
+				t.Errorf("DataAreaRef[2].Name = %q, want %q", fa.DataAreaRefs[2].Name, "GLOBALSYS")
+			}
+			if fa.DataAreaRefs[2].SectionKind != "global" {
+				t.Errorf("DataAreaRef[2].SectionKind = %q, want %q", fa.DataAreaRefs[2].SectionKind, "global")
+			}
+		})
+	}
+}
+
 // TestSave_Load_WorkFiles verifies that FileAnalysis.WorkFiles (work-file definitions)
 // are persisted correctly and survive cache Save→Load round-trip.
 // This tests Task 15 (FR-22): work-file-definition persistence.

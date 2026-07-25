@@ -1,0 +1,4 @@
+* A minimal Parameter Data Area for fixture testing
+DEFINE DATA PARAMETER
+01 #P (L)
+END-DEFINE

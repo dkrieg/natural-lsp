@@ -1,0 +1,12 @@
+* A more comprehensive Local Data Area for feature 27 testing
+* Demonstrates groups, scalar fields, arrays, and data types
+DEFINE DATA LOCAL
+01 #EMPLOYEE-ID      (N8)
+01 #EMPLOYEE-REC
+   02 #EMP-NAME      (A50)
+   02 #EMP-SALARY    (P9,2)
+01 #DATES-ARRAY      (D) OCCURS 10
+01 #REDEF-FIELD      (A20)
+   02 #REDEF-PART1   (A10)
+   02 #REDEF-PART2   (A10)
+END-DEFINE

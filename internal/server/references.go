@@ -9,6 +9,7 @@ import (
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 
+	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/model"
 	"github.com/dkrieg/natural-lsp/internal/paths"
 	"github.com/dkrieg/natural-lsp/internal/workspace"
@@ -108,13 +109,28 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 		allVarRefs = hctx.az.ExtractVariableRefs(string(sourceContent))
 	}
 
-	// Handle variable reference case (feature 27 T4) — same-file only for Phase A
+	// Handle variable reference case (feature 27 T4)
 	if varRef != nil {
+		// First try same-file references
 		locations := findVariableReferencesInFile(varRef, &sourceFA, allVarRefs, string(sourceContent), absPath, params.Context.IncludeDeclaration, hctx.posEncoding)
-		if len(locations) == 0 {
-			return nil, nil
+		if len(locations) > 0 {
+			return locations, nil
 		}
-		return locations, nil
+
+		// If not found in same file and we have an index, try cross-file USING resolution (feature 27 T7)
+		hctx.idxResMu.RLock()
+		idx := hctx.idx
+		hctx.idxResMu.RUnlock()
+
+		if idx != nil && len(sourceFA.DataAreaRefs) > 0 {
+			locations := findVariableReferencesAcrossFiles(varRef, &sourceFA, relPath, idx, hctx.root, allVarRefs, string(sourceContent), hctx.posEncoding, &hctx.cfg)
+			if len(locations) > 0 {
+				return locations, nil
+			}
+		}
+
+		// Not found anywhere; return nil (FR-17)
+		return nil, nil
 	}
 
 	// Handle variable declaration case (feature 27 T4, idempotent):
@@ -125,11 +141,26 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 			Name:  decl.Name,
 			Range: decl.NameRange,
 		}
+		// First try same-file references
 		locations := findVariableReferencesInFile(&varRef, &sourceFA, allVarRefs, string(sourceContent), absPath, params.Context.IncludeDeclaration, hctx.posEncoding)
-		if len(locations) == 0 {
-			return nil, nil
+		if len(locations) > 0 {
+			return locations, nil
 		}
-		return locations, nil
+
+		// If not found in same file and we have an index, try cross-file USING resolution (feature 27 T7)
+		hctx.idxResMu.RLock()
+		idx := hctx.idx
+		hctx.idxResMu.RUnlock()
+
+		if idx != nil && len(sourceFA.DataAreaRefs) > 0 {
+			locations := findVariableReferencesAcrossFiles(&varRef, &sourceFA, relPath, idx, hctx.root, allVarRefs, string(sourceContent), hctx.posEncoding, &hctx.cfg)
+			if len(locations) > 0 {
+				return locations, nil
+			}
+		}
+
+		// Not found anywhere; return nil (FR-17)
+		return nil, nil
 	}
 
 	if edge == nil && dataAccess == nil {
@@ -387,6 +418,93 @@ func findVariableReferencesInFile(varRef *model.VariableRef, sourceFA *model.Fil
 
 	// Sort by line then column (deterministic)
 	sort.Slice(locations, func(i, j int) bool {
+		if locations[i].Range.Start.Line != locations[j].Range.Start.Line {
+			return locations[i].Range.Start.Line < locations[j].Range.Start.Line
+		}
+		return locations[i].Range.Start.Character < locations[j].Range.Start.Character
+	})
+
+	return locations
+}
+
+// findVariableReferencesAcrossFiles returns all reference sites for a variable via cross-file
+// USING references. It resolves the variable to its data-area object (via ResolveDataAreaField)
+// and returns the set of use-sites in the referencing file plus the declaration location
+// in the data-area object (if includeDeclaration is true).
+//
+// This is the cross-file complement to findVariableReferencesInFile (feature 27, T7).
+func findVariableReferencesAcrossFiles(
+	varRef *model.VariableRef,
+	sourceFA *model.FileAnalysis,
+	referencingRelPath string,
+	idx *workspace.Index,
+	root string,
+	allVarRefs []model.VariableRef,
+	content string,
+	enc protocol.PositionEncodingKind,
+	cfg *config.Config,
+) []protocol.Location {
+	if idx == nil || cfg == nil || len(sourceFA.DataAreaRefs) == 0 {
+		return nil
+	}
+
+	var locations []protocol.Location
+
+	// Try each USING reference in the source file's data-area refs
+	for _, dataAreaRef := range sourceFA.DataAreaRefs {
+		// Resolve the field in the data area
+		declRange := workspace.ResolveDataAreaField(varRef.Name, dataAreaRef, idx, referencingRelPath, cfg)
+		if declRange.Start.Line == 0 && declRange.End.Line == 0 {
+			// Field not found in this data area; try the next one
+			continue
+		}
+
+		// Get the data-area path for the Location URI
+		dataAreaPath := lookupDataAreaPath(dataAreaRef.Name, idx, referencingRelPath, cfg)
+		if dataAreaPath == "" {
+			// Couldn't locate data-area object; skip
+			continue
+		}
+
+		// Read the data-area object's content for position conversion
+		dataAreaAbsPath := filepath.Join(root, dataAreaPath)
+		dataAreaContent, err := os.ReadFile(dataAreaAbsPath)
+		if err != nil {
+			// Can't read data-area file; skip
+			continue
+		}
+
+		// Add the declaration location in the data area
+		loc := protocol.Location{
+			URI:   uri.File(dataAreaAbsPath),
+			Range: toProtocolRange(declRange, string(dataAreaContent), enc),
+		}
+		locations = append(locations, loc)
+
+		// Add all use-sites in the referencing (source) file
+		sourceURI := uri.File(filepath.Join(root, referencingRelPath))
+		for _, ref := range allVarRefs {
+			if strings.EqualFold(ref.Name, varRef.Name) {
+				loc := protocol.Location{
+					URI:   sourceURI,
+					Range: toProtocolRange(ref.Range, content, enc),
+				}
+				locations = append(locations, loc)
+			}
+		}
+
+		// Found a matching data area; return the results
+		// (don't try other USING references if we found a match)
+		if len(locations) > 0 {
+			break
+		}
+	}
+
+	// Sort by file (URI) then line/column (deterministic)
+	sort.Slice(locations, func(i, j int) bool {
+		if locations[i].URI != locations[j].URI {
+			return locations[i].URI < locations[j].URI
+		}
 		if locations[i].Range.Start.Line != locations[j].Range.Start.Line {
 			return locations[i].Range.Start.Line < locations[j].Range.Start.Line
 		}
