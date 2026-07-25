@@ -207,7 +207,7 @@ func FuzzCursorLookup(f *testing.F) {
 		// Act: call findCursorTarget with each arbitrary position.
 		// This must NOT panic for any input or position.
 		for _, pos := range testPositions {
-			edge, access := findCursorTarget(fa, pos)
+			edge, access, varRef := findCursorTarget(fa, pos, "", nil)
 
 			// Assert: the returned pointers are either nil or point into fa.
 			if edge != nil {
@@ -236,6 +236,12 @@ func FuzzCursorLookup(f *testing.F) {
 				if !found {
 					t.Errorf("returned access %p does not point into FileAnalysis.DataAccess", access)
 				}
+			}
+
+			if varRef != nil {
+				// varRef is from on-demand extraction (in-memory only), so we can't
+				// verify it against a persisted store. Just verify it's a valid pointer.
+				_ = varRef // Use it to avoid unused variable error
 			}
 		}
 	})

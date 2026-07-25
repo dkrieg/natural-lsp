@@ -102,6 +102,7 @@ type DataField struct {
 	Dimensions []ArrayBound // nil/empty for scalar
 	Redefines  string       // target field name for REDEFINE; "" if not a redefine
 	Children   []*DataField // group members and redefine subfields
+	NameRange  model.Range  // source span of just the name token(s); zero for REDEFINE headers
 }
 
 func (df *DataField) Position() (model.Position, model.Position) {

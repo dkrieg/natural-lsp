@@ -1,26 +1,38 @@
 package server
 
-import "github.com/dkrieg/natural-lsp/internal/model"
+import (
+	"github.com/dkrieg/natural-lsp/internal/analysis"
+	"github.com/dkrieg/natural-lsp/internal/model"
+)
 
-// findCursorTarget returns the reference site (EdgeEntry or DataAccessEntry)
+// findCursorTarget returns the reference site (EdgeEntry, DataAccessEntry, or VariableRef)
 // under the given cursor position, if any.
 //
-// Given a FileAnalysis and a 1-based model.Position, this function searches the
-// file's Edges and DataAccess entries to find the one whose range contains the
-// cursor. For edges, the search range is EdgeEntry.Source (the whole statement).
+// Given a FileAnalysis, content (for on-demand variable ref extraction), an Analyzer
+// (for variable ref extraction), and a 1-based model.Position, this function searches
+// the file's Edges, DataAccess entries, and VariableRefs to find the one whose
+// range contains the cursor. For edges, the search range is EdgeEntry.Source (the whole statement).
 // For data-access entries, the search range is DataAccessEntry.NameRange (just
 // the view/DDM name token, not the whole statement — this matches the semantic
 // granularity for hovering on field names).
+// For variable refs, the search range is VariableRef.Range (the identifier).
 //
-// At most one of the returned values is non-nil; both are nil if the cursor is
+// VariableRefs are extracted on demand (in-memory only, not persisted) via the Analyzer,
+// ensuring consistency with the current content.
+//
+// At most one of the returned values is non-nil; all are nil if the cursor is
 // outside any reference range.
+//
+// Precedence (smallest-containing tie-break): Edges win over DataAccess, which win
+// over VariableRef. This ensures a call/data reference on the same token wins the
+// tie-break; only when neither contains the cursor do we consult variable refs.
 //
 // For overlapping ranges, the smallest containing range is returned (deterministic
 // tie-break). Containment is inclusive on both ends per model.Range convention:
 // a position P is contained in range R if:
 //   - (P.Line > R.Start.Line || (P.Line == R.Start.Line && P.Column >= R.Start.Column))
 //   - AND (P.Line < R.End.Line || (P.Line == R.End.Line && P.Column <= R.End.Column))
-func findCursorTarget(fa model.FileAnalysis, pos model.Position) (*model.EdgeEntry, *model.DataAccessEntry) {
+func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string, az analysis.Analyzer) (*model.EdgeEntry, *model.DataAccessEntry, *model.VariableRef) {
 	// Helper to check if a position is contained in a range (1-based, inclusive).
 	// P is in R iff NOT (P < R.Start) AND NOT (P > R.End)
 	contains := func(r model.Range, p model.Position) bool {
@@ -56,6 +68,9 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position) (*model.EdgeEnt
 	var smallestAccess *model.DataAccessEntry
 	var smallestAccessLineSpan, smallestAccessColSpan int
 
+	var smallestVar *model.VariableRef
+	var smallestVarLineSpan, smallestVarColSpan int
+
 	// Scan edges: match by Source range
 	for i := range fa.Edges {
 		if contains(fa.Edges[i].Source, pos) {
@@ -80,16 +95,37 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position) (*model.EdgeEnt
 		}
 	}
 
-	// Return the overall smallest containing range (at most one is non-nil).
-	// If both are found, return the one with the smallest span.
-	if smallestEdge != nil && smallestAccess != nil {
-		edgeLineSpan, edgeColSpan := spanSize(smallestEdge.Source)
-		accessLineSpan, accessColSpan := spanSize(smallestAccess.NameRange)
-		if isSmallerSpan(edgeLineSpan, edgeColSpan, accessLineSpan, accessColSpan) {
-			return smallestEdge, nil
-		}
-		return nil, smallestAccess
+	// Extract variable refs on demand from the content (in-memory only)
+	var varRefs []model.VariableRef
+	if az != nil {
+		varRefs = az.ExtractVariableRefs(content)
 	}
 
-	return smallestEdge, smallestAccess
+	// Scan variable refs: match by Range (lowest priority after edges/data-access)
+	for i := range varRefs {
+		if contains(varRefs[i].Range, pos) {
+			lineSpan, colSpan := spanSize(varRefs[i].Range)
+			if smallestVar == nil || isSmallerSpan(lineSpan, colSpan, smallestVarLineSpan, smallestVarColSpan) {
+				smallestVar = &varRefs[i]
+				smallestVarLineSpan = lineSpan
+				smallestVarColSpan = colSpan
+			}
+		}
+	}
+
+	// Return the overall smallest containing range, with precedence: edge > access > variable.
+	// If an edge is found, return it (and ignore access/variable).
+	if smallestEdge != nil {
+		return smallestEdge, nil, nil
+	}
+	// If access is found, return it (and ignore variable).
+	if smallestAccess != nil {
+		return nil, smallestAccess, nil
+	}
+	// Otherwise, return variable if found.
+	if smallestVar != nil {
+		return nil, nil, smallestVar
+	}
+
+	return nil, nil, nil
 }

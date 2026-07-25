@@ -95,7 +95,7 @@ func TestCursorLookup_edgeContainment(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Call the lookup function (stub for RED phase)
-			edge, access := findCursorTarget(fa, tc.pos)
+			edge, access, _ := findCursorTarget(fa, tc.pos, "", nil)
 
 			// Assert: edge match
 			if tc.wantEdge == nil {

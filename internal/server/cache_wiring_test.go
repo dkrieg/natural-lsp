@@ -35,6 +35,10 @@ func (c *countingAnalyzer) Analyze(path string, content []byte) (model.FileAnaly
 	return c.delegate.Analyze(path, content)
 }
 
+func (c *countingAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
+	return c.delegate.ExtractVariableRefs(content)
+}
+
 // paths returns the sorted set of base filenames analyzed since the last reset.
 func (c *countingAnalyzer) paths() []string {
 	c.mu.Lock()

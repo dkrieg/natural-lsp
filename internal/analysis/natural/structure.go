@@ -222,6 +222,18 @@ func dataDefinitionToSymbol(def model.DataDefinition) []model.Symbol {
 	var symbols []model.Symbol
 
 	// Create the field symbol itself.
+	// SelectionRange should point at the name token (feature 27 T1).
+	// Use NameRange if available, fall back to Range.Start for graceful degradation (FR-43).
+	selectionRange := def.NameRange
+	if selectionRange.Start.Line == 0 && selectionRange.Start.Column == 0 &&
+		selectionRange.End.Line == 0 && selectionRange.End.Column == 0 {
+		// NameRange is zero; fall back to the range start for backward compatibility
+		selectionRange = model.Range{
+			Start: def.Range.Start,
+			End:   def.Range.Start,
+		}
+	}
+
 	sym := model.Symbol{
 		Kind: model.SymbolDataField,
 		Name: def.Name,
@@ -229,11 +241,8 @@ func dataDefinitionToSymbol(def model.DataDefinition) []model.Symbol {
 			Start: def.Range.Start,
 			End:   def.Range.End,
 		},
-		SelectionRange: model.Range{
-			Start: def.Range.Start,
-			End:   def.Range.Start, // non-zero point at the start
-		},
-		Children: make([]model.Symbol, 0),
+		SelectionRange: selectionRange,
+		Children:       make([]model.Symbol, 0),
 	}
 
 	// Recursively convert child definitions into SymbolDataField symbols.

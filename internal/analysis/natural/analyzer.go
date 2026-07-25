@@ -133,3 +133,13 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 
 	return result, nil
 }
+
+// ExtractVariableRefs extracts variable use-site references from source content.
+// This is a lightweight, on-demand scan that returns every variable identifier
+// occurrence in statement bodies (not including DEFINE DATA declarations).
+// The returned slice is always non-nil but may be empty (FR-43).
+// This method is used by navigation providers to enable variable go-to-definition
+// and find-references (feature 27, T2).
+func (a *Analyzer) ExtractVariableRefs(content string) []model.VariableRef {
+	return ExtractVariableRefs(content)
+}

@@ -71,6 +71,10 @@ func (a *channelGatedAnalyzer) Analyze(path string, content []byte) (model.FileA
 	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
 }
 
+func (a *channelGatedAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
+	return []model.VariableRef{}
+}
+
 // setIndexReadyHook installs a test index-ready hook that closes fired and
 // records the index; it restores the previous hook via t.Cleanup.
 func setIndexReadyHook(t *testing.T) (fired chan struct{}, captured *[]*workspace.Index) {

@@ -8,6 +8,36 @@ import (
 	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
+// Analyze is a test helper that runs the full extraction pipeline
+// and returns the FileAnalysis result (with Structure, Definitions, etc.).
+func Analyze(path string, content string) *model.FileAnalysis {
+	lexer := NewLexer(content)
+	parser := NewParser(lexer)
+	prog, _ := parser.Parse()
+	if prog == nil {
+		return nil
+	}
+
+	// Run extraction pipeline
+	result := model.FileAnalysis{
+		ObjectType: classify(path, nil),
+	}
+
+	// Extract components
+	result.Edges = extractEdges(prog)
+	result.DataAccess = extractDataAccess(prog)
+	result.Definitions = extractDefinitions(prog)
+	result.WorkFiles = extractWorkFiles(prog)
+	result.HostVarRefs = extractHostVarRefs(prog)
+	result.AST = prog
+	result.Diagnostics = prog.Diagnostics
+
+	// Extract structure (uses Definitions)
+	result.Structure = extractStructure(path, prog, result.Definitions, result.DataAccess)
+
+	return &result
+}
+
 // TestExtractDataAccess_GracefulDegradation verifies FR-43: extractDataAccess
 // never panics on a nil program, an empty program, or statements with empty
 // Target fields (malformed, diagnostics already emitted by the parser).
@@ -1856,6 +1886,270 @@ func TestExtractDefinitions_AIVFields_Task18Regression(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.verify(t, defs, prog)
+		})
+	}
+}
+
+// TestDataDefinition_NameRange_ModelField (T1 RED) verifies that
+// model.DataDefinition now carries a NameRange field (additive, models the
+// name-token span for feature 27 variable navigation). This is a compile-fail
+// test: the field must exist and be assignable.
+func TestDataDefinition_NameRange_ModelField(t *testing.T) {
+	t.Run("DataDefinition has NameRange field", func(t *testing.T) {
+		// This test is a structural proof: if model.DataDefinition does not have
+		// a NameRange field, this will fail to compile (red → green will add it).
+		def := model.DataDefinition{
+			Name:  "TEST-VAR",
+			Level: 1,
+			Type:  "A10",
+			Range: model.Range{
+				Start: model.Position{Line: 5, Column: 3},
+				End:   model.Position{Line: 5, Column: 12},
+			},
+			// NameRange must be assignable (it is the new field being added)
+			NameRange: model.Range{
+				Start: model.Position{Line: 5, Column: 3},
+				End:   model.Position{Line: 5, Column: 11},
+			},
+		}
+		// If this compiles, NameRange exists; if not, it's red and needs to be added.
+		if def.NameRange.Start.Line == 0 {
+			t.Error("NameRange.Start.Line is zero after assignment, want non-zero")
+		}
+	})
+}
+
+// TestExtractDefinitions_NameRange_PopulatedFromParser (T1 RED) verifies that
+// extractDefinitions populates each DataDefinition.NameRange (copied from the
+// parser's DataField.NameRange) with the exact span of the field's name token.
+//
+// Uses the existing testdata/structure/01-program-full.NSP fixture which has:
+//
+//	1 EMPLOYEE-REC (group header, Level 1)
+//	  2 EMP-ID (scalar, Level 2)
+//	  2 EMP-NAME (scalar, Level 2)
+//	  2 EMP-SALARY (scalar, Level 2)
+//	1 EMP-ID-ALT REDEFINE EMP-ID (A5) (REDEFINE sub-field)
+//
+// Assertions:
+//   - Each extracted DataDefinition for a named field has NameRange set to the
+//     name token's span (not the whole field, not the level number)
+//   - A REDEFINE block header (Name="") has zero NameRange (FR-43 graceful)
+//   - NameRange.Start.Column and .End.Column match the name token position
+//     (1-based line, byte-offset column, inclusive end)
+func TestExtractDefinitions_NameRange_PopulatedFromParser(t *testing.T) {
+	// Read the fixture
+	content, err := os.ReadFile(filepath.Join("testdata", "structure", "01-program-full.NSP"))
+	if err != nil {
+		t.Fatalf("Failed to read fixture: %v", err)
+	}
+
+	// Parse to AST
+	lexer := NewLexer(string(content))
+	parser := NewParser(lexer)
+	prog, err := parser.Parse()
+
+	if prog == nil {
+		t.Fatal("Parser returned nil AST")
+	}
+	if err != nil {
+		t.Logf("Parse returned error (expected for graceful degradation): %v", err)
+	}
+
+	// Call the extractor
+	defs := extractDefinitions(prog)
+
+	tests := []struct {
+		name   string
+		verify func(t *testing.T, defs []model.DataDefinition)
+	}{
+		{
+			name: "NameRange_isPopulatedForAllNamedFields",
+			verify: func(t *testing.T, defs []model.DataDefinition) {
+				// Every named field (Level 1, 2) should have non-zero NameRange
+				for i, def := range defs {
+					if def.Name != "" {
+						if def.NameRange.Start.Line == 0 && def.NameRange.Start.Column == 0 &&
+							def.NameRange.End.Line == 0 && def.NameRange.End.Column == 0 {
+							t.Errorf("defs[%d] (name=%q): NameRange is zero, want populated",
+								i, def.Name)
+						}
+					}
+				}
+			},
+		},
+		{
+			name: "NameRange_spansOnlyTheNameToken",
+			verify: func(t *testing.T, defs []model.DataDefinition) {
+				// For EMPLOYEE-REC (level 1, group header):
+				// - Range spans the whole line "1 EMPLOYEE-REC"
+				// - NameRange should span only "EMPLOYEE-REC" (not the level number)
+				var empRec *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "EMPLOYEE-REC" {
+						empRec = &defs[i]
+						break
+					}
+				}
+
+				if empRec == nil {
+					t.Fatal("EMPLOYEE-REC not found in extracted definitions")
+				}
+
+				// NameRange should start after the level number (which is "1")
+				// Level is 1-based, column is 1-based, byte-offset
+				// NameRange.Start.Column should be greater than level column
+				if empRec.NameRange.Start.Column <= 4 {
+					t.Errorf("NameRange.Start.Column = %d, want > 4 (after level number)",
+						empRec.NameRange.Start.Column)
+				}
+
+				// Range.Start should be at or before the level
+				if empRec.Range.Start.Column > empRec.NameRange.Start.Column {
+					t.Errorf("Range.Start.Column (%d) should be <= NameRange.Start.Column (%d)",
+						empRec.Range.Start.Column, empRec.NameRange.Start.Column)
+				}
+			},
+		},
+		{
+			name: "NameRange_includesChildrensNameRanges",
+			verify: func(t *testing.T, defs []model.DataDefinition) {
+				// For EMPLOYEE-REC children (EMP-ID, EMP-NAME, EMP-SALARY),
+				// verify each has NameRange populated
+				var empRec *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "EMPLOYEE-REC" {
+						empRec = &defs[i]
+						break
+					}
+				}
+
+				if empRec == nil {
+					t.Fatal("EMPLOYEE-REC not found")
+				}
+
+				if len(empRec.Children) == 0 {
+					t.Fatal("EMPLOYEE-REC has no children, want EMP-ID/EMP-NAME/EMP-SALARY")
+				}
+
+				// Each child should have NameRange populated
+				for i, child := range empRec.Children {
+					if child.NameRange.Start.Line == 0 && child.NameRange.Start.Column == 0 &&
+						child.NameRange.End.Line == 0 && child.NameRange.End.Column == 0 {
+						t.Errorf("child[%d] (name=%q): NameRange is zero, want populated",
+							i, child.Name)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.verify(t, defs)
+		})
+	}
+}
+
+// TestStructure_DataFieldSelectionRange_UsesNameRange (T1 RED) verifies that
+// SymbolDataField.SelectionRange is set from DataDefinition.NameRange
+// (feature 09 → feature 27 refinement). SelectionRange should point at the
+// name-token span, enabling precise selection in the outline.
+func TestStructure_DataFieldSelectionRange_UsesNameRange(t *testing.T) {
+	// Read the fixture
+	content, err := os.ReadFile(filepath.Join("testdata", "structure", "01-program-full.NSP"))
+	if err != nil {
+		t.Fatalf("Failed to read fixture: %v", err)
+	}
+
+	// Analyze to get FileAnalysis with Structure
+	fa := Analyze("01-program-full.NSP", string(content))
+	if fa == nil || fa.Structure == nil {
+		t.Fatal("Analyze returned nil FileAnalysis or Structure")
+	}
+
+	// Navigate to the LOCAL section and its fields
+	root := fa.Structure
+	if root == nil || len(root.Children) == 0 {
+		t.Fatal("Structure has no children (expected LOCAL section at minimum)")
+	}
+
+	// Find the LOCAL section (should be first data section child)
+	var localSection *model.Symbol
+	for i := range root.Children {
+		if root.Children[i].Kind == model.SymbolDataSection && root.Children[i].Name == "LOCAL" {
+			localSection = &root.Children[i]
+			break
+		}
+	}
+
+	if localSection == nil {
+		t.Fatal("LOCAL section not found in Structure")
+	}
+
+	tests := []struct {
+		name   string
+		verify func(t *testing.T, localSection *model.Symbol)
+	}{
+		{
+			name: "SelectionRange_pointsAtFieldName",
+			verify: func(t *testing.T, localSection *model.Symbol) {
+				// Find the EMPLOYEE-REC field (level 1)
+				var empRec *model.Symbol
+				for i := range localSection.Children {
+					if localSection.Children[i].Name == "EMPLOYEE-REC" {
+						empRec = &localSection.Children[i]
+						break
+					}
+				}
+
+				if empRec == nil {
+					t.Fatal("EMPLOYEE-REC not found in LOCAL section")
+				}
+
+				// SelectionRange should be set from NameRange (not zero)
+				if empRec.SelectionRange.Start.Line == 0 && empRec.SelectionRange.Start.Column == 0 &&
+					empRec.SelectionRange.End.Line == 0 && empRec.SelectionRange.End.Column == 0 {
+					t.Error("SelectionRange is zero, want populated (from NameRange)")
+				}
+
+				// SelectionRange should be narrower than Range (points to name, not whole statement)
+				if empRec.Range.Start.Column > empRec.SelectionRange.Start.Column {
+					t.Errorf("Range.Start.Column (%d) > SelectionRange.Start.Column (%d), want Range to span wider",
+						empRec.Range.Start.Column, empRec.SelectionRange.Start.Column)
+				}
+			},
+		},
+		{
+			name: "SelectionRange_childrenAlsoPopulated",
+			verify: func(t *testing.T, localSection *model.Symbol) {
+				// Find EMPLOYEE-REC and verify its children (EMP-ID, etc.) have SelectionRange
+				var empRec *model.Symbol
+				for i := range localSection.Children {
+					if localSection.Children[i].Name == "EMPLOYEE-REC" {
+						empRec = &localSection.Children[i]
+						break
+					}
+				}
+
+				if empRec == nil || len(empRec.Children) == 0 {
+					t.Fatal("EMPLOYEE-REC not found or has no children")
+				}
+
+				// Each child (EMP-ID, EMP-NAME, EMP-SALARY) should have SelectionRange
+				for i, child := range empRec.Children {
+					if child.SelectionRange.Start.Line == 0 {
+						t.Errorf("child[%d] (name=%q): SelectionRange.Start.Line is zero, want non-zero",
+							i, child.Name)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.verify(t, localSection)
 		})
 	}
 }

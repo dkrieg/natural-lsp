@@ -1,0 +1,53 @@
+* Task 27 fixture: variable use-site scanner (extractVariableRefs)
+* Exercises variable identifier captures in statement bodies:
+* - Basic captures: scalar, group-qualified fields, REDEFINE sub-fields, arrays
+* - Subscript stripping: array subscripts are stripped, index vars are separate refs
+* - Comment/string exclusion: variables in comments and string literals are NOT captured
+* - System var exclusion: *-system vars like *DATE are NOT captured
+* - Dynamic (`&`) exclusion: & sigils are excluded (modeled gap)
+
+DEFINE DATA
+LOCAL
+  1 #CUSTOMER-NAME (A40)
+  1 #COUNTER (N5)
+  1 #GROUP
+    2 #FIELD-1 (A20)
+    2 #FIELD-2 (N8)
+  1 #REDEF-FIELD (A30)
+    2 #SUB-FIELD-1 REDEFINE #REDEF-FIELD (N5)
+    2 #SUB-FIELD-2 REDEFINE #REDEF-FIELD (A10)
+  1 #TABLE (A10/1:5)
+  1 #INDEX (N2)
+END-DEFINE
+
+* Line with variable uses in MOVE
+MOVE #CUSTOMER-NAME TO #COUNTER
+MOVE 100 TO #GROUP.#FIELD-1
+
+* Variable in IF condition
+IF #COUNTER > 0
+  COMPUTE #FIELD-2 = #COUNTER + 1
+END-IF
+
+* Variable in array subscript — the index #INDEX is its own ref
+MOVE #TABLE(#INDEX) TO #CUSTOMER-NAME
+
+* Variable in WRITE
+WRITE #SUB-FIELD-1 #SUB-FIELD-2
+
+* Variable in CALLNAT argument
+CALLNAT 'SUB1' #REDEF-FIELD #COUNTER
+
+* Comment with false positives (should NOT be captured)
+* This is a comment with #FIELD inside it
+
+* String literal with false positive (should NOT be captured)
+MOVE '#CUSTOMER-NAME' TO #COUNTER
+
+* System variable (should NOT be captured)
+MOVE *DATE TO #COUNTER
+
+* Dynamic substitution (should NOT be captured or flagged separately)
+CALLNAT #CALLNAT-NAME #COUNTER
+
+END

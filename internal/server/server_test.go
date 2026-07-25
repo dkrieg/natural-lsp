@@ -31,6 +31,10 @@ func (sa *stubAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis
 	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
 }
 
+func (sa *stubAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
+	return []model.VariableRef{}
+}
+
 // dispatchResultBytes drives the full server lifecycle end-to-end (initialize →
 // initialized → the request under test) against an empty temp-dir workspace and
 // returns the JSON-RPC "result" bytes the dispatch actually wrote for that request.
@@ -592,7 +596,7 @@ func TestInitialize(t *testing.T) {
 					t.Errorf("positionEncoding = %v, want %q", caps["positionEncoding"], tc.expectedEncoding)
 				}
 
-				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6).
+				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5).
 				// These are intentional additions per the locked allow-list convention:
 				// when features add providers, TestInitialize is extended to assert them explicitly.
 				requiredProviders := []string{
@@ -604,6 +608,7 @@ func TestInitialize(t *testing.T) {
 					"codeLensProvider",
 					"signatureHelpProvider",
 					"callHierarchyProvider",
+					"documentHighlightProvider",
 				}
 				for _, providerFlag := range requiredProviders {
 					val, exists := caps[providerFlag]
@@ -1672,6 +1677,10 @@ func (sa *spyAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis,
 		content: append([]byte(nil), content...), // copy content
 	})
 	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
+}
+
+func (sa *spyAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
+	return []model.VariableRef{}
 }
 
 // TestTextDocumentDidOpen pins the behavior of the textDocument/didOpen handler (FR-33, Task 5).

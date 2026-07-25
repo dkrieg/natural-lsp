@@ -258,6 +258,12 @@ type DataDefinition struct {
 	// Range is the source span of this data item (from first token to last).
 	Range Range
 
+	// NameRange is the source span of just the name token(s) for this data item.
+	// For data fields with names, this is a subset of Range pointing at the identifier(s).
+	// For REDEFINE block headers (Name=""), this is zero. Used by go-to-definition and outline
+	// to highlight the precise name span. Additive (feature 27).
+	NameRange Range
+
 	// Children holds subfields if this is a group or a REDEFINE block.
 	// Nesting order matches declaration order. Nil/empty for scalars and groups with no children.
 	Children []DataDefinition
@@ -405,6 +411,25 @@ type WorkFile struct {
 // This type is additive to feature 08's data model and requires a cache-format bump
 // (0.4.0 → 0.5.0) to persist it.
 type HostVarRef struct {
+	Name  string
+	Range Range
+}
+
+// VariableRef represents a variable *use* (reference) from statement bodies in Natural source.
+// This is distinct from DataDefinition, which represents a *declaration* of a variable.
+// VariableRef is used to track every occurrence of a variable identifier in executable statements,
+// enabling go-to-definition, find-references, and document highlight operations.
+//
+// Name is the normalized (upper-case) identifier of the variable, with Natural sigils (#, &, @, +)
+// preserved, matching DataDefinition.Name convention so that resolution can bind refs back to
+// declarations. Array subscripts are stripped (e.g., #T(1:10) becomes #T as a separate ref, with
+// the index variable captured as its own ref).
+//
+// Range is the source span of the variable occurrence in the statement. For group-qualified names
+// like #GROUP.FIELD, the range spans the full qualified token sequence.
+//
+// This type is additive and in-memory only (feature 27) — it is NOT persisted in the cache.
+type VariableRef struct {
 	Name  string
 	Range Range
 }

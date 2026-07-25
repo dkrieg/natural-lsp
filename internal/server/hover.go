@@ -343,8 +343,8 @@ func provideHover(hctx *handlerContext, params protocol.HoverParams) (*protocol.
 	// Convert protocol position (0-based) to model position (1-based)
 	cursorPos := fromProtocolPosition(params.Position, string(sourceContent), posEncoding)
 
-	// Find the edge (or data-access) at the cursor position
-	edge, dataAccess := findCursorTarget(sourceFA, cursorPos)
+	// Find the edge (data-access, or variable ref) at the cursor position
+	edge, dataAccess, _ := findCursorTarget(sourceFA, cursorPos, string(sourceContent), hctx.az)
 	if edge == nil && dataAccess == nil {
 		// No edge or data-access at cursor position — no hover
 		return nil, nil

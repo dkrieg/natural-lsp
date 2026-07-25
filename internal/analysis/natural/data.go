@@ -151,6 +151,7 @@ func fieldToDefinition(field *DataField, sectionKind string) model.DataDefinitio
 		Dimensions:  convertArrayBounds(field.Dimensions),
 		SectionKind: sectionKind,
 		Range:       model.Range{Start: field.StartPos, End: field.EndPos},
+		NameRange:   field.NameRange,
 	}
 	if len(field.Children) > 0 {
 		def.Children = make([]model.DataDefinition, 0, len(field.Children))

@@ -245,7 +245,7 @@ func providePrepareCallHierarchy(hctx *handlerContext, params protocol.CallHiera
 	cursorPos := fromProtocolPosition(params.Position, string(sourceContent), posEncoding)
 
 	// Case A: cursor on a call site (EdgeEntry at cursor position)
-	edge, _ := findCursorTarget(*sourceFA, cursorPos)
+	edge, _, _ := findCursorTarget(*sourceFA, cursorPos, string(sourceContent), hctx.az)
 	if edge != nil {
 		// Look up the resolution for this edge
 		resolution, ok := res.Get(relPath, edge.Source)

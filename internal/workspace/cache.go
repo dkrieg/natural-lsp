@@ -19,7 +19,7 @@ import (
 	"github.com/dkrieg/natural-lsp/internal/paths"
 )
 
-const cacheFormatVersion = "0.7.0"
+const cacheFormatVersion = "0.8.0"
 
 // CacheFile represents the on-disk cache format.
 type CacheFile struct {

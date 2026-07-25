@@ -1858,12 +1858,14 @@ func TestLoad_ReadsGzipAndPlaintext(t *testing.T) {
 // 0.6.0 to 0.7.0 (feature 24, T3) causes an old-format cache to trigger a
 // full rebuild. This tests FR-39 (format-version gating) and Story 3 AC1
 // (version bump → one-time rebuild).
+// NOTE: As of feature 27 T1, the cache version is 0.8.0 (DataDefinition.NameRange added).
 func TestLoad_CacheVersionBumpedTo070(t *testing.T) {
 	t.Helper()
 
-	// First, verify the version constant has been bumped to 0.7.0 (Story 3 AC1).
-	if cacheFormatVersion != "0.7.0" {
-		t.Errorf("cacheFormatVersion = %q, want %q (version must bump to 0.7.0)", cacheFormatVersion, "0.7.0")
+	// First, verify the version constant has been bumped to 0.8.0 (feature 27 T1: DataDefinition.NameRange).
+	// This test documents the progression: 0.6.0 → 0.7.0 (feature 24) → 0.8.0 (feature 27).
+	if cacheFormatVersion != "0.8.0" {
+		t.Errorf("cacheFormatVersion = %q, want %q (version must be 0.8.0)", cacheFormatVersion, "0.8.0")
 	}
 
 	tests := []struct {
@@ -2292,5 +2294,78 @@ func TestBuildWithCache_RoundTripFidelity(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// TestLoad_RejectsCacheVersion0_7_0_AsStale_T1 (T1 RED, feature 27) verifies
+// that a cache written at version "0.7.0" (before DataDefinition.NameRange was
+// added) is detected as stale and triggers a full rebuild. This regression test
+// ensures the version bump to "0.8.0" works correctly and enforces cache
+// invalidation on model changes.
+func TestLoad_RejectsCacheVersion0_7_0_AsStale_T1(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"0.7.0 cache marked stale when version bumped to 0.8.0"},
+		{"forces full rebuild on DataDefinition.NameRange migration"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Manually build a 0.7.0 cache (the pre-T1 version) with plaintext JSON.
+			// This simulates a cache written by the old format before the NameRange addition.
+			oldVersionCache := CacheFile{
+				Version: "0.7.0",
+				Entries: map[string]cacheEntry{
+					"test.NSP": {
+						ObjectType:  string(model.ObjectProgram),
+						ContentHash: "deadbeef",
+						Definitions: []model.DataDefinition{
+							{
+								Name:  "OLD-FIELD",
+								Level: 1,
+								Type:  "A10",
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 1},
+									End:   model.Position{Line: 5, Column: 10},
+								},
+								// Note: NameRange not present in old cache (the new field)
+							},
+						},
+					},
+				},
+			}
+			data, err := json.MarshalIndent(oldVersionCache, "", "    ")
+			if err != nil {
+				t.Fatalf("Failed to marshal old-version cache: %v", err)
+			}
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("Failed to write old-version cache: %v", err)
+			}
+
+			// Try to load the cache - should treat it as stale due to version mismatch.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			// Verify Load() returns nil loaded index (stale, version mismatch).
+			if loaded != nil {
+				t.Error("Load() returned non-nil index for 0.7.0 cache, want nil (stale)")
+			}
+
+			// Verify stale list contains the file (forces rebuild).
+			if len(stale) == 0 {
+				t.Error("Load() returned empty stale list for version mismatch, want all files marked stale")
+			}
+		})
 	}
 }
