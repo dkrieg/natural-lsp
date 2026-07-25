@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–25 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain) — now owned by **planned feature 27** (see the feature-27 note below), which folds that binding together with variable go-to-definition/references. **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
+**Features 00–26 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain) — now owned by **planned feature 27** (see the feature-27 note below), which folds that binding together with variable go-to-definition/references. **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
 
 **Assessment (2026-07-14) — known defects and remediation plan.** An independent full-project
 assessment (`docs/assessment-2026-07-14.md`: live wire probes, four specialist reviews, LSP-spec
@@ -48,23 +48,41 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 `internal/workspace` (ADR-027). **(ii)** A **Windows CI job** (`windows-latest`, `go build`/`vet`/`test`
 + scoped integration, `-race` omitted with rationale) was added so platform bugs can't reach a release
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
-**(iii)** **Features 24 (cache-format-compaction) and 25 (lsp4ij-template-validation) are both
-shipped** (see their notes below). Several follow-ups are now **planned** (features **26–34**): the
-higher-value ones with full notes below — **26 (lsp-tracing-and-logging)**, **27 (variable & reference
+**(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), and 26
+(lsp-tracing-and-logging) are shipped** (see their notes below). The remaining follow-ups are **planned**
+(features **27–34**): the higher-value ones with full notes below — **27 (variable & reference
 navigation)**, **28 (rich symbol detail & `VIEW OF` binding)**, **29 (semantic tokens)** — plus a set of
 smaller **P2 LSP-capability** plans, **30 (pull diagnostics)**, **31 (declaration & type-definition
 navigation)**, **32 (document links)**, **33 (execute-command / server commands)**, and **34 (moniker —
 documented non-goal, deferred)** (see their `docs/plans/features/` dirs; summarized after the feature-29
-note). **Feature 26
-(lsp-tracing-and-logging)** — the server's only observability channel today is stderr `slog` (plus
-feature 20's one-shot `window/showMessage`), so nothing it does is visible inside the editor. Mirroring
-the tracing conventions of other LSP4IJ servers (gopls/typescript-language-server/clangd), feature 26
-will emit **`window/logMessage`** for operational events (index begin/end, cache hit vs. rebuild,
-per-file skips, resolution ambiguities, request errors — populating the LSP4IJ **Logs tab** / VS Code
-output channel) and honor the **trace handshake** (`InitializeParams.trace` + the `$/setTrace`
-notification) by emitting **`$/logTrace`** for per-RPC tracing gated on `off`/`messages`/`verbose` (off
-by default) — server-layer only, no `internal/model`/cache-format/capability change (FR-53, NFR-14). See
-`docs/plans/features/26-lsp-tracing-and-logging/`.
+note).
+
+Feature 26 (lsp-tracing-and-logging) makes the server a well-behaved LSP logging/tracing citizen — its
+only observability channel was previously stderr `slog` (plus feature 20's one-shot `window/showMessage`),
+so nothing it did was visible inside the editor. Mirroring the conventions of other LSP4IJ servers
+(gopls/typescript-language-server/clangd): it emits **`window/logMessage`** for six operational event
+classes — index build **begin**/**end** (Info, with a **warm-cache-hit vs. rebuild** signal derived from a
+pre-build `workspace.CacheExists` snapshot, since re-analysis counts alone can't tell a cold build from a
+fully-warm one), a single build-end **aggregate per-file-skip Warning** (`N file(s) skipped: too_large=…`),
+a build-end **resolution-ambiguity Warning**, and a per-request-panic **Error** — each **dual-sink**
+(stderr line retained). It honors the **trace handshake**: reads `InitializeParams.trace`, handles the
+inbound **`$/setTrace`** notification (unknown value ⇒ off + stderr Warn, malformed-shape params ⇒ ignored;
+malformed JSON is dropped at the transport layer before reaching the handler), and emits **`$/logTrace`**
+per request Call gated on the level (`off` ⇒ silent; `messages` ⇒ method+timing; `verbose` ⇒ a
+byte-capped `traceSummary` at `maxTraceVerboseBytes=2048` with an elision marker). A `--log-level`
+(`error|warn|info|debug`, `=` and space forms) CLI flag controls stderr `slog` verbosity, independent of
+the LSP trace level (CR-6 fail-safe on bad values). Implementation: a `messageLogger` seam
+(`internal/server/messagelog.go`) owning the stream + an **`atomic.Int32` trace level**; **no extra
+outbound write mutex is needed** because `jsonrpc2.headerStream.Write` already serializes whole frames
+(the atomic guards the only shared mutable state) — proven by a `-race` test + three fuzz targets
+(`FuzzSetTraceValue`/`FuzzTraceSummary`/`FuzzLogFormat`). All emission is **fire-and-forget** (a failed
+write is stderr-logged only, never blocks/fails/panics a request — FR-43). **No `internal/model` change and
+no cache-format bump** (still `0.6.0`) and **no new server capability** (logMessage/logTrace/setTrace are
+notification-level, gated on the *client* window capability — the locked `TestInitialize` allow-list is
+unchanged). Surfacing per-file skips required a small **additive, in-memory-only** workspace surface
+(`workspace.Index.Skips()`/`addSkip`/`SkipRecord`, exported `workspace.CacheExists`, and two additive
+`config.SkipReason` constants `SkipUnreadable`/`SkipAnalyzerPanic`) — not persisted, no cache-format change,
+Analyzer seam untouched (ADR-028). FR-53, NFR-14. See `docs/plans/features/26-lsp-tracing-and-logging/`.
 
 **Feature 27 (variable & reference navigation)** — extends go-to-definition/find-references/hover
 (FR-24/FR-25/FR-28) to **data variables and SQL host variables**, and **completes the binding half of the

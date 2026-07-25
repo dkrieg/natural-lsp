@@ -1,0 +1,4 @@
+# Skip fixture (feature 26): a tiny max_file_size so BIG.NSP is skipped
+# as too_large while SMALL.NSP indexes normally.
+[workspace]
+max_file_size = 64

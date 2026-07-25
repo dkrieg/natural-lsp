@@ -868,6 +868,50 @@ artifacts; the only production-adjacent change is the repo-root `.gitattributes`
 confirmed by re-running Windows CI; the suite stays green on Linux/macOS (`just verify` OK, `-race` + `-tags
 integration` clean).
 
+## ADR-028 — Operational `window/logMessage` events: in-memory skip surface + pre-build cache-presence warm signal (feature 26 Story 1) (2026-07-21)
+`Status: verified` — 2026-07-21
+
+**Decision.** The server emits the six Story-1 operational events as `window/logMessage` notifications
+(dual sink: each also keeps its stderr `slog` line) from `handlerContext.buildIndex` and the
+request-dispatch panic-recovery site. Two data-plumbing sub-decisions were needed and are recorded here
+because both were non-obvious and had rejected alternatives.
+
+**(1) Per-file skip surface — an in-memory field on `workspace.Index`, NOT a new `BuildWithCache` return.**
+The build-end aggregate Warning needs a *reason breakdown* ("N file(s) skipped: too_large=1, unreadable=2"),
+which the counts already returned by `BuildWithCache` cannot express. `BuildWithCache` has ~60 call sites
+(mostly `idx, _, _, err :=` in tests), so widening its return signature is high-churn and error-prone.
+**Chosen:** add an in-memory `[]SkipRecord` field + `Index.Skips()`/`addSkip()` to the already-returned
+`*Index`, populated from the three existing degradation branches in the scan loop (unreadable / too-large /
+recovered-analyzer-panic). Two additive `config.SkipReason` constants (`SkipUnreadable`, `SkipAnalyzerPanic`)
+join the existing `SkipExcluded`/`SkipTooLarge`. **In-memory only — NOT persisted (no cache-format bump,
+still `0.6.0`), no `internal/model` change.** A warm-cache hit is not a skip (only files the scan tried and
+could not fully index are recorded), so the count is honest. Rejected: (a) extra return value (churn);
+(b) deriving `skipCount = totalFiles - len(idx.Keys())` at the server (loses the reason breakdown the AC
+requires).
+
+**(2) Warm-vs-rebuild signal keys on PRE-build cache presence, not on the re-analysis counts.** The
+`changedCount`/`staleCount` returned by `BuildWithCache` is documented to be **0 for BOTH** a cold first
+build (no cache to invalidate against) and a fully-warm build (nothing changed) — so counts alone cannot
+distinguish cold from warm. **Chosen:** snapshot `workspace.CacheExists(cachePath)` (new exported wrapper
+over the existing unexported `cacheExists`) *before* the build; `warm := cacheWasPresent`. A build is
+"warm cache hit" iff a persisted cache existed going in, else "rebuild". Regression
+`TestLogMessage_WarmVsRebuild_ColdThenWarm` drives `buildIndex` twice on one root (cold→"rebuild",
+warm→"warm cache hit") and is load-bearing.
+
+**Constraints honored (mirrors features 19/20/21).** NO new server capability — `window/logMessage` is a
+unilateral notification gated on the client `window` capability, `TestInitialize` allow-list unchanged.
+json/v2 marshaling only (`marshalguard`/`TestNoStdlibJSONMarshalForResults` green; no `encoding/json` in
+any production file). Fire-and-forget (FR-43) via the feature-26 `messageLogger` (`context.Background()` so
+a shutdown-cancelled `bgCtx` still lets the message reach the client). Skip/ambiguity Warnings are a SINGLE
+build-end aggregate each (emit nothing when zero — no console flood); modeled gaps (dynamic/unresolved
+references) stay OFF the operational-log channel (FR-17), guarded by `TestLogMessage_NoLogForDynamicReferences`.
+Fixtures: `internal/server/testdata/skipfiles/` (tiny `max_file_size` → too_large skip) and
+`internal/server/testdata/ambiguity/` (flat-namespace `CALLNAT 'DUP'` with two `DUP.NSN`).
+
+**Source:** feature 26 tasks.md Story 1; `internal/server/server.go` `buildIndex`;
+`internal/workspace/index.go` (`SkipRecord`/`Skips`/`addSkip`), `internal/workspace/cache.go` (`CacheExists`);
+`internal/config/config.go` (`SkipUnreadable`/`SkipAnalyzerPanic`).
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.

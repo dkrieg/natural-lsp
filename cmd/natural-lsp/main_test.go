@@ -281,3 +281,222 @@ func TestSmokeLifecycleNullRootUri(t *testing.T) {
 		t.Errorf("log contains panic: %s", logStr)
 	}
 }
+
+// TestLogLevelDebug verifies the PURE parseLogLevel helper maps each supported
+// level string (case-insensitively) to the correct slog.Level (feature 26,
+// Story 3). This genuinely proves the positive path — unlike a --stdio
+// round-trip, where runWithIO rebuilds the logger against real os.Stderr and
+// the injected buffer never sees the level take effect.
+func TestLogLevelDebug(t *testing.T) {
+	// A discarding logger; the warn path is exercised by TestLogLevelInvalid.
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	cases := []struct {
+		in   string
+		want slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"DEBUG", slog.LevelDebug},
+		{"Info", slog.LevelInfo},
+		{"info", slog.LevelInfo},
+		{"warn", slog.LevelWarn},
+		{"WARN", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"Error", slog.LevelError},
+	}
+	for _, c := range cases {
+		if got := parseLogLevel(c.in, logger); got != c.want {
+			t.Errorf("parseLogLevel(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestParseLogLevelUnknownDefaultsToInfo verifies the CR-6 fail-safe: an
+// unrecognized level string returns slog.LevelInfo (the default) and logs a
+// warning naming the offending value.
+func TestParseLogLevelUnknownDefaultsToInfo(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	got := parseLogLevel("bogus", logger)
+	if got != slog.LevelInfo {
+		t.Errorf("parseLogLevel(\"bogus\") = %v, want %v (default)", got, slog.LevelInfo)
+	}
+	if !strings.Contains(logBuf.String(), "bogus") {
+		t.Errorf("expected the warn to name the offending value 'bogus', got: %q", logBuf.String())
+	}
+}
+
+// TestLogLevelDebugDefault verifies that the default behavior (no --log-level flag)
+// suppresses Debug level messages.
+func TestLogLevelDebugDefault(t *testing.T) {
+	// Arrange: set up the --stdio path without --log-level.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, sentinelName), nil, 0o644); err != nil {
+		t.Fatalf("WriteFile sentinel: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	rootURI := uri.File(resolved)
+	initParams := fmt.Sprintf(`{"processId":1234,"rootUri":%q,"capabilities":{}}`, string(rootURI))
+	var inBuf bytes.Buffer
+	msgs := []jsonrpc2.Message{
+		jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), "initialize", jsonrpc2.RawMessage(initParams)),
+		jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`)),
+		jsonrpc2.NewCall(jsonrpc2.NewNumberID(2), "shutdown", jsonrpc2.RawMessage(`{}`)),
+		jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`)),
+	}
+	for i, m := range msgs {
+		if err := writeFramedMessage(&inBuf, m); err != nil {
+			t.Fatalf("writeFramedMessage %d: %v", i, err)
+		}
+	}
+
+	// Capture the logger output at the default level (should suppress Debug).
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	// Act: invoke runWithIO without --log-level.
+	exit := runWithIO([]string{"--stdio"}, &inBuf, &bytes.Buffer{}, logger)
+	if exit != 0 {
+		t.Fatalf("runWithIO exit = %d, want 0", exit)
+	}
+
+	// Assert: the lifecycle completes successfully.
+}
+
+// TestLogLevelInvalid verifies that an invalid --log-level value (e.g., "bogus")
+// is handled gracefully per CR-6 fail-safe: the process falls back to the default
+// level and prints an actionable message to stderr, without crashing.
+func TestLogLevelInvalid(t *testing.T) {
+	// Arrange: set up the --stdio path with --log-level=bogus.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, sentinelName), nil, 0o644); err != nil {
+		t.Fatalf("WriteFile sentinel: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	rootURI := uri.File(resolved)
+	initParams := fmt.Sprintf(`{"processId":1234,"rootUri":%q,"capabilities":{}}`, string(rootURI))
+	var inBuf bytes.Buffer
+	msgs := []jsonrpc2.Message{
+		jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), "initialize", jsonrpc2.RawMessage(initParams)),
+		jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`)),
+		jsonrpc2.NewCall(jsonrpc2.NewNumberID(2), "shutdown", jsonrpc2.RawMessage(`{}`)),
+		jsonrpc2.NewNotification("exit", jsonrpc2.RawMessage(`{}`)),
+	}
+	for i, m := range msgs {
+		if err := writeFramedMessage(&inBuf, m); err != nil {
+			t.Fatalf("writeFramedMessage %d: %v", i, err)
+		}
+	}
+
+	// Capture the logger output.
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	// Act: invoke runWithIO with an invalid --log-level value.
+	exit := runWithIO([]string{"--log-level=bogus", "--stdio"}, &inBuf, &bytes.Buffer{}, logger)
+
+	// Assert: the process must exit 0 (no crash), and an actionable message appears on stderr.
+	if exit != 0 {
+		t.Errorf("runWithIO exit = %d, want 0 (no crash on invalid flag)", exit)
+	}
+
+	logOut := logBuf.String()
+	if !strings.Contains(logOut, "bogus") && !strings.Contains(logOut, "log-level") {
+		t.Errorf("log does not contain error message about invalid log-level; got: %q", logOut)
+	}
+}
+
+// TestLogLevelSpaceForm verifies the space-separated form "--log-level info"
+// is accepted (the value is consumed as the next token, not left as a stray
+// positional arg): the process still runs cleanly and --version behaves
+// identically to the equals form (feature 26, Story 3 nit).
+func TestLogLevelSpaceForm(t *testing.T) {
+	var outBuf bytes.Buffer
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	// Space-separated form: "--log-level debug" then --version.
+	exitCode := run([]string{"--log-level", "debug", "--version"}, logger)
+
+	w.Close()
+	os.Stdout = origStdout
+	if _, err := outBuf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom pipe: %v", err)
+	}
+
+	if exitCode != 0 {
+		t.Errorf("run([--log-level debug --version]) exit = %d, want 0", exitCode)
+	}
+	output := strings.TrimSpace(outBuf.String())
+	if !strings.HasPrefix(output, "natural-lsp ") {
+		t.Errorf("space-form --log-level should not disturb --version; got output %q", output)
+	}
+}
+
+// TestLogLevelSpaceFormBareIsActionable verifies that a bare trailing
+// "--log-level" (no following value) does not crash and logs an actionable
+// message (CR-6). The logger is not rebuilt in this branch (no value parsed),
+// so the message reaches the injected buffer.
+func TestLogLevelSpaceFormBareIsActionable(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	// Bare --log-level with nothing after it; no --stdio so run returns 0.
+	exitCode := run([]string{"--log-level"}, logger)
+	if exitCode != 0 {
+		t.Errorf("run([--log-level]) exit = %d, want 0 (no crash)", exitCode)
+	}
+	if !strings.Contains(logBuf.String(), "--log-level requires a value") {
+		t.Errorf("expected an actionable message for bare --log-level, got: %q", logBuf.String())
+	}
+}
+
+// TestVersionFlagUnchanged verifies that the --version flag output and behavior
+// remain unchanged with the addition of --log-level (feature 26, Story 3, T6, S3-AC2).
+func TestVersionFlagUnchanged(t *testing.T) {
+	// Arrange.
+	var outBuf bytes.Buffer
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	// Act: call with --log-level flag and --version flag.
+	exitCode := run([]string{"--log-level=debug", "--version"}, logger)
+
+	// Restore stdout and read the captured output.
+	w.Close()
+	os.Stdout = origStdout
+	if _, err := outBuf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom pipe: %v", err)
+	}
+
+	// Assert: the output is unchanged.
+	output := outBuf.String()
+	if exitCode != 0 {
+		t.Errorf("run([--log-level=debug, --version]) exit code = %d, want 0", exitCode)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(output), "natural-lsp ") {
+		t.Errorf("run([--log-level=debug, --version]) output = %q, want prefix %q", output, "natural-lsp ")
+	}
+}

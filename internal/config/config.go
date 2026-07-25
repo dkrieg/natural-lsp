@@ -321,6 +321,16 @@ const (
 	// SkipTooLarge means the file exceeded workspace.max_file_size. The indexer
 	// reports the skip with this reason; it must not silently discard the file.
 	SkipTooLarge SkipReason = "too_large"
+
+	// SkipUnreadable means the file could not be read from disk (e.g. a
+	// permission error or a transient I/O failure). The indexer reports the skip
+	// with this reason rather than dropping the file silently (NFR-6, FR-43).
+	SkipUnreadable SkipReason = "unreadable"
+
+	// SkipAnalyzerPanic means the analyzer panicked while processing the file and
+	// the indexer recovered per-file (FR-43). The file is retained as
+	// ObjectUnknown but reported as skipped so the degradation is observable.
+	SkipAnalyzerPanic SkipReason = "analyzer_panic"
 )
 
 // Problem is a single actionable configuration issue surfaced by [Validate].

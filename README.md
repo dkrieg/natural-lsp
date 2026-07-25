@@ -270,6 +270,28 @@ scripts/smoke.sh "$(command -v natural-lsp)"
 (The underlying one-liner the script builds on is `natural-lsp --stdio < /dev/null`,
 which must start and exit cleanly on EOF.)
 
+### Logging & tracing
+
+The server surfaces its own activity through the standard LSP channels, so you can see what it's
+doing **inside the editor** (the JetBrains/LSP4IJ **Logs** tab, the VS Code output channel, etc.):
+
+- **`window/logMessage`** — operational events: index build begin/end (with a warm-cache-hit vs.
+  rebuild signal), a build-end summary of any skipped files, resolution ambiguities, and request
+  errors. Always emitted, severity-tagged (Info/Warning/Error).
+- **`$/logTrace`** — per-request RPC tracing, driven by the editor's **Trace** setting
+  (`off` / `messages` / `verbose`); off by default. The server honors the `trace` value from
+  `initialize` and the `$/setTrace` notification, so changing the Trace level takes effect without a
+  restart. `verbose` payloads are size-capped.
+
+Independently, a **`--log-level`** CLI flag controls the server's own **stderr** verbosity (this is
+separate from the LSP trace level, which the editor governs):
+
+```bash
+natural-lsp --stdio --log-level debug   # error | warn | info (default) | debug
+```
+
+An unrecognized value falls back to the default level with an actionable message (never crashes).
+
 ---
 
 ## Editor setup

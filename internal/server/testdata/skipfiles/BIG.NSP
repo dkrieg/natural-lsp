@@ -1,0 +1,9 @@
+* This program's file size deliberately exceeds the tiny max_file_size
+* configured in .natural-lsp.toml (64 bytes) so the indexer skips it as
+* too_large, exercising the build-end skip-aggregate window/logMessage
+* Warning (feature 26, Story 1). The content itself is valid Natural.
+PROGRAM BIG
+DEFINE DATA LOCAL
+  1 #X (A10)
+END-DEFINE
+END
