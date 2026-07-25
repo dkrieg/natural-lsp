@@ -71,6 +71,45 @@ type Index struct {
 	// guard that a caller passing a different cfg forces a rebuild rather than
 	// serving results computed under the wrong library map.
 	nameIndexCfg *config.Config
+
+	// skips records the files the last BuildWithCache scan skipped (too-large,
+	// unreadable, analyzer-panic-recovered) so the server can surface a single
+	// build-end aggregate window/logMessage Warning (feature 26, Story 1). It is
+	// in-memory-only, populated at build time, and NOT persisted (no cache-format
+	// bump). A warm-cache hit whose file is served from cache is NOT a skip — only
+	// files the scan tried and could not fully index appear here.
+	skips []SkipRecord
+}
+
+// SkipRecord names a file the indexer skipped during a build and why (feature
+// 26, Story 1). It carries a config.SkipReason so the server can aggregate a
+// human-readable "N file(s) skipped: <reasons>" summary. It is never persisted.
+type SkipRecord struct {
+	// Path is the workspace-relative path of the skipped file.
+	Path string
+	// Reason categorizes why the file was skipped.
+	Reason config.SkipReason
+}
+
+// Skips returns the files the last build skipped (feature 26). The returned
+// slice is a fresh copy; callers may not mutate the index's backing array.
+// Returns nil when nothing was skipped.
+func (idx *Index) Skips() []SkipRecord {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if len(idx.skips) == 0 {
+		return nil
+	}
+	out := make([]SkipRecord, len(idx.skips))
+	copy(out, idx.skips)
+	return out
+}
+
+// addSkip records a skipped file under the index write lock (feature 26).
+func (idx *Index) addSkip(path string, reason config.SkipReason) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.skips = append(idx.skips, SkipRecord{Path: path, Reason: reason})
 }
 
 // Add stores a FileAnalysis keyed by path.
@@ -711,12 +750,16 @@ func BuildWithCache(ctx context.Context, root string, cfg config.Config, az anal
 			content, err := os.ReadFile(filePath)
 			if err != nil {
 				logger.Warn("failed to read file", "path", filePath, "error", err)
+				// Feature 26: record the skip so the server can surface a
+				// build-end aggregate window/logMessage Warning (never silent).
+				idx.addSkip(relPath, config.SkipUnreadable)
 				continue
 			}
 
 			// Check file size
 			if int64(len(content)) > cfg.Workspace.MaxFileSize {
 				logger.Info("skipping file due to size limit", "path", filePath, "size", len(content), "max", cfg.Workspace.MaxFileSize)
+				idx.addSkip(relPath, config.SkipTooLarge)
 				continue
 			}
 
@@ -727,6 +770,10 @@ func BuildWithCache(ctx context.Context, root string, cfg config.Config, az anal
 					if r := recover(); r != nil {
 						logger.Warn("analyzer panic recovered", "path", filePath, "panic", r)
 						fa = model.FileAnalysis{ObjectType: model.ObjectUnknown}
+						// Feature 26: recovered analyzer panic is a modeled
+						// degradation — record it as a skip (the file is still
+						// indexed as ObjectUnknown, but the degradation is visible).
+						idx.addSkip(relPath, config.SkipAnalyzerPanic)
 					}
 				}()
 				fa, err = az.Analyze(filePath, content)

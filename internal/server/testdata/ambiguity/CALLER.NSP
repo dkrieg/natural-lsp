@@ -1,0 +1,10 @@
+* Ambiguity fixture (feature 26): CALLER calls CALLNAT 'DUP', which has two
+* definitions (one/DUP.NSN and two/DUP.NSN) in a flat namespace (no library
+* map). The resolver marks the reference Ambiguous, and the server emits a
+* build-end Warning window/logMessage summarizing the count.
+DEFINE DATA
+LOCAL
+  1 X (A5)
+END-DEFINE
+CALLNAT 'DUP'
+END

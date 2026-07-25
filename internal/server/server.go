@@ -13,7 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/dkrieg/natural-lsp/internal/analysis"
 	"github.com/dkrieg/natural-lsp/internal/config"
@@ -55,6 +58,15 @@ var (
 var (
 	initializeReadyHook   func(root string, cfg config.Config, clientSupportsWorkDoneProgress bool)
 	initializeReadyHookMu sync.Mutex
+)
+
+// setTraceHook is a test-only hook called after a $/setTrace notification has
+// been applied to mlog. It passes the resulting trace level so tests can assert
+// that, e.g., an unknown value degraded the level to off (feature 26, S2-AC2).
+// Set only in tests; nil in production.
+var (
+	setTraceHook   func(level protocol.TraceValue)
+	setTraceHookMu sync.Mutex
 )
 
 // readWriteCloser wraps separate Reader and Writer into an io.ReadWriteCloser
@@ -132,6 +144,19 @@ type initializeNegotiation struct {
 	posEncoding                    protocol.PositionEncodingKind
 	clientSupportsWatchedFilesReg  bool
 	clientSupportsWorkDoneProgress bool
+	initialTrace                   protocol.TraceValue
+}
+
+// isKnownTraceValue checks if a protocol.TraceValue is one of the three
+// LSP-standard values (off, messages, verbose). Unknown values return false.
+// This is used to detect and warn on unknown $/setTrace values (CR-6 fail-safe).
+func isKnownTraceValue(v protocol.TraceValue) bool {
+	switch v {
+	case protocol.TraceValueOff, protocol.TraceValueMessages, protocol.TraceValueVerbose:
+		return true
+	default:
+		return false
+	}
 }
 
 // handleInitialize processes an LSP "initialize" request, negotiates
@@ -222,11 +247,20 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 	if err := initResult.MarshalJSONTo(enc); err != nil {
 		return initializeNegotiation{}, fmt.Errorf("marshal initialize result: %w", err)
 	}
+
+	// Feature 26 (T3): read the client's initial trace level from params.Trace.
+	// Absent or empty trace ⇒ TraceValueOff (mapped via traceValueToLevel).
+	initialTrace := params.Trace
+	if initialTrace == "" {
+		initialTrace = protocol.TraceValueOff
+	}
+
 	return initializeNegotiation{
 		result:                         buf.Bytes(),
 		posEncoding:                    posEncoding,
 		clientSupportsWatchedFilesReg:  clientSupportsWatchedFilesReg,
 		clientSupportsWorkDoneProgress: clientSupportsWorkDoneProgress,
+		initialTrace:                   initialTrace,
 	}, nil
 }
 
@@ -255,6 +289,7 @@ type handlerContext struct {
 	az          analysis.Analyzer             // the analyzer (needed for applyDocumentChange re-analysis)
 	logger      *slog.Logger                  // structured logger; MUST NOT write to the protocol stream
 	watcher     *document.Watcher             // fsnotify watcher; started in "initialize" against the negotiated root (feature 20)
+	mlog        *messageLogger                // message logger for window/logMessage and $/logTrace (feature 26, T2)
 
 	// probe captures the root-discovery inputs (client paths, cwd fallback,
 	// sentinel-found) recorded at "initialize" so the no-usable-root condition
@@ -322,6 +357,17 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 		hook(bgCtx)
 	}
 
+	// Wrap the reader and writer into a ReadWriteCloser for jsonrpc2.NewHeaderStream.
+	conn := &readWriteCloser{r: r, w: w}
+	stream := jsonrpc2.NewHeaderStream(conn)
+	defer stream.Close()
+
+	// Feature 26 (T2): construct the message logger for window/logMessage and
+	// $/logTrace notifications (LSP-native observability). Seeded with TraceValueOff
+	// for now; will be updated from the client's initialize params (T3).
+	// Stored on hctx so background goroutines can emit operational events.
+	mlog := newMessageLogger(stream, logger, protocol.TraceValueOff)
+
 	// hctx bundles all state that request handlers need (feature 10, T2).
 	// Fields are filled incrementally: root/cfg/store/watcher are set when
 	// "initialize" is processed (feature 20 — deferred bootstrap: the root is
@@ -331,9 +377,12 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 	// runs, hctx.store is nil (no didOpen/didChange arrives before "initialized",
 	// so nothing needs it), hctx.idx is nil, and hctx.posEncoding is the zero
 	// string (which equals PositionEncodingKindUTF16 — safe default, ADR-008).
+	// mlog is set here with the stream so background goroutines can emit operational
+	// events (feature 26, T2).
 	hctx := &handlerContext{
 		az:     az,
 		logger: logger,
+		mlog:   mlog,
 	}
 
 	// The filesystem watcher is started in the "initialize" handler (against the
@@ -344,11 +393,6 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 			hctx.watcher.Close()
 		}
 	}()
-
-	// Wrap the reader and writer into a ReadWriteCloser for jsonrpc2.NewHeaderStream.
-	conn := &readWriteCloser{r: r, w: w}
-	stream := jsonrpc2.NewHeaderStream(conn)
-	defer stream.Close()
 
 	// Join the background build goroutine before the stream is closed (feature
 	// 21, T4). Registered after defer stream.Close() so LIFO runs it FIRST:
@@ -770,6 +814,31 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 							}
 						}
 					}
+				case "$/setTrace":
+					// Feature 26 (T3): handle runtime trace-level changes (S2-AC2).
+					// Only in stateInitialized; notifications get no response.
+					if state == stateInitialized {
+						var params protocol.SetTraceParams
+						dec := jsontext.NewDecoder(bytes.NewReader(notif.Params()))
+						if err := params.UnmarshalJSONFrom(dec); err != nil {
+							// Malformed JSON params: log Error and ignore (CR-6).
+							logger.Error("invalid $/setTrace params", "err", err)
+						} else {
+							// Check if the value is one of the three known constants
+							// If not, isKnownTraceValue returns false; setTrace maps unknown to off.
+							if !isKnownTraceValue(params.Value) {
+								logger.Warn("unknown $/setTrace value; treating as off", "value", params.Value)
+							}
+							hctx.mlog.setTrace(params.Value)
+						}
+						// Test-only observation of the resulting trace level.
+						setTraceHookMu.Lock()
+						hook := setTraceHook
+						setTraceHookMu.Unlock()
+						if hook != nil {
+							hook(hctx.mlog.trace())
+						}
+					}
 				default:
 					// Unknown notifications are silently ignored (LSP §3.4).
 				}
@@ -808,14 +877,21 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 
 		var respResult []byte
 
+		// Feature 26 (T4): capture start time for $/logTrace timing (S2-AC3).
+		startTime := time.Now()
+
 		// Panic recovery wraps only the dispatch switch — deliberately not the
 		// response write below. Panics from stream.Write propagate to the caller
 		// because they indicate an unrecoverable I/O failure, not a handler bug (FR-43).
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					logger.Error("panic in request dispatch", "panic", r)
-					sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("panic: %v", r))
+					msg := fmt.Sprintf("panic in request dispatch: %v", r)
+					logger.Error(msg)
+					// Feature 26 (T2): emit Error window/logMessage (S1-AC1, dual sink S1-AC2)
+					// Use context.Background() to avoid any context cancellation issues
+					hctx.mlog.logMessage(context.Background(), protocol.MessageTypeError, msg)
+					sendError(call.ID(), jsonrpc2.InternalError, msg)
 				}
 			}()
 
@@ -841,6 +917,9 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 				hctx.posEncoding = negotiation.posEncoding
 				clientSupportsWatchedFilesReg = negotiation.clientSupportsWatchedFilesReg
 				clientSupportsWorkDoneProgress = negotiation.clientSupportsWorkDoneProgress
+
+				// Feature 26 (T3): seed the trace level from the negotiated initial trace value (S2-AC1).
+				hctx.mlog.setTrace(negotiation.initialTrace)
 
 				// Feature 20 (Variant A): resolve the workspace root from the client's
 				// initialize params (workspaceFolders → rootUri → cwdFallback) and load
@@ -1272,6 +1351,24 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 			}
 		}()
 
+		// Feature 26 (T4): emit $/logTrace if trace level > off (S2-AC3/AC4).
+		// Fire-and-forget: never block/fail/panic the request (S2-AC5).
+		// Do NOT trace the $/logTrace emission itself (no recursion).
+		if method != "$/logTrace" && hctx.mlog.trace() != protocol.TraceValueOff {
+			elapsed := time.Since(startTime).String()
+			traceMsg := fmt.Sprintf("[Trace] Received request '%s - (%v)' in %s", method, call.ID(), elapsed)
+
+			var verbosePtr *string
+			if hctx.mlog.trace() == protocol.TraceValueVerbose {
+				// Include bounded request params in verbose mode
+				summary := traceSummary(call.Params())
+				verbosePtr = &summary
+			}
+
+			// Fire-and-forget via context.Background() to avoid context cancellation issues
+			hctx.mlog.logTrace(context.Background(), traceMsg, verbosePtr)
+		}
+
 		// Build and send the success response (unless panic or error handler already sent a response).
 		// If panic was recovered, the handler above already sent InternalError via sendError.
 		if respResult != nil {
@@ -1371,15 +1468,107 @@ func (hctx *handlerContext) sendShowMessage(ctx context.Context, stream jsonrpc2
 // The caller must call publishIndex to atomically commit the pair to hctx.
 func (hctx *handlerContext) buildIndex(ctx context.Context, onProgress func(path string, current, total int)) (*workspace.Index, *workspace.ResolutionSet, error) {
 	cachePath := filepath.Join(hctx.root, hctx.cfg.Cache.Path)
+
+	// Warm-vs-rebuild signal (Story 1): a build is warm only when a persisted
+	// cache existed BEFORE this build — the re-analysis counts alone cannot tell
+	// a cold first build (zero stale files, no cache) from a fully-warm build
+	// (zero stale files, cache present), so we snapshot cache presence up front.
+	cacheWasPresent := workspace.CacheExists(cachePath)
+
+	// Feature 26 (Story 1): emit an Info window/logMessage BEFORE the build work
+	// begins, naming the workspace root. The file count is not known until the
+	// scan completes, so it is reported in the build-end message. Dual sink: the
+	// same event is logged to stderr.
+	hctx.logger.Info("building workspace index", "root", hctx.root, "cache", cachePath)
+	hctx.mlog.logMessage(context.Background(), protocol.MessageTypeInfo,
+		fmt.Sprintf("building workspace index for %s", hctx.root))
+
 	idx, changedCount, totalCount, err := workspace.BuildWithCache(ctx, hctx.root, hctx.cfg, hctx.az, hctx.logger, cachePath, nil, onProgress)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build workspace index: %w", err)
 	}
+
+	// A warm start loaded a pre-existing cache and re-analyzed only the changed
+	// files; a cold/first build had no cache to load. The word "warm"/"rebuild"
+	// is folded into the build-end message so the outcome is observable in a
+	// single window/logMessage (Story 1).
+	warm := cacheWasPresent
+	outcome := "rebuild"
+	if warm {
+		outcome = "warm cache hit"
+	}
+
+	// Log to stderr (dual sink)
 	hctx.logger.Info("workspace index built",
 		"total", totalCount, "reanalyzed", changedCount, "cache", cachePath,
-		"warm", changedCount < totalCount)
+		"warm", warm)
+	// Feature 26 (Story 1): emit Info window/logMessage naming the file count AND
+	// the warm-vs-rebuild outcome. This must fire BEFORE indexReadyHook so tests
+	// observe it deterministically. Use context.Background() to avoid cancellation
+	// from shutdown (ctx may be bgCtx, cancelled on shutdown; the message should
+	// still reach the client).
+	logMsg := fmt.Sprintf("workspace index built: %d file(s) indexed, %d re-analyzed (%s)",
+		totalCount, changedCount, outcome)
+	hctx.mlog.logMessage(context.Background(), protocol.MessageTypeInfo, logMsg)
+
+	// Feature 26 (Story 1): a SINGLE build-end aggregate Warning when any files
+	// were skipped (too-large / unreadable / analyzer-panic-recovered). Emitted
+	// only when the skip count > 0 (nothing when zero — no console flood).
+	if skips := idx.Skips(); len(skips) > 0 {
+		hctx.logger.Warn("workspace index skipped files", "count", len(skips))
+		hctx.mlog.logMessage(context.Background(), protocol.MessageTypeWarning,
+			formatSkipSummary(skips))
+	}
+
 	res := workspace.Resolve(idx, &hctx.cfg)
+
+	// Feature 26 (Story 1): a build-end Warning summarizing flat-namespace
+	// resolution ambiguities (drawn from the resolution outcomes). Emitted only
+	// when at least one ambiguous reference exists.
+	if n := countAmbiguousReferences(res); n > 0 {
+		hctx.logger.Warn("workspace resolution ambiguities", "count", n)
+		hctx.mlog.logMessage(context.Background(), protocol.MessageTypeWarning,
+			fmt.Sprintf("%d ambiguous reference(s) — a name matched more than one object", n))
+	}
+
 	return idx, res, nil
+}
+
+// formatSkipSummary renders a single-line human-readable aggregate of skipped
+// files for a build-end Warning window/logMessage (feature 26, Story 1), e.g.
+// "3 file(s) skipped: too_large=1, unreadable=2". Reasons are counted by
+// category and rendered in a deterministic (sorted) order.
+func formatSkipSummary(skips []workspace.SkipRecord) string {
+	counts := make(map[config.SkipReason]int)
+	for _, s := range skips {
+		counts[s.Reason]++
+	}
+	reasons := make([]string, 0, len(counts))
+	for r := range counts {
+		reasons = append(reasons, string(r))
+	}
+	sort.Strings(reasons)
+	parts := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		parts = append(parts, fmt.Sprintf("%s=%d", r, counts[config.SkipReason(r)]))
+	}
+	return fmt.Sprintf("%d file(s) skipped: %s", len(skips), strings.Join(parts, ", "))
+}
+
+// countAmbiguousReferences counts the resolution outcomes that are ambiguous
+// (a literal name matched more than one object in a flat namespace) so the
+// build-end summary Warning reports a total (feature 26, Story 1).
+func countAmbiguousReferences(res *workspace.ResolutionSet) int {
+	if res == nil {
+		return 0
+	}
+	n := 0
+	for _, r := range res.All() {
+		if r.IsAmbiguous() {
+			n++
+		}
+	}
+	return n
 }
 
 // publishIndex atomically commits a freshly-built (idx, res) pair to hctx

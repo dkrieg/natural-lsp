@@ -49,6 +49,15 @@ func cacheExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// CacheExists reports whether a persisted cache file exists at path. The server
+// calls it BEFORE a build to distinguish a cold first build (no prior cache)
+// from a warm start (cache present), which the re-analysis counts alone cannot
+// tell apart — a cold build and a fully-warm build both report zero stale files
+// (feature 26, Story 1, warm-vs-rebuild signal).
+func CacheExists(path string) bool {
+	return cacheExists(path)
+}
+
 // saveIndex is the root-aware cache writer used by BuildWithCache. Index keys
 // are workspace-relative paths; content hashes are computed from the file at
 // root/relPath so the write is correct regardless of the process CWD (Save,
