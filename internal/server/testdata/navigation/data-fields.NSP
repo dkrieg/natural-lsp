@@ -1,0 +1,23 @@
+* T8a fixture: Program with data fields for declaration targeting
+* Tests cursor positioning on DEFINE DATA field declarations
+PROGRAM DATA-FIELDS-TEST
+
+DEFINE DATA
+  LOCAL
+    1 EMPLOYEE-REC
+      2 EMP-ID (N5)
+      2 EMP-NAME (A40)
+      2 EMP-SALARY (N9.2)
+    1 SIMPLE-FIELD (A20)
+  END
+END
+
+* Use the fields to create some reference sites
+DISPLAY EMP-ID
+DISPLAY SIMPLE-FIELD
+
+READ EMPLOYEE-REC
+  WRITE EMPLOYEE-REC
+END
+
+END

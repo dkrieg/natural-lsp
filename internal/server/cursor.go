@@ -5,6 +5,51 @@ import (
 	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
+// DeclarationTarget carries a cursor target's declaration context (NameRange + owning Symbol/DataDefinition).
+// It is returned by findDeclarationTarget when a cursor is positioned on a data-field declaration
+// or VIEW OF node name (feature 28, T8a).
+//
+// Fields:
+//   - NameRange: the declaration's name-token span
+//   - Definition: the owning DataDefinition (for ViewOfDDM, Redefines, etc.)
+//   - Symbol: the owning Symbol (for tree structure, SelectionRange for same-file nav)
+type DeclarationTarget struct {
+	NameRange  model.Range
+	Definition *model.DataDefinition
+	Symbol     *model.Symbol
+}
+
+// rangeContains reports whether position p falls within range r (1-based, inclusive on both ends).
+// A position P is contained in range R if it is not before R.Start and not after R.End:
+//
+//	P.Line > R.Start.Line || (P.Line == R.Start.Line && P.Column >= R.Start.Column)
+//	AND
+//	P.Line < R.End.Line   || (P.Line == R.End.Line   && P.Column <= R.End.Column)
+func rangeContains(r model.Range, p model.Position) bool {
+	if p.Line < r.Start.Line || (p.Line == r.Start.Line && p.Column < r.Start.Column) {
+		return false
+	}
+	if p.Line > r.End.Line || (p.Line == r.End.Line && p.Column > r.End.Column) {
+		return false
+	}
+	return true
+}
+
+// rangeSpanSize returns (lineSpan, columnSpan) for a range, used for smallest-span tie-breaking.
+// Smaller values indicate a tighter, more precisely enclosing span.
+func rangeSpanSize(r model.Range) (lines int, cols int) {
+	return r.End.Line - r.Start.Line, r.End.Column - r.Start.Column
+}
+
+// isSmallerSpan reports whether (line1, col1) is a strictly smaller span than (line2, col2).
+// Line span is compared first; column span is the tie-breaker.
+func isSmallerSpan(line1, col1, line2, col2 int) bool {
+	if line1 != line2 {
+		return line1 < line2
+	}
+	return col1 < col2
+}
+
 // findCursorTarget returns the reference site (EdgeEntry, DataAccessEntry, or VariableRef)
 // under the given cursor position, if any.
 //
@@ -33,35 +78,6 @@ import (
 //   - (P.Line > R.Start.Line || (P.Line == R.Start.Line && P.Column >= R.Start.Column))
 //   - AND (P.Line < R.End.Line || (P.Line == R.End.Line && P.Column <= R.End.Column))
 func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string, az analysis.Analyzer) (*model.EdgeEntry, *model.DataAccessEntry, *model.VariableRef) {
-	// Helper to check if a position is contained in a range (1-based, inclusive).
-	// P is in R iff NOT (P < R.Start) AND NOT (P > R.End)
-	contains := func(r model.Range, p model.Position) bool {
-		// Check if p is before r.Start
-		if p.Line < r.Start.Line || (p.Line == r.Start.Line && p.Column < r.Start.Column) {
-			return false
-		}
-		// Check if p is after r.End
-		if p.Line > r.End.Line || (p.Line == r.End.Line && p.Column > r.End.Column) {
-			return false
-		}
-		return true
-	}
-
-	// spanSize computes (lineSpan, columnSpan) for deterministic tie-breaking.
-	// Smaller values indicate tighter, more precise containment.
-	spanSize := func(r model.Range) (int, int) {
-		return r.End.Line - r.Start.Line, r.End.Column - r.Start.Column
-	}
-
-	// isSmallerSpan returns true if span1 is smaller (tighter) than span2.
-	// Compare line span first, then column span.
-	isSmallerSpan := func(line1, col1, line2, col2 int) bool {
-		if line1 != line2 {
-			return line1 < line2
-		}
-		return col1 < col2
-	}
-
 	var smallestEdge *model.EdgeEntry
 	var smallestEdgeLineSpan, smallestEdgeColSpan int
 
@@ -71,10 +87,10 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string,
 	var smallestVar *model.VariableRef
 	var smallestVarLineSpan, smallestVarColSpan int
 
-	// Scan edges: match by Source range
+	// Scan edges: match by Source range.
 	for i := range fa.Edges {
-		if contains(fa.Edges[i].Source, pos) {
-			lineSpan, colSpan := spanSize(fa.Edges[i].Source)
+		if rangeContains(fa.Edges[i].Source, pos) {
+			lineSpan, colSpan := rangeSpanSize(fa.Edges[i].Source)
 			if smallestEdge == nil || isSmallerSpan(lineSpan, colSpan, smallestEdgeLineSpan, smallestEdgeColSpan) {
 				smallestEdge = &fa.Edges[i]
 				smallestEdgeLineSpan = lineSpan
@@ -83,10 +99,10 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string,
 		}
 	}
 
-	// Scan data-access: match by NameRange
+	// Scan data-access entries: match by NameRange (the view/DDM name token, not the whole statement).
 	for i := range fa.DataAccess {
-		if contains(fa.DataAccess[i].NameRange, pos) {
-			lineSpan, colSpan := spanSize(fa.DataAccess[i].NameRange)
+		if rangeContains(fa.DataAccess[i].NameRange, pos) {
+			lineSpan, colSpan := rangeSpanSize(fa.DataAccess[i].NameRange)
 			if smallestAccess == nil || isSmallerSpan(lineSpan, colSpan, smallestAccessLineSpan, smallestAccessColSpan) {
 				smallestAccess = &fa.DataAccess[i]
 				smallestAccessLineSpan = lineSpan
@@ -95,16 +111,16 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string,
 		}
 	}
 
-	// Extract variable refs on demand from the content (in-memory only)
+	// Extract variable refs on demand from the content (in-memory only).
 	var varRefs []model.VariableRef
 	if az != nil {
 		varRefs = az.ExtractVariableRefs(content)
 	}
 
-	// Scan variable refs: match by Range (lowest priority after edges/data-access)
+	// Scan variable refs: match by Range (lowest priority after edges/data-access).
 	for i := range varRefs {
-		if contains(varRefs[i].Range, pos) {
-			lineSpan, colSpan := spanSize(varRefs[i].Range)
+		if rangeContains(varRefs[i].Range, pos) {
+			lineSpan, colSpan := rangeSpanSize(varRefs[i].Range)
 			if smallestVar == nil || isSmallerSpan(lineSpan, colSpan, smallestVarLineSpan, smallestVarColSpan) {
 				smallestVar = &varRefs[i]
 				smallestVarLineSpan = lineSpan
@@ -113,13 +129,12 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string,
 		}
 	}
 
-	// Also scan persisted host-var refs (feature 27 T8): match by Range
-	// at the same lowest priority as variable refs
+	// Scan persisted host-var refs (feature 27 T8): same lowest priority as variable refs.
 	for i := range fa.HostVarRefs {
-		if contains(fa.HostVarRefs[i].Range, pos) {
-			lineSpan, colSpan := spanSize(fa.HostVarRefs[i].Range)
+		if rangeContains(fa.HostVarRefs[i].Range, pos) {
+			lineSpan, colSpan := rangeSpanSize(fa.HostVarRefs[i].Range)
 			if smallestVar == nil || isSmallerSpan(lineSpan, colSpan, smallestVarLineSpan, smallestVarColSpan) {
-				// Convert HostVarRef to VariableRef for uniform handling
+				// Convert HostVarRef to VariableRef for uniform handling downstream.
 				smallestVar = &model.VariableRef{
 					Name:  fa.HostVarRefs[i].Name,
 					Range: fa.HostVarRefs[i].Range,
@@ -130,19 +145,87 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string,
 		}
 	}
 
-	// Return the overall smallest containing range, with precedence: edge > access > variable.
-	// If an edge is found, return it (and ignore access/variable).
+	// Return the overall smallest containing range with precedence: edge > access > variable.
 	if smallestEdge != nil {
 		return smallestEdge, nil, nil
 	}
-	// If access is found, return it (and ignore variable).
 	if smallestAccess != nil {
 		return nil, smallestAccess, nil
 	}
-	// Otherwise, return variable if found.
 	if smallestVar != nil {
 		return nil, nil, smallestVar
 	}
 
 	return nil, nil, nil
+}
+
+// findDeclarationTarget maps a cursor to a Symbol/DataDefinition declaration NameRange under it
+// (data fields + VIEW OF nodes), smallest-containing-range wins.
+// Returns nil when no declaration is under the cursor (feature 28, T8a, OQ-B).
+//
+// This is a COMPANION function to findCursorTarget (not a replacement). It is called by
+// providers only when findCursorTarget returns nil (no use-site), implementing use-site-first
+// precedence at the call site rather than changing findCursorTarget's signature.
+//
+// The function walks fa.Structure (the recursive Symbol tree) to find the smallest-containing
+// SelectionRange that encloses the cursor position. When found, it populates DeclarationTarget
+// with the node's NameRange, the matching DataDefinition from fa.Definitions (if resolvable),
+// and the matched Symbol itself (always set when a declaration is found).
+//
+// Modeled gaps (missing or unresolved definitions) are gracefully handled: Symbol is always
+// set on a match, but Definition may be nil if the definition cannot be located (FR-43).
+func findDeclarationTarget(fa model.FileAnalysis, pos model.Position) *DeclarationTarget {
+	// findDefinitionByName searches fa.Definitions (and their Children) for a definition
+	// whose Name matches the given name. Returns nil when not found (graceful, FR-43).
+	var findDefinitionByName func(name string, defs []model.DataDefinition) *model.DataDefinition
+	findDefinitionByName = func(name string, defs []model.DataDefinition) *model.DataDefinition {
+		for i := range defs {
+			if defs[i].Name == name {
+				return &defs[i]
+			}
+			if found := findDefinitionByName(name, defs[i].Children); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+
+	// Walk the Symbol tree to find the Symbol whose SelectionRange is the smallest
+	// range that still contains pos. This mirrors findCursorTarget's span tie-break.
+	var smallestSymbol *model.Symbol
+	var smallestLineSpan, smallestColSpan int
+
+	var walk func(*model.Symbol)
+	walk = func(sym *model.Symbol) {
+		if rangeContains(sym.SelectionRange, pos) {
+			lineSpan, colSpan := rangeSpanSize(sym.SelectionRange)
+			if smallestSymbol == nil || isSmallerSpan(lineSpan, colSpan, smallestLineSpan, smallestColSpan) {
+				smallestSymbol = sym
+				smallestLineSpan = lineSpan
+				smallestColSpan = colSpan
+			}
+		}
+		for i := range sym.Children {
+			walk(&sym.Children[i])
+		}
+	}
+
+	if fa.Structure != nil {
+		walk(fa.Structure)
+	}
+
+	if smallestSymbol == nil {
+		return nil
+	}
+
+	result := &DeclarationTarget{
+		NameRange: smallestSymbol.SelectionRange,
+		Symbol:    smallestSymbol,
+	}
+	// Resolve the backing DataDefinition by name; may be nil for structural symbols
+	// (e.g. data-section nodes, subroutines) that have no corresponding DataDefinition (FR-43).
+	if smallestSymbol.Name != "" {
+		result.Definition = findDefinitionByName(smallestSymbol.Name, fa.Definitions)
+	}
+	return result
 }
