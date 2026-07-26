@@ -295,6 +295,10 @@ type DataDefinition struct {
 	// (e.g., "#CUSTOMER-ID" when a field is declared under a REDEFINE clause).
 	// Empty string ("") for non-redefine fields (Feature 28, T3).
 	Redefines string
+
+	// ViewOfDDM is the DDM name for a VIEW OF data field (feature 28, phase B).
+	// Empty for non-view fields. Populated by fieldToDefinition during extraction.
+	ViewOfDDM string
 }
 
 // DiagnosticSeverity classifies the severity of an extraction diagnostic.

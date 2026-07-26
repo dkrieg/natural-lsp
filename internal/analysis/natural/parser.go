@@ -317,6 +317,27 @@ func (p *Parser) parseDataField() *DataField {
 		return nil
 	}
 
+	// Parse the optional VIEW OF clause (Feature 28, T5, Phase B).
+	// Syntax: VIEW [OF] <ddm-name>
+	// VIEW is not a Natural reserved keyword, so matchesLiteral provides a
+	// case-insensitive literal match regardless of token type (the same idiom
+	// used throughout the parser for contextual keywords). OF is consumed only
+	// when present; the DDM name may resolve to either a keyword or identifier
+	// token depending on the lexer's classification. On malformed input (no DDM
+	// name token after VIEW [OF]), viewOfDDM stays "" and the field is still
+	// created — graceful degradation per FR-43.
+	viewOfDDM := ""
+	if !isRedefine && p.matchesLiteral("VIEW") {
+		p.advance() // consume VIEW
+		if p.matchesLiteral("OF") {
+			p.advance() // consume optional OF
+		}
+		if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
+			viewOfDDM = p.current.Literal
+			p.advance()
+		}
+	}
+
 	// Parse the optional type/format specification: "(TYPE-CODE)" or
 	// "(TYPE-CODE/DIM1,DIM2)". REDEFINE nodes carry no type — their
 	// subfields (Children) carry individual types instead.
@@ -372,6 +393,7 @@ func (p *Parser) parseDataField() *DataField {
 		EndPos:     endPos,
 		Children:   make([]*DataField, 0),
 		NameRange:  nameRange,
+		ViewOfDDM:  viewOfDDM,
 	}
 }
 

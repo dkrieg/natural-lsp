@@ -155,6 +155,7 @@ func fieldToDefinition(field *DataField, sectionKind, redefines string) model.Da
 		Range:       model.Range{Start: field.StartPos, End: field.EndPos},
 		NameRange:   field.NameRange,
 		Redefines:   redefines,
+		ViewOfDDM:   field.ViewOfDDM,
 	}
 	if len(field.Children) > 0 {
 		def.Children = make([]model.DataDefinition, 0, len(field.Children))
