@@ -1,0 +1,16 @@
+* Feature 28 T6: VIEW OF binding in the outline
+* Exercises:
+* - VIEW OF node with Detail showing the DDM name
+* - Bare selected field (inherits type from DDM later in T8)
+* - Restated-format field (shows its own type now)
+* - Array field with dimensions
+
+DEFINE DATA LOCAL
+1 EMP-VIEW VIEW OF EMPLOYEES
+  2 PERSONNEL-ID
+  2 FULL-NAME (A40)
+  2 SALARY (P9,2)
+  2 TAGS (A10/1:5)
+END-DEFINE
+
+END

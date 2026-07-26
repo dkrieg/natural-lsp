@@ -525,6 +525,167 @@ func TestSymbolToDocumentSymbol_UnknownKindDefaultsToObject(t *testing.T) {
 	}
 }
 
+// TestSymbolToDocumentSymbol_ViewOfBinding tests the conversion of VIEW OF nodes
+// with their Detail rendered as "VIEW OF <ddm-name>" (Feature 28, T6 — RED phase).
+//
+// Exercises:
+// - A VIEW OF data field node with Detail == "VIEW OF EMPLOYEES"
+// - Selected fields as children with Phase-A detail (type for restated fields, nil for bare fields)
+// - Bare field without local type shows nil Detail (inherited type deferred to T8)
+// - Restated-format field shows its written type
+// - Array field shows dimensions
+//
+// Fixture: 10-view.NSP has EMP-VIEW VIEW OF EMPLOYEES with bare + restated + array fields.
+// This test validates that ViewOfDDM is carried onto Symbol.ViewOfDDM and rendered by symbolDetail.
+func TestSymbolToDocumentSymbol_ViewOfBinding(t *testing.T) {
+	// Read fixture
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "10-view.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	// Analyze
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	contentStr := string(content)
+	root := analysis.Structure
+
+	// Find the LOCAL section (first data section child)
+	var localSection *model.Symbol
+	for _, child := range root.Children {
+		if child.Kind == model.SymbolDataSection && child.Name == "LOCAL" {
+			localSection = &child
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("fixture should have a LOCAL data section")
+	}
+
+	// Find the EMP-VIEW field within LOCAL (should be the first data field)
+	var empViewSym *model.Symbol
+	for _, field := range localSection.Children {
+		if field.Kind == model.SymbolDataField && field.Name == "EMP-VIEW" {
+			empViewSym = &field
+			break
+		}
+	}
+	if empViewSym == nil {
+		t.Fatal("LOCAL section should have an EMP-VIEW field")
+	}
+
+	// Act: convert the view node to DocumentSymbol
+	docSym := symbolToDocumentSymbol(*empViewSym, contentStr, protocol.PositionEncodingKindUTF8)
+
+	// Test: the view node's Detail should be "VIEW OF EMPLOYEES"
+	t.Run("view_detail", func(t *testing.T) {
+		if docSym.Detail == nil {
+			t.Error("Detail is nil, want non-nil string pointer for VIEW OF node")
+		} else if *docSym.Detail != "VIEW OF EMPLOYEES" {
+			t.Errorf("Detail = %q, want %q", *docSym.Detail, "VIEW OF EMPLOYEES")
+		}
+	})
+
+	// Test: the view node should have children (the selected fields)
+	t.Run("view_children_present", func(t *testing.T) {
+		if len(docSym.Children) == 0 {
+			t.Error("view node should have children (selected fields)")
+		}
+	})
+
+	// Test: find the FULL-NAME field (restated-format, A40) and verify its Detail
+	t.Run("restated_field_detail", func(t *testing.T) {
+		var fullNameChild *protocol.DocumentSymbol
+		for i := range docSym.Children {
+			if docSym.Children[i].Name == "FULL-NAME" {
+				fullNameChild = &docSym.Children[i]
+				break
+			}
+		}
+		if fullNameChild == nil {
+			t.Skip("fixture does not have FULL-NAME field")
+		}
+		// A restated field with type (A40) should have Detail == "A40"
+		if fullNameChild.Detail == nil {
+			t.Error("FULL-NAME Detail is nil, want string pointer for restated field")
+		} else if *fullNameChild.Detail != "A40" {
+			t.Errorf("FULL-NAME Detail = %q, want %q", *fullNameChild.Detail, "A40")
+		}
+	})
+
+	// Test: find PERSONNEL-ID field (bare, no local type) and verify its Detail is nil
+	t.Run("bare_field_detail_nil", func(t *testing.T) {
+		var persIdChild *protocol.DocumentSymbol
+		for i := range docSym.Children {
+			if docSym.Children[i].Name == "PERSONNEL-ID" {
+				persIdChild = &docSym.Children[i]
+				break
+			}
+		}
+		if persIdChild == nil {
+			t.Skip("fixture does not have PERSONNEL-ID field")
+		}
+		// A bare field with no local type should have nil Detail (inherited type deferred to T8)
+		if persIdChild.Detail != nil {
+			t.Errorf("PERSONNEL-ID Detail = %q, want nil (bare field, T8 handles inheritance)", *persIdChild.Detail)
+		}
+	})
+
+	// Test: find SALARY field (restated-format, P9,2) and verify its Detail
+	t.Run("salary_field_detail", func(t *testing.T) {
+		var salaryChild *protocol.DocumentSymbol
+		for i := range docSym.Children {
+			if docSym.Children[i].Name == "SALARY" {
+				salaryChild = &docSym.Children[i]
+				break
+			}
+		}
+		if salaryChild == nil {
+			t.Skip("fixture does not have SALARY field")
+		}
+		if salaryChild.Detail == nil {
+			t.Error("SALARY Detail is nil, want string pointer")
+		} else if *salaryChild.Detail != "P9,2" {
+			t.Errorf("SALARY Detail = %q, want %q", *salaryChild.Detail, "P9,2")
+		}
+	})
+
+	// Test: find TAGS field (array) and verify its Detail includes dimensions
+	t.Run("array_field_dimensions", func(t *testing.T) {
+		var tagsChild *protocol.DocumentSymbol
+		for i := range docSym.Children {
+			if docSym.Children[i].Name == "TAGS" {
+				tagsChild = &docSym.Children[i]
+				break
+			}
+		}
+		if tagsChild == nil {
+			t.Skip("fixture does not have TAGS array field")
+		}
+		if tagsChild.Detail == nil {
+			t.Error("TAGS Detail is nil, want string pointer with type and dimensions")
+		} else {
+			// Should contain "A10" (the type) and "(1:5)" (dimensions)
+			detail := *tagsChild.Detail
+			if !strings.Contains(detail, "A10") {
+				t.Errorf("TAGS Detail = %q, should contain A10", detail)
+			}
+			if !strings.Contains(detail, "(1:5)") {
+				t.Errorf("TAGS Detail = %q, should contain (1:5)", detail)
+			}
+		}
+	})
+}
+
 // Helper: isContainedInRange checks if inner is contained in outer.
 func isContainedInRange(inner, outer protocol.Range) bool {
 	// inner.Start >= outer.Start AND inner.End <= outer.End

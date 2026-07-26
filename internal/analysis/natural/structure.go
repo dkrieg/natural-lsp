@@ -252,6 +252,8 @@ func dataDefinitionToSymbol(def model.DataDefinition) []model.Symbol {
 		Dimensions: def.Dimensions,
 		// Feature 28 T4: carry REDEFINE target for outline detail
 		Redefines: def.Redefines,
+		// Feature 28 T6: carry VIEW OF target for outline detail
+		ViewOfDDM: def.ViewOfDDM,
 	}
 
 	// Recursively convert child definitions into SymbolDataField symbols.

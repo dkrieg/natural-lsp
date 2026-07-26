@@ -99,18 +99,25 @@ func symbolToDocumentSymbol(sym model.Symbol, content string, enc protocol.Posit
 }
 
 // symbolDetail returns the detail string for a symbol, used to populate
-// DocumentSymbol.Detail in the typed outline (feature 28 T4).
+// DocumentSymbol.Detail in the typed outline (feature 28 T4/T6).
+// For data fields with a non-empty ViewOfDDM (VIEW OF binding), returns a pointer to "VIEW OF <ddm-name>"
+// (feature 28 T6 — a VIEW OF node is a view declaration).
 // For data fields with a non-empty Type, returns a pointer to the formatted detail string:
 //   - Type verbatim (e.g., "A26", "P9,2", "(A) DYNAMIC")
 //   - Array dimensions appended if present (e.g., " (1:10)", " (1:5,1:10)", " (1:*)")
 //   - REDEFINE label appended if Redefines != "" (e.g., " REDEFINE #CUSTOMER-ID")
 //
-// For group headers (Type == ""), returns nil.
+// For group headers (Type == "" and ViewOfDDM == ""), returns nil.
 // For non-field symbols, returns nil.
 func symbolDetail(sym model.Symbol) *string {
 	// Only SymbolDataField can have detail
 	if sym.Kind != model.SymbolDataField {
 		return nil
+	}
+	// VIEW OF binding takes precedence: a VIEW OF node is a view declaration (feature 28 T6)
+	if sym.ViewOfDDM != "" {
+		detail := "VIEW OF " + sym.ViewOfDDM
+		return &detail
 	}
 	// Group headers (Type == "") have no detail
 	if sym.Type == "" {
