@@ -1976,10 +1976,10 @@ func TestLoad_ReadsGzipAndPlaintext(t *testing.T) {
 func TestLoad_CacheVersionBumpedTo070(t *testing.T) {
 	t.Helper()
 
-	// First, verify the version constant has been bumped to 0.8.0 (feature 27 T1: DataDefinition.NameRange).
-	// This test documents the progression: 0.6.0 → 0.7.0 (feature 24) → 0.8.0 (feature 27).
-	if cacheFormatVersion != "0.8.0" {
-		t.Errorf("cacheFormatVersion = %q, want %q (version must be 0.8.0)", cacheFormatVersion, "0.8.0")
+	// First, verify the version constant has been bumped to 0.9.0 (feature 28 T9: Symbol/DataDefinition detail fields).
+	// This test documents the progression: 0.6.0 → 0.7.0 (feature 24) → 0.8.0 (feature 27) → 0.9.0 (feature 28).
+	if cacheFormatVersion != "0.9.0" {
+		t.Errorf("cacheFormatVersion = %q, want %q (version must be 0.9.0)", cacheFormatVersion, "0.9.0")
 	}
 
 	tests := []struct {
@@ -2479,6 +2479,534 @@ func TestLoad_RejectsCacheVersion0_7_0_AsStale_T1(t *testing.T) {
 			// Verify stale list contains the file (forces rebuild).
 			if len(stale) == 0 {
 				t.Error("Load() returned empty stale list for version mismatch, want all files marked stale")
+			}
+		})
+	}
+}
+
+// TestLoad_CacheVersionBumpedForFeature28 verifies that a cache created before
+// feature 28 (format version 0.8.0) is marked as stale when the version is
+// bumped to 0.9.0 to accommodate the new Symbol and DataDefinition fields.
+// This test FAILS until the cache format version is bumped to "0.9.0"
+// (GREEN phase / Task 9 of feature 28-symbol-detail-and-view-binding).
+//
+// Task 9 spec: "Bump cacheFormatVersion '0.8.0' → '0.9.0' in
+// internal/workspace/cache.go; a stale 0.8.0 cache (fabricated as
+// CacheFile{Version:"0.8.0"} in Go) triggers a cold rebuild; a save→load
+// round-trip of a FileAnalysis carrying Symbol.{Type,Level,Dimensions,Redefines,ViewOfDDM}
+// and DataDefinition.{Redefines,ViewOfDDM} preserves all new fields."
+//
+// This test arranges a 0.8.0 cache (the pre-feature-28 version) and verifies
+// that Load() at the new 0.9.0 version treats it as stale (all files marked
+// for rebuild).
+func TestLoad_CacheVersionBumpedForFeature28(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"0.8.0 cache marked stale when version bumped to 0.9.0"},
+		{"forces full rebuild on Symbol/DataDefinition field addition"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Manually build a 0.8.0 cache (the pre-feature-28 version) with plaintext JSON.
+			// This simulates a cache written by the old format before the new Symbol/DataDefinition fields.
+			oldVersionCache := CacheFile{
+				Version: "0.8.0",
+				Entries: map[string]cacheEntry{
+					"test.NSP": {
+						ObjectType:  string(model.ObjectProgram),
+						ContentHash: "deadbeef",
+						Structure: &model.Symbol{
+							Kind: model.SymbolObject,
+							Name: "TEST",
+							Range: model.Range{
+								Start: model.Position{Line: 1, Column: 1},
+								End:   model.Position{Line: 10, Column: 1},
+							},
+							SelectionRange: model.Range{
+								Start: model.Position{Line: 1, Column: 1},
+								End:   model.Position{Line: 1, Column: 4},
+							},
+							// Note: new fields (Type, Level, Dimensions, Redefines, ViewOfDDM) not present in old cache
+							Children: nil,
+						},
+						Definitions: []model.DataDefinition{
+							{
+								Name:  "FIELD1",
+								Level: 1,
+								Type:  "A10",
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 1},
+									End:   model.Position{Line: 5, Column: 10},
+								},
+								NameRange: model.Range{
+									Start: model.Position{Line: 5, Column: 1},
+									End:   model.Position{Line: 5, Column: 6},
+								},
+								// Note: new fields (Redefines, ViewOfDDM) not present in old cache
+								Children:   nil,
+								Dimensions: []model.ArrayDimension{},
+							},
+						},
+					},
+				},
+			}
+			data, err := json.MarshalIndent(oldVersionCache, "", "    ")
+			if err != nil {
+				t.Fatalf("Failed to marshal old-version cache: %v", err)
+			}
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("Failed to write old-version cache: %v", err)
+			}
+
+			// Try to load the cache - should treat it as stale due to version mismatch.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			// Verify Load() returns nil index (stale, version mismatch).
+			if loaded != nil {
+				t.Error("Load() returned non-nil index for 0.8.0 cache, want nil (stale)")
+			}
+
+			// Verify stale list contains the file (forces rebuild).
+			if len(stale) == 0 {
+				t.Error("Load() returned empty stale list for version mismatch, want all files marked stale")
+			}
+
+			// Verify the stale list contains our test file.
+			foundStale := false
+			for _, s := range stale {
+				if s == "test.NSP" {
+					foundStale = true
+					break
+				}
+			}
+			if !foundStale {
+				t.Errorf("Load() did not mark test.NSP as stale: %v", stale)
+			}
+		})
+	}
+}
+
+// TestSave_Load_Feature28SymbolAndDataDefinitionFields verifies that the new
+// Symbol and DataDefinition fields added in feature 28 (Phase A & B) are
+// persisted correctly through a cache Save→Load round-trip.
+// This tests Task 9 (feature 28): persistence of typed outline + VIEW OF binding.
+//
+// The test builds a FileAnalysis with a Structure (Symbol tree) carrying the
+// new fields Type, Level, Dimensions, Redefines, and ViewOfDDM (on Symbol),
+// and Definitions carrying Redefines and ViewOfDDM (on DataDefinition), then
+// verifies all new fields survive the round-trip.
+func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"persists Symbol.Type across round-trip"},
+		{"persists Symbol.Level across round-trip"},
+		{"persists Symbol.Dimensions across round-trip"},
+		{"persists Symbol.Redefines across round-trip"},
+		{"persists Symbol.ViewOfDDM across round-trip"},
+		{"persists DataDefinition.Redefines across round-trip"},
+		{"persists DataDefinition.ViewOfDDM across round-trip"},
+		{"all new fields round-trip identically"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build a Structure with Symbol nodes carrying the new fields.
+			// Include: a typed field, a field with Dimensions (array), a REDEFINE block, and a VIEW OF field.
+			structure := &model.Symbol{
+				Kind: model.SymbolObject,
+				Name: "TESTPROG",
+				Type: "", // Object root has no type
+				Level: 0,  // Object root has no level
+				Range: model.Range{
+					Start: model.Position{Line: 1, Column: 1},
+					End:   model.Position{Line: 50, Column: 80},
+				},
+				SelectionRange: model.Range{
+					Start: model.Position{Line: 1, Column: 1},
+					End:   model.Position{Line: 1, Column: 8},
+				},
+				Children: []model.Symbol{
+					// Data section containing various field types
+					{
+						Kind: model.SymbolDataSection,
+						Name: "LOCAL",
+						Type: "",    // Data section has no type
+						Level: 0,     // Section keyword has no level
+						Range: model.Range{
+							Start: model.Position{Line: 3, Column: 1},
+							End:   model.Position{Line: 40, Column: 50},
+						},
+						SelectionRange: model.Range{
+							Start: model.Position{Line: 3, Column: 1},
+							End:   model.Position{Line: 3, Column: 21},
+						},
+						Children: []model.Symbol{
+							// A simple typed field
+							{
+								Kind:      model.SymbolDataField,
+								Name:      "EMPLOYEE_ID",
+								Type:      "N9",    // New field: type
+								Level:     1,       // New field: level
+								Redefines: "",      // New field: not a redefine
+								ViewOfDDM: "",      // New field: not a view
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 3},
+									End:   model.Position{Line: 5, Column: 20},
+								},
+								SelectionRange: model.Range{
+									Start: model.Position{Line: 5, Column: 5},
+									End:   model.Position{Line: 5, Column: 16},
+								},
+								Dimensions: []model.ArrayDimension{}, // Empty for scalar
+								Children:   nil,
+							},
+							// An array field with dimensions
+							{
+								Kind:      model.SymbolDataField,
+								Name:      "PHONE_ARRAY",
+								Type:      "A15",
+								Level:     1,
+								Redefines: "",
+								ViewOfDDM: "",
+								Range: model.Range{
+									Start: model.Position{Line: 8, Column: 3},
+									End:   model.Position{Line: 8, Column: 25},
+								},
+								SelectionRange: model.Range{
+									Start: model.Position{Line: 8, Column: 5},
+									End:   model.Position{Line: 8, Column: 16},
+								},
+								Dimensions: []model.ArrayDimension{
+									{
+										Lower:          1,
+										Upper:          5,
+										UpperUnbounded: false,
+									},
+								},
+								Children: nil,
+							},
+							// A field that REDEFINES another
+							{
+								Kind:      model.SymbolDataField,
+								Name:      "CUSTOMER_REDEF",
+								Type:      "A8",
+								Level:     1,
+								Redefines: "CUSTOMER_ID", // New field: marks this as a redefine of CUSTOMER_ID
+								ViewOfDDM: "",
+								Range: model.Range{
+									Start: model.Position{Line: 12, Column: 3},
+									End:   model.Position{Line: 12, Column: 25},
+								},
+								SelectionRange: model.Range{
+									Start: model.Position{Line: 12, Column: 5},
+									End:   model.Position{Line: 12, Column: 19},
+								},
+								Dimensions: []model.ArrayDimension{},
+								Children:   nil,
+							},
+							// A VIEW OF field
+							{
+								Kind:      model.SymbolDataField,
+								Name:      "EMP_VIEW",
+								Type:      "",         // View header has no type
+								Level:     1,
+								Redefines: "",
+								ViewOfDDM: "EMPLOYEES", // New field: binds to EMPLOYEES DDM
+								Range: model.Range{
+									Start: model.Position{Line: 16, Column: 3},
+									End:   model.Position{Line: 25, Column: 30},
+								},
+								SelectionRange: model.Range{
+									Start: model.Position{Line: 16, Column: 5},
+									End:   model.Position{Line: 16, Column: 13},
+								},
+								Dimensions: []model.ArrayDimension{},
+								Children: []model.Symbol{
+									// A selected field within the view
+									{
+										Kind:      model.SymbolDataField,
+										Name:      "EMP_NAME",
+										Type:      "A30",
+										Level:     2,
+										Redefines: "",
+										ViewOfDDM: "",
+										Range: model.Range{
+											Start: model.Position{Line: 18, Column: 5},
+											End:   model.Position{Line: 18, Column: 22},
+										},
+										SelectionRange: model.Range{
+											Start: model.Position{Line: 18, Column: 7},
+											End:   model.Position{Line: 18, Column: 15},
+										},
+										Dimensions: []model.ArrayDimension{},
+										Children:   nil,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			// Build Definitions with the new fields
+			definitions := []model.DataDefinition{
+				{
+					Name:      "EMPLOYEE_ID",
+					Level:     1,
+					Type:      "N9",
+					SectionKind: "local",
+					Redefines: "",           // New field: not a redefine
+					ViewOfDDM: "",           // New field: not a view
+					Range: model.Range{
+						Start: model.Position{Line: 5, Column: 3},
+						End:   model.Position{Line: 5, Column: 20},
+					},
+					NameRange: model.Range{
+						Start: model.Position{Line: 5, Column: 5},
+						End:   model.Position{Line: 5, Column: 16},
+					},
+					Dimensions: []model.ArrayDimension{},
+					Children:   nil,
+				},
+				{
+					Name:      "PHONE_ARRAY",
+					Level:     1,
+					Type:      "A15",
+					SectionKind: "local",
+					Redefines: "",
+					ViewOfDDM: "",
+					Range: model.Range{
+						Start: model.Position{Line: 8, Column: 3},
+						End:   model.Position{Line: 8, Column: 25},
+					},
+					NameRange: model.Range{
+						Start: model.Position{Line: 8, Column: 5},
+						End:   model.Position{Line: 8, Column: 16},
+					},
+					Dimensions: []model.ArrayDimension{
+						{
+							Lower:          1,
+							Upper:          5,
+							UpperUnbounded: false,
+						},
+					},
+					Children: nil,
+				},
+				{
+					Name:      "CUSTOMER_REDEF",
+					Level:     1,
+					Type:      "A8",
+					SectionKind: "local",
+					Redefines: "CUSTOMER_ID", // New field: marks this as a redefine
+					ViewOfDDM: "",
+					Range: model.Range{
+						Start: model.Position{Line: 12, Column: 3},
+						End:   model.Position{Line: 12, Column: 25},
+					},
+					NameRange: model.Range{
+						Start: model.Position{Line: 12, Column: 5},
+						End:   model.Position{Line: 12, Column: 19},
+					},
+					Dimensions: []model.ArrayDimension{},
+					Children:   nil,
+				},
+				{
+					Name:      "EMP_VIEW",
+					Level:     1,
+					Type:      "",           // View header has no type
+					SectionKind: "local",
+					Redefines: "",
+					ViewOfDDM: "EMPLOYEES",  // New field: binds to EMPLOYEES DDM
+					Range: model.Range{
+						Start: model.Position{Line: 16, Column: 3},
+						End:   model.Position{Line: 25, Column: 30},
+					},
+					NameRange: model.Range{
+						Start: model.Position{Line: 16, Column: 5},
+						End:   model.Position{Line: 16, Column: 13},
+					},
+					Dimensions: []model.ArrayDimension{},
+					Children: []model.DataDefinition{
+						{
+							Name:      "EMP_NAME",
+							Level:     2,
+							Type:      "A30",
+							SectionKind: "local",
+							Redefines: "",
+							ViewOfDDM: "",
+							Range: model.Range{
+								Start: model.Position{Line: 18, Column: 5},
+								End:   model.Position{Line: 18, Column: 22},
+							},
+							NameRange: model.Range{
+								Start: model.Position{Line: 18, Column: 7},
+								End:   model.Position{Line: 18, Column: 15},
+							},
+							Dimensions: []model.ArrayDimension{},
+							Children:   nil,
+						},
+					},
+				},
+			}
+
+			// Build an index with the Structure and Definitions carrying new fields.
+			idx := &Index{}
+			idx.Add("testprog.NSP", model.FileAnalysis{
+				ObjectType:  model.ObjectProgram,
+				Structure:   structure,
+				Definitions: definitions,
+			})
+
+			// Save the index.
+			err := Save(idx, cachePath)
+			if err != nil {
+				t.Fatalf("Save() returned error: %v", err)
+			}
+
+			// Load the index.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			if loaded == nil {
+				t.Fatal("Load() returned nil index")
+			}
+
+			if len(stale) != 0 {
+				t.Errorf("Load() returned %d stale files, want 0: %v", len(stale), stale)
+			}
+
+			// Verify Structure round-trips with all new fields.
+			fa, ok := loaded.Get("testprog.NSP")
+			if !ok {
+				t.Fatal("Load() missing file testprog.NSP")
+			}
+
+			if fa.Structure == nil {
+				t.Fatal("Load() returned nil Structure, want populated structure tree")
+			}
+
+			// Verify root structure
+			if fa.Structure.Type != "" {
+				t.Errorf("Structure.Type = %q, want empty string for object root", fa.Structure.Type)
+			}
+			if fa.Structure.Level != 0 {
+				t.Errorf("Structure.Level = %d, want 0 for object root", fa.Structure.Level)
+			}
+
+			// Verify typed field (EMPLOYEE_ID)
+			if len(fa.Structure.Children) < 1 {
+				t.Fatal("Structure has no children, want at least a data section")
+			}
+			dataSection := fa.Structure.Children[0]
+			if len(dataSection.Children) < 1 {
+				t.Fatal("Data section has no children, want at least one field")
+			}
+			typedField := dataSection.Children[0]
+			if typedField.Name != "EMPLOYEE_ID" {
+				t.Errorf("Field[0].Name = %q, want EMPLOYEE_ID", typedField.Name)
+			}
+			if typedField.Type != "N9" {
+				t.Errorf("Field[0].Type = %q, want N9", typedField.Type)
+			}
+			if typedField.Level != 1 {
+				t.Errorf("Field[0].Level = %d, want 1", typedField.Level)
+			}
+			if typedField.Redefines != "" {
+				t.Errorf("Field[0].Redefines = %q, want empty", typedField.Redefines)
+			}
+			if typedField.ViewOfDDM != "" {
+				t.Errorf("Field[0].ViewOfDDM = %q, want empty", typedField.ViewOfDDM)
+			}
+
+			// Verify array field (PHONE_ARRAY)
+			if len(dataSection.Children) < 2 {
+				t.Fatal("Data section has fewer than 2 children, want PHONE_ARRAY")
+			}
+			arrayField := dataSection.Children[1]
+			if arrayField.Name != "PHONE_ARRAY" {
+				t.Errorf("Field[1].Name = %q, want PHONE_ARRAY", arrayField.Name)
+			}
+			if arrayField.Type != "A15" {
+				t.Errorf("Field[1].Type = %q, want A15", arrayField.Type)
+			}
+			if len(arrayField.Dimensions) != 1 {
+				t.Errorf("Field[1].Dimensions count = %d, want 1", len(arrayField.Dimensions))
+			} else if arrayField.Dimensions[0].Upper != 5 {
+				t.Errorf("Field[1].Dimensions[0].Upper = %d, want 5", arrayField.Dimensions[0].Upper)
+			}
+
+			// Verify REDEFINE field (CUSTOMER_REDEF)
+			if len(dataSection.Children) < 3 {
+				t.Fatal("Data section has fewer than 3 children, want CUSTOMER_REDEF")
+			}
+			redefField := dataSection.Children[2]
+			if redefField.Name != "CUSTOMER_REDEF" {
+				t.Errorf("Field[2].Name = %q, want CUSTOMER_REDEF", redefField.Name)
+			}
+			if redefField.Redefines != "CUSTOMER_ID" {
+				t.Errorf("Field[2].Redefines = %q, want CUSTOMER_ID", redefField.Redefines)
+			}
+
+			// Verify VIEW OF field (EMP_VIEW)
+			if len(dataSection.Children) < 4 {
+				t.Fatal("Data section has fewer than 4 children, want EMP_VIEW")
+			}
+			viewField := dataSection.Children[3]
+			if viewField.Name != "EMP_VIEW" {
+				t.Errorf("Field[3].Name = %q, want EMP_VIEW", viewField.Name)
+			}
+			if viewField.ViewOfDDM != "EMPLOYEES" {
+				t.Errorf("Field[3].ViewOfDDM = %q, want EMPLOYEES", viewField.ViewOfDDM)
+			}
+			if viewField.Type != "" {
+				t.Errorf("Field[3].Type = %q, want empty (view header)", viewField.Type)
+			}
+
+			// Verify Definitions round-trip with new fields.
+			if len(fa.Definitions) != 4 {
+				t.Fatalf("Definitions count = %d, want 4", len(fa.Definitions))
+			}
+
+			// Verify CUSTOMER_REDEF definition
+			redefDef := fa.Definitions[2]
+			if redefDef.Name != "CUSTOMER_REDEF" {
+				t.Errorf("Definition[2].Name = %q, want CUSTOMER_REDEF", redefDef.Name)
+			}
+			if redefDef.Redefines != "CUSTOMER_ID" {
+				t.Errorf("Definition[2].Redefines = %q, want CUSTOMER_ID", redefDef.Redefines)
+			}
+
+			// Verify EMP_VIEW definition
+			viewDef := fa.Definitions[3]
+			if viewDef.Name != "EMP_VIEW" {
+				t.Errorf("Definition[3].Name = %q, want EMP_VIEW", viewDef.Name)
+			}
+			if viewDef.ViewOfDDM != "EMPLOYEES" {
+				t.Errorf("Definition[3].ViewOfDDM = %q, want EMPLOYEES", viewDef.ViewOfDDM)
 			}
 		})
 	}
