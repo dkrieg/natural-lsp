@@ -2635,9 +2635,9 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 			// Build a Structure with Symbol nodes carrying the new fields.
 			// Include: a typed field, a field with Dimensions (array), a REDEFINE block, and a VIEW OF field.
 			structure := &model.Symbol{
-				Kind: model.SymbolObject,
-				Name: "TESTPROG",
-				Type: "", // Object root has no type
+				Kind:  model.SymbolObject,
+				Name:  "TESTPROG",
+				Type:  "", // Object root has no type
 				Level: 0,  // Object root has no level
 				Range: model.Range{
 					Start: model.Position{Line: 1, Column: 1},
@@ -2650,10 +2650,10 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 				Children: []model.Symbol{
 					// Data section containing various field types
 					{
-						Kind: model.SymbolDataSection,
-						Name: "LOCAL",
-						Type: "",    // Data section has no type
-						Level: 0,     // Section keyword has no level
+						Kind:  model.SymbolDataSection,
+						Name:  "LOCAL",
+						Type:  "", // Data section has no type
+						Level: 0,  // Section keyword has no level
 						Range: model.Range{
 							Start: model.Position{Line: 3, Column: 1},
 							End:   model.Position{Line: 40, Column: 50},
@@ -2667,10 +2667,10 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 							{
 								Kind:      model.SymbolDataField,
 								Name:      "EMPLOYEE_ID",
-								Type:      "N9",    // New field: type
-								Level:     1,       // New field: level
-								Redefines: "",      // New field: not a redefine
-								ViewOfDDM: "",      // New field: not a view
+								Type:      "N9", // New field: type
+								Level:     1,    // New field: level
+								Redefines: "",   // New field: not a redefine
+								ViewOfDDM: "",   // New field: not a view
 								Range: model.Range{
 									Start: model.Position{Line: 5, Column: 3},
 									End:   model.Position{Line: 5, Column: 20},
@@ -2730,7 +2730,7 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 							{
 								Kind:      model.SymbolDataField,
 								Name:      "EMP_VIEW",
-								Type:      "",         // View header has no type
+								Type:      "", // View header has no type
 								Level:     1,
 								Redefines: "",
 								ViewOfDDM: "EMPLOYEES", // New field: binds to EMPLOYEES DDM
@@ -2773,12 +2773,12 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 			// Build Definitions with the new fields
 			definitions := []model.DataDefinition{
 				{
-					Name:      "EMPLOYEE_ID",
-					Level:     1,
-					Type:      "N9",
+					Name:        "EMPLOYEE_ID",
+					Level:       1,
+					Type:        "N9",
 					SectionKind: "local",
-					Redefines: "",           // New field: not a redefine
-					ViewOfDDM: "",           // New field: not a view
+					Redefines:   "", // New field: not a redefine
+					ViewOfDDM:   "", // New field: not a view
 					Range: model.Range{
 						Start: model.Position{Line: 5, Column: 3},
 						End:   model.Position{Line: 5, Column: 20},
@@ -2791,12 +2791,12 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 					Children:   nil,
 				},
 				{
-					Name:      "PHONE_ARRAY",
-					Level:     1,
-					Type:      "A15",
+					Name:        "PHONE_ARRAY",
+					Level:       1,
+					Type:        "A15",
 					SectionKind: "local",
-					Redefines: "",
-					ViewOfDDM: "",
+					Redefines:   "",
+					ViewOfDDM:   "",
 					Range: model.Range{
 						Start: model.Position{Line: 8, Column: 3},
 						End:   model.Position{Line: 8, Column: 25},
@@ -2815,12 +2815,12 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 					Children: nil,
 				},
 				{
-					Name:      "CUSTOMER_REDEF",
-					Level:     1,
-					Type:      "A8",
+					Name:        "CUSTOMER_REDEF",
+					Level:       1,
+					Type:        "A8",
 					SectionKind: "local",
-					Redefines: "CUSTOMER_ID", // New field: marks this as a redefine
-					ViewOfDDM: "",
+					Redefines:   "CUSTOMER_ID", // New field: marks this as a redefine
+					ViewOfDDM:   "",
 					Range: model.Range{
 						Start: model.Position{Line: 12, Column: 3},
 						End:   model.Position{Line: 12, Column: 25},
@@ -2833,12 +2833,12 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 					Children:   nil,
 				},
 				{
-					Name:      "EMP_VIEW",
-					Level:     1,
-					Type:      "",           // View header has no type
+					Name:        "EMP_VIEW",
+					Level:       1,
+					Type:        "", // View header has no type
 					SectionKind: "local",
-					Redefines: "",
-					ViewOfDDM: "EMPLOYEES",  // New field: binds to EMPLOYEES DDM
+					Redefines:   "",
+					ViewOfDDM:   "EMPLOYEES", // New field: binds to EMPLOYEES DDM
 					Range: model.Range{
 						Start: model.Position{Line: 16, Column: 3},
 						End:   model.Position{Line: 25, Column: 30},
@@ -2850,12 +2850,12 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 					Dimensions: []model.ArrayDimension{},
 					Children: []model.DataDefinition{
 						{
-							Name:      "EMP_NAME",
-							Level:     2,
-							Type:      "A30",
+							Name:        "EMP_NAME",
+							Level:       2,
+							Type:        "A30",
 							SectionKind: "local",
-							Redefines: "",
-							ViewOfDDM: "",
+							Redefines:   "",
+							ViewOfDDM:   "",
 							Range: model.Range{
 								Start: model.Position{Line: 18, Column: 5},
 								End:   model.Position{Line: 18, Column: 22},
