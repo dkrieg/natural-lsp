@@ -41,7 +41,7 @@ func TestProvideDefinition_SQLDDMTableName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to analyze SQLDDM.NSP: %v", err)
 	}
-	relProgPath := filepath.Join("testdata", "variablenav", "SQLDDM.NSP")
+	relProgPath := "testdata/variablenav/SQLDDM.NSP" // forward-slash index key (matches paths.NormalizeKey keyspace; filepath.Join would break on Windows)
 	idx.Add(relProgPath, progAnalysis)
 
 	// Analyze EMPLOYEE.NSD (the DDM definition)
@@ -54,7 +54,7 @@ func TestProvideDefinition_SQLDDMTableName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to analyze EMPLOYEE.NSD: %v", err)
 	}
-	relDDMPath := filepath.Join("testdata", "variablenav", "EMPLOYEE.NSD")
+	relDDMPath := "testdata/variablenav/EMPLOYEE.NSD" // forward-slash index key (see relProgPath note)
 	idx.Add(relDDMPath, ddmAnalysis)
 
 	// Compute resolution (DDM names resolve via the steplib chain like Adabas views)
@@ -150,7 +150,7 @@ func TestProvideReferences_SQLDDMCombinesAdasAndSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to analyze SQLDDM.NSP: %v", err)
 	}
-	relProgPath := filepath.Join("testdata", "variablenav", "SQLDDM.NSP")
+	relProgPath := "testdata/variablenav/SQLDDM.NSP" // forward-slash index key (matches paths.NormalizeKey keyspace; filepath.Join would break on Windows)
 	idx.Add(relProgPath, progAnalysis)
 
 	// Analyze EMPLOYEE.NSD
@@ -163,7 +163,7 @@ func TestProvideReferences_SQLDDMCombinesAdasAndSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to analyze EMPLOYEE.NSD: %v", err)
 	}
-	relDDMPath := filepath.Join("testdata", "variablenav", "EMPLOYEE.NSD")
+	relDDMPath := "testdata/variablenav/EMPLOYEE.NSD" // forward-slash index key (see relProgPath note)
 	idx.Add(relDDMPath, ddmAnalysis)
 
 	// Compute resolution
@@ -253,7 +253,7 @@ func TestProvideDefinition_SQLDDMProcessSQL_Unresolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to analyze SQLHOST.NSP: %v", err)
 	}
-	relProgPath := filepath.Join("testdata", "variablenav", "SQLHOST.NSP")
+	relProgPath := "testdata/variablenav/SQLHOST.NSP" // forward-slash index key (see note above)
 
 	// Build index with just this file (EMPLOYEE-DATA DDM not defined)
 	idx := &workspace.Index{}
@@ -316,7 +316,7 @@ func TestProvideDefinition_SQLDDMInBodyNotResolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to analyze SQLHOST.NSP: %v", err)
 	}
-	relProgPath := filepath.Join("testdata", "variablenav", "SQLHOST.NSP")
+	relProgPath := "testdata/variablenav/SQLHOST.NSP" // forward-slash index key (see note above)
 
 	// Analyze EMPLOYEE.NSD
 	ddmPath := filepath.Join(testdata, "EMPLOYEE.NSD")
@@ -328,7 +328,7 @@ func TestProvideDefinition_SQLDDMInBodyNotResolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to analyze EMPLOYEE.NSD: %v", err)
 	}
-	relDDMPath := filepath.Join("testdata", "variablenav", "EMPLOYEE.NSD")
+	relDDMPath := "testdata/variablenav/EMPLOYEE.NSD" // forward-slash index key (see relProgPath note)
 
 	// Build index
 	idx := &workspace.Index{}
