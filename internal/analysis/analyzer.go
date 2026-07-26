@@ -13,4 +13,12 @@ type Analyzer interface {
 	//
 	// TODO: finalize the signature as requirements firm up.
 	Analyze(path string, content []byte) (model.FileAnalysis, error)
+
+	// ExtractVariableRefs extracts variable use-site references from source content.
+	// This is a lightweight, on-demand scan that returns every variable identifier
+	// occurrence in statement bodies (not including DEFINE DATA declarations).
+	// The returned slice is always non-nil but may be empty.
+	// This method is used by navigation providers to enable variable go-to-definition
+	// and find-references (feature 27).
+	ExtractVariableRefs(content string) []model.VariableRef
 }

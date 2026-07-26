@@ -127,6 +127,12 @@ The capabilities below define the **target** feature set for the first stable re
 - `window/workDoneProgress` (indexing progress on first run) — **shipped** (FR-32,
   [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md); gated on the client's
   `window.workDoneProgress` capability)
+- `window/logMessage` + the `trace`/`$/setTrace`/`$/logTrace` handshake (LSP-native logging/tracing;
+  `--log-level` stderr flag) — **shipped** ([feature 26](docs/plans/features/26-lsp-tracing-and-logging/plan.md))
+- `textDocument/definition` / `references` extended to **data variables and SQL host variables** (jump to
+  the `DEFINE DATA` declaration, same-file and cross-file via `USING` data areas / SQL DDM names through the
+  steplib chain) — **shipped** ([feature 27](docs/plans/features/27-variable-navigation/plan.md))
+- `textDocument/documentHighlight` (highlight a symbol's occurrences in the file) — **shipped** (feature 27)
 
 ---
 

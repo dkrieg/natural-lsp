@@ -27,6 +27,10 @@ func (pa *panicAnalyzer) Analyze(path string, content []byte) (model.FileAnalysi
 	return pa.underlyingResult, nil
 }
 
+func (pa *panicAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
+	return []model.VariableRef{}
+}
+
 // TestProcessFiles tests per-file graceful degradation (FR-43):
 // - Skip files exceeding max_file_size with SkipTooLarge
 // - Skip files matching excluded paths with SkipExcluded

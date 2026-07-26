@@ -1,0 +1,17 @@
+DB: 000 FILE: 101  - EMPLOYEE                          DEFAULT SEQUENCE:
+TYPE: ADABAS
+
+T L DB Name                              F Leng  S D Remark
+- - -- --------------------------------  - ----  - - ------------------------
+  1 AA EMP-ID                            N    8  N U
+  1 AB EMP-NAME                          A   50  N D
+G 1 AC DEPT
+  2 AD DEPT-CODE                         A    3  N
+  2 AE DEPT-NAME                         A   30  N D
+  1 AF SALARY                            P  9,2  N
+M 1 AG PHONE                             A   20  N
+*      -------- SOURCE FIELD(S) -------
+*      EMP-NAME  (1-50)
+*      DEPT-NAME (1-30)
+*      SALARY    (1-9,2)
+******DDM OUTPUT TERMINATED******

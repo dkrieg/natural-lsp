@@ -234,7 +234,8 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 				TriggerCharacters:   []string{" "},
 				RetriggerCharacters: []string{" "},
 			},
-			CallHierarchyProvider: protocol.Boolean(true),
+			CallHierarchyProvider:     protocol.Boolean(true),
+			DocumentHighlightProvider: protocol.Boolean(true),
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",
@@ -1245,6 +1246,38 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 						return
 					}
 					respResult = buf.Bytes()
+				}
+
+			case "textDocument/documentHighlight":
+				// Feature 27, T5: document highlight handler.
+				// Gate on stateInitialized; decode DocumentHighlightParams; call provideDocumentHighlight.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.DocumentHighlightParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid document highlight params: %v", err))
+					return
+				}
+				// Call the provider function.
+				highlights, err := provideDocumentHighlight(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: highlights may be nil/empty.
+				// Important: return [] for empty, never null (arrays are always arrays).
+				if highlights == nil {
+					respResult = []byte(`[]`)
+				} else {
+					var marshalErr error
+					respResult, marshalErr = marshalResult(highlights)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal document highlights: %v", marshalErr))
+						return
+					}
 				}
 
 			case "textDocument/prepareCallHierarchy":

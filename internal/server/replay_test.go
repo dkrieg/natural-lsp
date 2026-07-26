@@ -51,6 +51,10 @@ func (a *gatedDiskAnalyzer) Analyze(path string, content []byte) (model.FileAnal
 	return a.inner.Analyze(path, content)
 }
 
+func (a *gatedDiskAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
+	return a.inner.ExtractVariableRefs(content)
+}
+
 // TestReplayDirtyBufferAfterPublish (Feature 21, T13 / OQ-B.1) proves that an
 // edit which arrives via didOpen/didChange WHILE the background index build is
 // in flight (idx still nil) is reflected by an INDEX-BACKED provider after the

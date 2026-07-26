@@ -897,6 +897,120 @@ func TestLoad_CacheVersionBumpedForHostVarRefs(t *testing.T) {
 	}
 }
 
+// TestSave_Load_DataAreaRefs verifies that FileAnalysis.DataAreaRefs (data-area references from USING clauses)
+// are persisted correctly through a cache Save→Load round-trip.
+// This tests Task 1 (feature 27 T7): DataAreaRef persistence.
+func TestSave_Load_DataAreaRefs(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"persists DataAreaRefs across round-trip"},
+		{"preserves Name, SectionKind and Range fields in DataAreaRefs"},
+		{"DataAreaRefs maintains case-normalized names"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build an index with DataAreaRefs carrying normalized names and ranges.
+			idx := &Index{}
+			idx.Add("caller.NSP", model.FileAnalysis{
+				ObjectType: model.ObjectProgram,
+				DataAreaRefs: []model.DataAreaRef{
+					{
+						Name:        "CUSTLDA",
+						SectionKind: "local",
+						Range: model.Range{
+							Start: model.Position{Line: 5, Column: 20},
+							End:   model.Position{Line: 5, Column: 27},
+						},
+					},
+					{
+						Name:        "EMPDATA",
+						SectionKind: "parameter",
+						Range: model.Range{
+							Start: model.Position{Line: 8, Column: 22},
+							End:   model.Position{Line: 8, Column: 29},
+						},
+					},
+					{
+						Name:        "GLOBALSYS",
+						SectionKind: "global",
+						Range: model.Range{
+							Start: model.Position{Line: 12, Column: 19},
+							End:   model.Position{Line: 12, Column: 28},
+						},
+					},
+				},
+			})
+
+			// Save the index.
+			err := Save(idx, cachePath)
+			if err != nil {
+				t.Fatalf("Save() returned error: %v", err)
+			}
+
+			// Load the index.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			if loaded == nil {
+				t.Fatal("Load() returned nil index")
+			}
+
+			if len(stale) != 0 {
+				t.Errorf("Load() returned %d stale files, want 0: %v", len(stale), stale)
+			}
+
+			// Verify DataAreaRefs entries round-trip correctly.
+			fa, ok := loaded.Get("caller.NSP")
+			if !ok {
+				t.Fatal("Load() missing file caller.NSP")
+			}
+
+			if len(fa.DataAreaRefs) != 3 {
+				t.Fatalf("Load() returned %d DataAreaRefs, want 3", len(fa.DataAreaRefs))
+			}
+
+			// Verify the first data-area reference
+			if fa.DataAreaRefs[0].Name != "CUSTLDA" {
+				t.Errorf("DataAreaRef[0].Name = %q, want %q", fa.DataAreaRefs[0].Name, "CUSTLDA")
+			}
+			if fa.DataAreaRefs[0].SectionKind != "local" {
+				t.Errorf("DataAreaRef[0].SectionKind = %q, want %q", fa.DataAreaRefs[0].SectionKind, "local")
+			}
+			if fa.DataAreaRefs[0].Range.Start.Line != 5 || fa.DataAreaRefs[0].Range.Start.Column != 20 {
+				t.Errorf("DataAreaRef[0].Range.Start = {%d,%d}, want {5,20}", fa.DataAreaRefs[0].Range.Start.Line, fa.DataAreaRefs[0].Range.Start.Column)
+			}
+
+			// Verify the second data-area reference
+			if fa.DataAreaRefs[1].Name != "EMPDATA" {
+				t.Errorf("DataAreaRef[1].Name = %q, want %q", fa.DataAreaRefs[1].Name, "EMPDATA")
+			}
+			if fa.DataAreaRefs[1].SectionKind != "parameter" {
+				t.Errorf("DataAreaRef[1].SectionKind = %q, want %q", fa.DataAreaRefs[1].SectionKind, "parameter")
+			}
+
+			// Verify the third data-area reference
+			if fa.DataAreaRefs[2].Name != "GLOBALSYS" {
+				t.Errorf("DataAreaRef[2].Name = %q, want %q", fa.DataAreaRefs[2].Name, "GLOBALSYS")
+			}
+			if fa.DataAreaRefs[2].SectionKind != "global" {
+				t.Errorf("DataAreaRef[2].SectionKind = %q, want %q", fa.DataAreaRefs[2].SectionKind, "global")
+			}
+		})
+	}
+}
+
 // TestSave_Load_WorkFiles verifies that FileAnalysis.WorkFiles (work-file definitions)
 // are persisted correctly and survive cache Save→Load round-trip.
 // This tests Task 15 (FR-22): work-file-definition persistence.
@@ -1858,12 +1972,14 @@ func TestLoad_ReadsGzipAndPlaintext(t *testing.T) {
 // 0.6.0 to 0.7.0 (feature 24, T3) causes an old-format cache to trigger a
 // full rebuild. This tests FR-39 (format-version gating) and Story 3 AC1
 // (version bump → one-time rebuild).
+// NOTE: As of feature 27 T1, the cache version is 0.8.0 (DataDefinition.NameRange added).
 func TestLoad_CacheVersionBumpedTo070(t *testing.T) {
 	t.Helper()
 
-	// First, verify the version constant has been bumped to 0.7.0 (Story 3 AC1).
-	if cacheFormatVersion != "0.7.0" {
-		t.Errorf("cacheFormatVersion = %q, want %q (version must bump to 0.7.0)", cacheFormatVersion, "0.7.0")
+	// First, verify the version constant has been bumped to 0.8.0 (feature 27 T1: DataDefinition.NameRange).
+	// This test documents the progression: 0.6.0 → 0.7.0 (feature 24) → 0.8.0 (feature 27).
+	if cacheFormatVersion != "0.8.0" {
+		t.Errorf("cacheFormatVersion = %q, want %q (version must be 0.8.0)", cacheFormatVersion, "0.8.0")
 	}
 
 	tests := []struct {
@@ -2292,5 +2408,78 @@ func TestBuildWithCache_RoundTripFidelity(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// TestLoad_RejectsCacheVersion0_7_0_AsStale_T1 (T1 RED, feature 27) verifies
+// that a cache written at version "0.7.0" (before DataDefinition.NameRange was
+// added) is detected as stale and triggers a full rebuild. This regression test
+// ensures the version bump to "0.8.0" works correctly and enforces cache
+// invalidation on model changes.
+func TestLoad_RejectsCacheVersion0_7_0_AsStale_T1(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"0.7.0 cache marked stale when version bumped to 0.8.0"},
+		{"forces full rebuild on DataDefinition.NameRange migration"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Manually build a 0.7.0 cache (the pre-T1 version) with plaintext JSON.
+			// This simulates a cache written by the old format before the NameRange addition.
+			oldVersionCache := CacheFile{
+				Version: "0.7.0",
+				Entries: map[string]cacheEntry{
+					"test.NSP": {
+						ObjectType:  string(model.ObjectProgram),
+						ContentHash: "deadbeef",
+						Definitions: []model.DataDefinition{
+							{
+								Name:  "OLD-FIELD",
+								Level: 1,
+								Type:  "A10",
+								Range: model.Range{
+									Start: model.Position{Line: 5, Column: 1},
+									End:   model.Position{Line: 5, Column: 10},
+								},
+								// Note: NameRange not present in old cache (the new field)
+							},
+						},
+					},
+				},
+			}
+			data, err := json.MarshalIndent(oldVersionCache, "", "    ")
+			if err != nil {
+				t.Fatalf("Failed to marshal old-version cache: %v", err)
+			}
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("Failed to write old-version cache: %v", err)
+			}
+
+			// Try to load the cache - should treat it as stale due to version mismatch.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			// Verify Load() returns nil loaded index (stale, version mismatch).
+			if loaded != nil {
+				t.Error("Load() returned non-nil index for 0.7.0 cache, want nil (stale)")
+			}
+
+			// Verify stale list contains the file (forces rebuild).
+			if len(stale) == 0 {
+				t.Error("Load() returned empty stale list for version mismatch, want all files marked stale")
+			}
+		})
 	}
 }

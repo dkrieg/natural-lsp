@@ -157,17 +157,28 @@ func (p *Parser) parseDataSection(ast *Program, startPos model.Position) {
 		p.advance()
 
 		// Handle optional USING clause (GLOBAL USING <gda-name>).
-		// The GDA name is consumed but not stored; it will be bound in feature 08b.
+		// Capture the GDA name and its range for feature 27, T7 (cross-file field resolution).
+		var usingName string
+		var usingRange model.Range
 		if p.matchesLiteral("USING") {
 			p.advance()
 			if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
+				usingName = p.current.Literal
+				usingStart := p.currentPos()
+				usingEnd := p.currentPos()
+				// Inclusive end: point at the last character of the name token,
+				// matching the field NameRange / tokenRange convention (ADR-008).
+				usingEnd.Column += len(p.current.Literal) - 1
+				usingRange = model.Range{Start: usingStart, End: usingEnd}
 				p.advance()
 			}
 		}
 
 		section := &DataSection{
-			StartPos: sectionStartPos,
-			Kind:     sectionKind,
+			StartPos:   sectionStartPos,
+			Kind:       sectionKind,
+			Using:      usingName,
+			UsingRange: usingRange,
 		}
 
 		// Parse field lines until the next section boundary.
@@ -262,6 +273,7 @@ func (p *Parser) parseDataField() *DataField {
 	// sigil from arithmetic `+`, we handle this at the parser level: if we see `+`
 	// followed immediately by an identifier (same line, adjacent column), combine them.
 	var name string
+	var nameRange model.Range
 	if !isRedefine {
 		// Check for +NAME pattern (+ operator immediately followed by identifier)
 		if p.matches(TokenOperator, "+") {
@@ -277,6 +289,10 @@ func (p *Parser) parseDataField() *DataField {
 				p.current.Line == plusLine && p.current.Column == plusCol+1 {
 				// This is a +NAME pattern. Combine them.
 				name = "+" + p.current.Literal
+				// Capture name range starting from the + sigil through the end of the identifier
+				nameStartPos := model.Position{Line: plusLine, Column: plusCol}
+				nameEndPos := model.Position{Line: p.current.Line, Column: p.current.Column + len(p.current.Literal) - 1}
+				nameRange = model.Range{Start: nameStartPos, End: nameEndPos}
 				p.advance() // consume the identifier
 				// Update the field's start position to the + sigil
 				fieldStartPos = model.Position{Line: plusLine, Column: plusCol}
@@ -288,6 +304,10 @@ func (p *Parser) parseDataField() *DataField {
 			}
 		} else if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
 			name = p.current.Literal
+			// Capture name range for the identifier
+			nameStartPos := model.Position{Line: p.current.Line, Column: p.current.Column}
+			nameEndPos := model.Position{Line: p.current.Line, Column: p.current.Column + len(p.current.Literal) - 1}
+			nameRange = model.Range{Start: nameStartPos, End: nameEndPos}
 			p.advance()
 		}
 	}
@@ -311,6 +331,11 @@ func (p *Parser) parseDataField() *DataField {
 		}
 	}
 
+	// Calculate the correct end position: the ending column of the last consumed token.
+	// prevPos() gives the starting column; we need to extend it by the token length.
+	endPos := p.prevPos()
+	endPos.Column = endPos.Column + len(p.prev.Literal) - 1
+
 	return &DataField{
 		Level:      level,
 		Name:       name,
@@ -318,8 +343,9 @@ func (p *Parser) parseDataField() *DataField {
 		Dimensions: dimensions,
 		Redefines:  redefineTarget,
 		StartPos:   fieldStartPos,
-		EndPos:     p.prevPos(),
+		EndPos:     endPos,
 		Children:   make([]*DataField, 0),
+		NameRange:  nameRange,
 	}
 }
 

@@ -258,6 +258,12 @@ type DataDefinition struct {
 	// Range is the source span of this data item (from first token to last).
 	Range Range
 
+	// NameRange is the source span of just the name token(s) for this data item.
+	// For data fields with names, this is a subset of Range pointing at the identifier(s).
+	// For REDEFINE block headers (Name=""), this is zero. Used by go-to-definition and outline
+	// to highlight the precise name span. Additive (feature 27).
+	NameRange Range
+
 	// Children holds subfields if this is a group or a REDEFINE block.
 	// Nesting order matches declaration order. Nil/empty for scalars and groups with no children.
 	Children []DataDefinition
@@ -369,6 +375,13 @@ type FileAnalysis struct {
 	// persisted in the workspace cache (0.6.0+).
 	Structure *Symbol
 
+	// DataAreaRefs holds references to external data areas from USING clauses in DEFINE DATA sections.
+	// Each entry captures the data-area name, the section kind that carries the USING,
+	// and the source range of the name token. Used for cross-file field resolution (feature 27, T7).
+	// Populated by the analyzer's data-area reference extraction (feature 27, T7);
+	// persisted in the cache (0.8.0).
+	DataAreaRefs []DataAreaRef
+
 	// AST holds the parsed AST for this file. Populated by the parser
 	// backend when available; nil when the parser is not integrated.
 	AST any
@@ -407,4 +420,44 @@ type WorkFile struct {
 type HostVarRef struct {
 	Name  string
 	Range Range
+}
+
+// VariableRef represents a variable *use* (reference) from statement bodies in Natural source.
+// This is distinct from DataDefinition, which represents a *declaration* of a variable.
+// VariableRef is used to track every occurrence of a variable identifier in executable statements,
+// enabling go-to-definition, find-references, and document highlight operations.
+//
+// Name is the normalized (upper-case) identifier of the variable, with Natural sigils (#, &, @, +)
+// preserved, matching DataDefinition.Name convention so that resolution can bind refs back to
+// declarations. Array subscripts are stripped (e.g., #T(1:10) becomes #T as a separate ref, with
+// the index variable captured as its own ref).
+//
+// Range is the source span of the variable occurrence in the statement. A group-qualified
+// reference like #GROUP.FIELD is NOT captured as a single span: ExtractVariableRefs emits the
+// group (#GROUP) and the field (FIELD) as separate VariableRef entries, each with its own Range
+// pointing at just that identifier token, so a cursor on either component resolves independently.
+//
+// This type is additive and in-memory only (feature 27) — it is NOT persisted in the cache.
+type VariableRef struct {
+	Name  string
+	Range Range
+}
+
+// DataAreaRef represents a USING data-area reference from a DEFINE DATA section.
+// This captures the external data-area name from a LOCAL/PARAMETER/GLOBAL USING <name>
+// clause, enabling cross-file field resolution (feature 27, phase B, T7).
+//
+// Name is the normalized (upper-case) identifier of the data area (e.g., CUSTLDA).
+// SectionKind is the section keyword (local/parameter/global) that carries the USING reference.
+// Range is the source span of the data-area name token in the USING clause.
+//
+// This type is additive and persisted in the cache (feature 27, T7 GREEN).
+// However, the cache-format version is not bumped for this persistence (0.8.0 handles both
+// DataDefinition.NameRange and DataAreaRefs in a single bump). DataAreaRefs are used for
+// field-resolution binding but do not affect the stable cache key (unlike feature 07 where
+// resolution is not persisted).
+type DataAreaRef struct {
+	Name        string
+	SectionKind string
+	Range       Range
 }

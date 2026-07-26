@@ -1,0 +1,2 @@
+# Flat namespace: no library map, so all objects are in an empty-named library
+# (see feature 07 resolution logic for how flat namespace works)

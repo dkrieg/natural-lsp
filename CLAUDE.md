@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–26 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). What remains as extraction follow-up is cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain) — now owned by **planned feature 27** (see the feature-27 note below), which folds that binding together with variable go-to-definition/references. **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
+**Features 00–27 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). The cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain) shipped in **feature 27** (see the feature-27 note below), which folds that binding together with variable/host-var go-to-definition/references and adds `textDocument/documentHighlight`. **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
 
 **Assessment (2026-07-14) — known defects and remediation plan.** An independent full-project
 assessment (`docs/assessment-2026-07-14.md`: live wire probes, four specialist reviews, LSP-spec
@@ -48,10 +48,10 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 `internal/workspace` (ADR-027). **(ii)** A **Windows CI job** (`windows-latest`, `go build`/`vet`/`test`
 + scoped integration, `-race` omitted with rationale) was added so platform bugs can't reach a release
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
-**(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), and 26
-(lsp-tracing-and-logging) are shipped** (see their notes below). The remaining follow-ups are **planned**
-(features **27–34**): the higher-value ones with full notes below — **27 (variable & reference
-navigation)**, **28 (rich symbol detail & `VIEW OF` binding)**, **29 (semantic tokens)** — plus a set of
+**(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
+(lsp-tracing-and-logging), and 27 (variable & reference navigation) are shipped** (see their notes
+below). The remaining follow-ups are **planned** (features **28–34**): the higher-value ones with full
+notes below — **28 (rich symbol detail & `VIEW OF` binding)** and **29 (semantic tokens)** — plus a set of
 smaller **P2 LSP-capability** plans, **30 (pull diagnostics)**, **31 (declaration & type-definition
 navigation)**, **32 (document links)**, **33 (execute-command / server commands)**, and **34 (moniker —
 documented non-goal, deferred)** (see their `docs/plans/features/` dirs; summarized after the feature-29
@@ -77,36 +77,39 @@ outbound write mutex is needed** because `jsonrpc2.headerStream.Write` already s
 (the atomic guards the only shared mutable state) — proven by a `-race` test + three fuzz targets
 (`FuzzSetTraceValue`/`FuzzTraceSummary`/`FuzzLogFormat`). All emission is **fire-and-forget** (a failed
 write is stderr-logged only, never blocks/fails/panics a request — FR-43). **No `internal/model` change and
-no cache-format bump** (still `0.6.0`) and **no new server capability** (logMessage/logTrace/setTrace are
+no cache-format bump** (still `0.7.0` at the time) and **no new server capability** (logMessage/logTrace/setTrace are
 notification-level, gated on the *client* window capability — the locked `TestInitialize` allow-list is
 unchanged). Surfacing per-file skips required a small **additive, in-memory-only** workspace surface
 (`workspace.Index.Skips()`/`addSkip`/`SkipRecord`, exported `workspace.CacheExists`, and two additive
 `config.SkipReason` constants `SkipUnreadable`/`SkipAnalyzerPanic`) — not persisted, no cache-format change,
 Analyzer seam untouched (ADR-028). FR-53, NFR-14. See `docs/plans/features/26-lsp-tracing-and-logging/`.
 
-**Feature 27 (variable & reference navigation)** — extends go-to-definition/find-references/hover
-(FR-24/FR-25/FR-28) to **data variables and SQL host variables**, and **completes the binding half of the
-SQL extraction** (FR-19/20/21 — closing feature 08b's deferred cross-file binding and its open questions).
-Delivered in two phases. **Phase A (same-file variable navigation):** from a variable use-site (`#VAR`,
-group-qualified `#GROUP.FIELD`, array `#T(I)`) jump to its `DEFINE DATA` declaration and find all uses. The
-declaration side already exists (`FileAnalysis.Definitions` + the `SymbolDataField` tree); the net-new work
-is a **variable use-site scanner** — the parser skips the bodies of the ~20 statement kinds it doesn't
-model, so no use-site is captured today (only SQL `HostVarRef`), but the lexer tokenizes everything with
-positions, so a token-occurrence scan (à la `scanOpaqueHostVars`) collects uses without a parser rewrite.
-Correctness: case-insensitive match, strip array subscripts, honor `group.field` qualification, exclude
-`*`-system variables, treat `&`-dynamic/undeclared as modeled gaps (empty, not errors — FR-17), offer all
-candidates on an ambiguous unqualified name. **Phase B (cross-file & host-var/DDM binding):** bind
-variables declared in external data areas (`LOCAL/PARAMETER/GLOBAL USING <.NSL/.NSA/.NSG>`), SQL **host
-variables** → their `DEFINE DATA` field, and SQL-sourced **DDM table names** → their `.NSD` (same DDM
-namespace as Adabas) — all through the existing **steplib chain** (feature 07). Note the two resolution
-kinds: locating an *object* (data area / DDM) reuses feature 07's chain unchanged; resolving a *field
-within* an object is a **new intra-object name→`DataDefinition` lookup**. This is the **first
-model/cache-format change since feature 24**: an additive `model.DataDefinition.NameRange` (precise
-name-token span, mirroring `DataAccessEntry.NameRange`) bumps `cacheFormatVersion` `0.7.0` → `0.8.0`;
-binding is recomputed from cached edges/refs (feature 07 OQ-1) so Phase B adds no further bump. It also
-adds **`textDocument/documentHighlight`** (highlight a symbol's occurrences in the file, read/write kinds,
-reusing the reference scan) — the one new capability; otherwise extends the existing providers. See
-`docs/plans/features/27-variable-navigation/`.
+Feature 27 (variable & reference navigation) extends go-to-definition/find-references (FR-24/FR-25) to
+**data variables and SQL host variables**, adds **`textDocument/documentHighlight`**, and **completes the
+binding half of the SQL extraction** (FR-19/20/21 — closing feature 08b's deferred cross-file binding).
+Delivered in two phases (T1–T9). **Phase A (same-file):** an additive `model.DataDefinition.NameRange`
+(precise name-token span, mirroring `DataAccessEntry.NameRange`; parser-populated, and feeds
+`SymbolDataField.SelectionRange`); a net-new **variable use-site scanner** `ExtractVariableRefs` — added to
+the **Analyzer interface** (so `internal/server` calls it through the seam) — that walks the lexer token
+stream (comments/strings/`DEFINE DATA` declarations/keywords/`*`-system vars excluded for free) and returns
+`model.VariableRef` (in-memory only, not persisted); and the `definition`/`references`/`documentHighlight`
+providers resolving a variable use (or the declaration itself, idempotent) to its `DEFINE DATA` line.
+Correctness: case-insensitive, array-subscript stripping, `#GROUP.FIELD` **group-qualification**
+(reconstructed from the source token left of the leaf → scoped to that level-1 group), REDEFINE sub-fields,
+`*`-system/`&`-dynamic/undeclared → modeled gaps (empty, FR-17), and an unqualified name declared in >1
+group → **all candidates**. **Phase B (cross-file & host-var/DDM binding):** variables from external data
+areas (`LOCAL/PARAMETER/GLOBAL USING <.NSL/.NSA/.NSG>`, captured as the additive persisted
+`model.DataAreaRef`), SQL **host variables** → their `DEFINE DATA` field, and SQL-sourced **DDM table
+names** → their `.NSD` (same DDM namespace as Adabas) — all resolved through the existing **steplib chain**
+via `workspace.ResolveDataAreaFieldLocation`/`ResolveDDMPath` (non-transitive, first-reachable-wins; the
+server routes object location through these, never a raw `candidates[0]`). Two resolution kinds: locating
+an *object* (data area/DDM) reuses feature 07's chain; resolving a *field within* it is a new intra-object
+name→`DataDefinition` lookup. Closed the live `references.go` DDM-`targetPath` TODO. **Cache-format bump
+`0.7.0` → `0.8.0`** (the first model/cache change since feature 24): persists the additive `NameRange` and
+`DataAreaRefs`; resolution is recomputed from cached refs (feature 07 OQ-1). **One new capability
+(`documentHighlightProvider`, `Kind: Text` — write-direction out of scope)**; otherwise extends the
+existing providers. ADR-028 (chain-based server object-location) / ADR-029 (source-reconstructed group
+qualification). See `docs/plans/features/27-variable-navigation/`.
 
 **Feature 28 (rich symbol detail & `VIEW OF` binding)** — enriches the document-outline
 (`textDocument/documentSymbol`) export. **Phase A (typed outline):** `DEFINE DATA` field **type**
@@ -179,7 +182,7 @@ Feature 25 (lsp4ij-template-validation) fixes a real-user-reported bug: the ship
 (`editors/jetbrains/lsp4ij-template/template.json`) **did not import** because every field name was
 invented (`serverName`/`command`/`mappings[{fileNamePatterns,languageId}]`) rather than LSP4IJ's real
 schema. **No Go / `internal/model` / cache-format change** (mirrors feature 15 — editor-client + docs +
-a Node test only; cache stays `0.6.0`, nothing crosses the Analyzer seam). The template is rewritten to
+a Node test only; cache stays `0.7.0`, nothing crosses the Analyzer seam). The template is rewritten to
 the externally-verified LSP4IJ schema — top-level `id`/`name`, an OS-keyed `programArgs`
 (`default: "natural-lsp --stdio"` + `windows: "natural-lsp.exe --stdio"`), and
 `fileTypeMappings[{fileType.{name,patterns},languageId}]` with all 15 `.NSx` patterns → `languageId`

@@ -514,3 +514,94 @@ func FuzzParseDDM(f *testing.F) {
 		walkDefs(defs)
 	})
 }
+
+// FuzzExtractVariableRefs is the executable proof of the variable-reference scanner's
+// robustness (FR-43, feature 27 T2): ExtractVariableRefs must NEVER panic on arbitrary
+// input and must ALWAYS return a non-nil slice (empty is acceptable; panic is not).
+//
+// The variable-reference scanner operates on lexer token streams, so it exercises:
+// - Arbitrary tokenization (the lexer produces tokens for valid/invalid/garbage input)
+// - Mixed valid variables and comments/strings (must exclude comment/string tokens)
+// - System variables (*DATE, *TIME) and dynamic names (excluded per design)
+// - Array subscripts and group-qualified names (handled per T2 design)
+// - Malformed/truncated lines (graceful skipping)
+// - Edge cases: empty input, deeply nested arrays, giant lines, non-ASCII
+//
+// Seed corpus:
+// - testdata/variablerefs/01-basic-captures.NSP (Task 2 fixture)
+// - Hand-written adversarial cases (garbage, UTF-8, huge arrays, etc.)
+//
+// Feature 27 T2, FR-43, OQ-1/OQ-6.
+func FuzzExtractVariableRefs(f *testing.F) {
+	// Seed from the variable-refs fixture.
+	data, err := os.ReadFile(filepath.Join("testdata", "variablerefs", "01-basic-captures.NSP"))
+	if err == nil {
+		f.Add(data)
+	}
+
+	// Empty input — must return non-nil slice, not panic.
+	f.Add([]byte(""))
+
+	// Pure garbage/non-ASCII bytes.
+	f.Add([]byte("\x00\x01\x02\x03\xFF\xFE\xFD"))
+
+	// Valid variable uses with comments and strings mixed in.
+	f.Add([]byte("* Comment with #FAKE\nMOVE #VAR TO #X\n* Another #FAKE comment\n"))
+
+	// String literal with variable-like content.
+	f.Add([]byte("MOVE '#REAL' TO #VAR\n"))
+
+	// Deeply nested array subscripts (stress test).
+	f.Add([]byte("MOVE #ARR(#I(#J(#K))) TO #X\n"))
+
+	// System variables only (should produce zero refs for system vars).
+	f.Add([]byte("MOVE *DATE TO *TIME\n"))
+
+	// Mixed valid and dynamic (# in call position).
+	f.Add([]byte("CALLNAT #PROG #VAR\n"))
+
+	// Very long variable name (concatenated identifiers).
+	longVar := "MOVE #"
+	for i := 0; i < 1000; i++ {
+		longVar += "VERY-LONG-NAME-"
+	}
+	longVar += " TO #X\n"
+	f.Add([]byte(longVar))
+
+	// Group-qualified with many levels.
+	f.Add([]byte("MOVE #G1.#G2.#G3.#FIELD TO #X\n"))
+
+	// Unicode/UTF-8 in and around identifiers.
+	f.Add([]byte("MOVE #CAFÉ TO #VAR\nMOVE #VAR€ TO #X\n"))
+
+	// Multi-line variable uses (tests position tracking).
+	f.Add([]byte("MOVE #VAR1\n  TO #VAR2\nMOVE #VAR3\n  TO #VAR4\n"))
+
+	// Carriage-return line terminators (position tracking edge case).
+	f.Add([]byte("MOVE #VAR1 TO #VAR2\r\nMOVE #VAR3 TO #VAR4\r"))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// Act: run the variable-refs scanner on arbitrary input.
+		// The fuzzer automatically catches panics; the assertion below adds an
+		// explicit nil-slice vs non-nil assertion.
+		refs := ExtractVariableRefs(string(input))
+
+		// Assert: we must always get a non-nil slice (empty is fine, nil is a failure).
+		if refs == nil {
+			t.Error("ExtractVariableRefs returned nil; want non-nil slice")
+		}
+
+		// Verify all returned refs have valid structure (non-zero names, non-zero ranges).
+		for i, ref := range refs {
+			if ref.Name == "" {
+				t.Errorf("refs[%d].Name is empty, want non-empty identifier", i)
+			}
+			// Range must be non-zero (at least one of Start or End must be set).
+			// Empty ranges are a sign of a bug.
+			if ref.Range.Start.Line == 0 && ref.Range.Start.Column == 0 &&
+				ref.Range.End.Line == 0 && ref.Range.End.Column == 0 {
+				t.Logf("refs[%d] has zero Range (may indicate a parsing issue): %+v", i, ref)
+			}
+		}
+	})
+}

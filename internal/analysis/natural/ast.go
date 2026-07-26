@@ -86,6 +86,10 @@ type DataSection struct {
 	EndPos   model.Position
 	Kind     string // section keyword: "local", "parameter", "global", "linkage" (lowercase for case-insensitive comparison)
 	Fields   []*DataField
+	// Using is the external data-area name from a USING clause (e.g., GLOBAL USING MYLDA).
+	// Empty if no USING clause is present. Captured for feature 27, T7 (cross-file field resolution).
+	Using      string
+	UsingRange model.Range // source span of just the data-area name token in the USING clause
 }
 
 func (ds *DataSection) Position() (model.Position, model.Position) {
@@ -102,6 +106,7 @@ type DataField struct {
 	Dimensions []ArrayBound // nil/empty for scalar
 	Redefines  string       // target field name for REDEFINE; "" if not a redefine
 	Children   []*DataField // group members and redefine subfields
+	NameRange  model.Range  // source span of just the name token(s); zero for REDEFINE headers
 }
 
 func (df *DataField) Position() (model.Position, model.Position) {

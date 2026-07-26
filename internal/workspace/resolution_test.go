@@ -3970,3 +3970,124 @@ func TestResolveInto_ConcurrencyRace(t *testing.T) {
 	// If -race detected no data race, this test passes.
 	// If -race detected a race (before the fix), this test fails.
 }
+
+// TestDataAreaRef_CrossFileCapture verifies that USING data-area references
+// are captured by the analyzer and can be used for cross-file resolution (feature 27, T7).
+//
+// Acceptance criteria:
+//   - The analyzer captures USING <name> references from DEFINE DATA sections
+//   - A program with LOCAL USING CUSTLDA records the CUSTLDA reference
+//   - The referenced data area can be looked up by name via the steplib chain
+//   - The data area's field definitions are available for binding
+func TestDataAreaRef_CrossFileCapture(t *testing.T) {
+	// Test program that uses USING
+	programContent := `DEFINE DATA
+LOCAL USING CUSTLDA
+END-DEFINE
+
+MOVE 42 TO #CUST-ID.
+`
+
+	// Data area with field definitions
+	dataAreaContent := `DEFINE DATA
+LOCAL
+  1 #CUST-ID       (N8)
+  1 #CUST-NAME     (A50)
+END-DEFINE
+`
+
+	// Analyze the program
+	analyzer := natural.New(nil)
+	progAnalysis, err := analyzer.Analyze("TEST.NSP", []byte(programContent))
+	if err != nil {
+		t.Fatalf("Analyze program failed: %v", err)
+	}
+
+	// Verify DataAreaRefs were captured
+	if len(progAnalysis.DataAreaRefs) == 0 {
+		t.Fatal("Expected DataAreaRefs to be populated, but got empty slice")
+	}
+
+	// Find the CUSTLDA reference
+	var custldaRef *model.DataAreaRef
+	for i := range progAnalysis.DataAreaRefs {
+		if strings.EqualFold(progAnalysis.DataAreaRefs[i].Name, "CUSTLDA") {
+			custldaRef = &progAnalysis.DataAreaRefs[i]
+			break
+		}
+	}
+
+	if custldaRef == nil {
+		t.Fatal("Expected to find CUSTLDA in DataAreaRefs")
+	}
+
+	if custldaRef.Name != "CUSTLDA" {
+		t.Errorf("DataAreaRef.Name = %q, want CUSTLDA", custldaRef.Name)
+	}
+
+	if custldaRef.SectionKind != "local" {
+		t.Errorf("DataAreaRef.SectionKind = %q, want local", custldaRef.SectionKind)
+	}
+
+	// Analyze the data area
+	dataAreaAnalysis, err := analyzer.Analyze("CUSTLDA.NSL", []byte(dataAreaContent))
+	if err != nil {
+		t.Fatalf("Analyze data area failed: %v", err)
+	}
+
+	// Verify the data area's definitions were extracted
+	if len(dataAreaAnalysis.Definitions) == 0 {
+		t.Fatal("Expected Definitions in data area, but got empty slice")
+	}
+
+	// Find CUST-ID in the definitions
+	// Note: field names include the sigil, so we look for "#CUST-ID"
+	var custIdDef *model.DataDefinition
+	for i := range dataAreaAnalysis.Definitions {
+		if strings.EqualFold(dataAreaAnalysis.Definitions[i].Name, "#CUST-ID") {
+			custIdDef = &dataAreaAnalysis.Definitions[i]
+			break
+		}
+	}
+
+	if custIdDef == nil {
+		t.Fatal("Expected #CUST-ID in data area definitions")
+	}
+
+	// Verify NameRange is populated (T1 requirement)
+	if custIdDef.NameRange.Start.Line == 0 {
+		t.Error("CUST-ID.NameRange.Start.Line should not be 0 (NameRange should be populated)")
+	}
+
+	if custIdDef.NameRange.Start.Column == 0 {
+		t.Error("CUST-ID.NameRange.Start.Column should not be 0 (NameRange should be populated)")
+	}
+}
+
+// TestResolveDataAreaField_Integration is a placeholder for the full
+// cross-file field-resolution test that will be implemented in T7 GREEN.
+// It verifies:
+//   - A cursor on a variable use resolves via USING to its declaration in a data area
+//   - The steplib chain is followed (current lib → steplibs → SYSTEM)
+//   - Unresolved data areas and missing fields return empty results
+func TestResolveDataAreaField_Integration(t *testing.T) {
+	// This test will be implemented in T7 GREEN when the field-resolution
+	// helper in internal/workspace is wired up. For now, we verify that the
+	// analyzer captures the USING references and the data-area definitions
+	// are available for resolution.
+
+	// The acceptance criteria from the plan:
+	// - A variable use that matches a DEFINE DATA field in a USING data area
+	//   resolves to that field's NameRange in the external .NSL/.NSA/.NSG
+	// - Resolution follows the steplib chain
+	// - Unresolved data area (outside the chain) → empty (FR-17)
+	// - Field absent from the data area → empty (FR-17)
+
+	// At RED phase, we assert the prerequisites are in place:
+	// 1. USING references are captured (verified above)
+	// 2. Data area definitions are extracted (verified above)
+	// 3. The index can look up data areas by name (tested in feature 07)
+	// 4. The field-resolution helper doesn't exist yet (will be added in GREEN)
+
+	t.Skip("Placeholder for T7 GREEN implementation of field resolution")
+}

@@ -40,6 +40,10 @@ func (a *cancellingAnalyzer) Analyze(path string, content []byte) (model.FileAna
 	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
 }
 
+func (a *cancellingAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
+	return []model.VariableRef{}
+}
+
 func (a *cancellingAnalyzer) analyzed() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()

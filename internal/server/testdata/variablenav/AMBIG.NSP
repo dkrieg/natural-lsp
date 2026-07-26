@@ -1,0 +1,19 @@
+* Program to test ambiguous unqualified variable references (feature 27, T3).
+* Two groups, each with a sub-field named #FIELD.
+* An unqualified reference #FIELD should resolve to BOTH declarations.
+PROGRAM AMBIG
+DEFINE DATA
+  LOCAL
+    1 #GROUP-A
+      2 #FIELD (A10)
+    1 #GROUP-B
+      2 #FIELD (A10)
+  END
+END-DEFINE
+* Unqualified reference to #FIELD — ambiguous
+MOVE #FIELD TO #FIELD
+
+* Qualified references disambiguate
+MOVE #GROUP-A.#FIELD TO #GROUP-B.#FIELD
+
+END

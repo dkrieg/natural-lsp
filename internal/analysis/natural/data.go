@@ -151,6 +151,7 @@ func fieldToDefinition(field *DataField, sectionKind string) model.DataDefinitio
 		Dimensions:  convertArrayBounds(field.Dimensions),
 		SectionKind: sectionKind,
 		Range:       model.Range{Start: field.StartPos, End: field.EndPos},
+		NameRange:   field.NameRange,
 	}
 	if len(field.Children) > 0 {
 		def.Children = make([]model.DataDefinition, 0, len(field.Children))
@@ -276,4 +277,40 @@ func extractDefinitions(prog *Program) []model.DataDefinition {
 	}
 
 	return defs
+}
+
+// extractDataAreaRefs walks the parsed program and returns data-area references
+// from USING clauses in DEFINE DATA sections.
+//
+// Each USING <name> clause in a LOCAL/PARAMETER/GLOBAL section produces a
+// DataAreaRef capturing the external data-area name, the section kind, and the
+// source range of the name token. The USING reference is used for cross-file
+// field resolution (feature 27, T7).
+//
+// Returns references in encounter order (sections appear in the order they are
+// declared). Never panics over partial ASTs.
+func extractDataAreaRefs(prog *Program) []model.DataAreaRef {
+	if prog == nil {
+		return nil
+	}
+
+	var refs []model.DataAreaRef
+
+	for _, section := range prog.DataSections {
+		if section == nil {
+			continue
+		}
+		// Only emit a ref if the section has a non-empty USING clause.
+		if section.Using == "" {
+			continue
+		}
+
+		refs = append(refs, model.DataAreaRef{
+			Name:        section.Using,
+			SectionKind: section.Kind,
+			Range:       section.UsingRange,
+		})
+	}
+
+	return refs
 }

@@ -19,7 +19,7 @@ import (
 	"github.com/dkrieg/natural-lsp/internal/paths"
 )
 
-const cacheFormatVersion = "0.7.0"
+const cacheFormatVersion = "0.8.0"
 
 // CacheFile represents the on-disk cache format.
 type CacheFile struct {
@@ -29,15 +29,16 @@ type CacheFile struct {
 
 // cacheEntry holds the cached data for a single file, including its content hash.
 type cacheEntry struct {
-	ObjectType  string                  `json:"objectType"`
-	Symbols     []model.SymbolEntry     `json:"symbols"`
-	Edges       []model.EdgeEntry       `json:"edges"`
-	DataAccess  []model.DataAccessEntry `json:"dataAccess"`
-	Definitions []model.DataDefinition  `json:"definitions"`
-	WorkFiles   []model.WorkFile        `json:"workFiles"`
-	HostVarRefs []model.HostVarRef      `json:"hostVarRefs"`
-	Structure   *model.Symbol           `json:"structure,omitempty"`
-	ContentHash string                  `json:"contentHash"`
+	ObjectType   string                  `json:"objectType"`
+	Symbols      []model.SymbolEntry     `json:"symbols"`
+	Edges        []model.EdgeEntry       `json:"edges"`
+	DataAccess   []model.DataAccessEntry `json:"dataAccess"`
+	Definitions  []model.DataDefinition  `json:"definitions"`
+	WorkFiles    []model.WorkFile        `json:"workFiles"`
+	HostVarRefs  []model.HostVarRef      `json:"hostVarRefs"`
+	DataAreaRefs []model.DataAreaRef     `json:"dataAreaRefs"`
+	Structure    *model.Symbol           `json:"structure,omitempty"`
+	ContentHash  string                  `json:"contentHash"`
 }
 
 // cacheExists reports whether a regular cache file is present at path.
@@ -74,15 +75,16 @@ func saveIndex(idx *Index, root, cachePath string) error {
 			hash = fmt.Sprintf("%x", sha256.Sum256(content))
 		}
 		entries[relPath] = cacheEntry{
-			ObjectType:  string(fa.ObjectType),
-			Symbols:     fa.Symbols,
-			Edges:       fa.Edges,
-			DataAccess:  fa.DataAccess,
-			Definitions: fa.Definitions,
-			WorkFiles:   fa.WorkFiles,
-			HostVarRefs: fa.HostVarRefs,
-			Structure:   fa.Structure,
-			ContentHash: hash,
+			ObjectType:   string(fa.ObjectType),
+			Symbols:      fa.Symbols,
+			Edges:        fa.Edges,
+			DataAccess:   fa.DataAccess,
+			Definitions:  fa.Definitions,
+			WorkFiles:    fa.WorkFiles,
+			HostVarRefs:  fa.HostVarRefs,
+			DataAreaRefs: fa.DataAreaRefs,
+			Structure:    fa.Structure,
+			ContentHash:  hash,
 		}
 	})
 
@@ -114,15 +116,16 @@ func Save(idx *Index, path string) error {
 			hash = fmt.Sprintf("%x", sha256.Sum256(content))
 		}
 		entries[filePath] = cacheEntry{
-			ObjectType:  string(fa.ObjectType),
-			Symbols:     fa.Symbols,
-			Edges:       fa.Edges,
-			DataAccess:  fa.DataAccess,
-			Definitions: fa.Definitions,
-			WorkFiles:   fa.WorkFiles,
-			HostVarRefs: fa.HostVarRefs,
-			Structure:   fa.Structure,
-			ContentHash: hash,
+			ObjectType:   string(fa.ObjectType),
+			Symbols:      fa.Symbols,
+			Edges:        fa.Edges,
+			DataAccess:   fa.DataAccess,
+			Definitions:  fa.Definitions,
+			WorkFiles:    fa.WorkFiles,
+			HostVarRefs:  fa.HostVarRefs,
+			DataAreaRefs: fa.DataAreaRefs,
+			Structure:    fa.Structure,
+			ContentHash:  hash,
 		}
 	})
 
@@ -185,14 +188,15 @@ func Load(path string, currentHashes map[string]string, logger *slog.Logger) (*I
 		key := paths.NormalizeKey(path)
 
 		fa := model.FileAnalysis{
-			ObjectType:  model.ObjectType(entry.ObjectType),
-			Symbols:     entry.Symbols,
-			Edges:       entry.Edges,
-			DataAccess:  entry.DataAccess,
-			Definitions: entry.Definitions,
-			WorkFiles:   entry.WorkFiles,
-			HostVarRefs: entry.HostVarRefs,
-			Structure:   entry.Structure,
+			ObjectType:   model.ObjectType(entry.ObjectType),
+			Symbols:      entry.Symbols,
+			Edges:        entry.Edges,
+			DataAccess:   entry.DataAccess,
+			Definitions:  entry.Definitions,
+			WorkFiles:    entry.WorkFiles,
+			HostVarRefs:  entry.HostVarRefs,
+			DataAreaRefs: entry.DataAreaRefs,
+			Structure:    entry.Structure,
 		}
 		idx.Add(key, fa)
 
