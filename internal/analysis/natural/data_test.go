@@ -2495,3 +2495,153 @@ END-DEFINE`
 		t.Errorf("Range.End.Column = %d, want 18 (inclusive last char of MYGDA)", ref.Range.End.Column)
 	}
 }
+
+// TestExtractDefinitions_RedefineRelationship verifies that the REDEFINE
+// relationship (Feature 28, T3) is surfaced in the model so the outline
+// can label redefine blocks (FR-55).
+//
+// Acceptance criteria (from T3):
+//   - Each redefine sub-field's DataDefinition.Redefines == the target name
+//     (as the AST carries it, normalized by the lexer)
+//   - Non-redefine fields have Redefines == ""
+//   - FILLER sub-fields are represented as normal DataDefinition entries
+//   - No Diagnostic emitted for legal partial/overlapping coverage (FR-17)
+func TestExtractDefinitions_RedefineRelationship(t *testing.T) {
+	// Read fixture: a scalar (#CUSTOMER-ID) and a REDEFINE block with sub-fields
+	fixturePath := filepath.Join("testdata", "structure", "08-redefine.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("Failed to read fixture: %v", err)
+	}
+
+	// Parse and extract definitions
+	lexer := NewLexer(string(content))
+	parser := NewParser(lexer)
+	prog, _ := parser.Parse()
+
+	if prog == nil {
+		t.Fatal("Parser returned nil AST")
+	}
+
+	defs := extractDefinitions(prog)
+	diags := prog.Diagnostics
+
+	// Test table-driven assertions
+	tests := []struct {
+		name   string
+		verify func(t *testing.T)
+	}{
+		{
+			name: "scalar_field_has_empty_redefines",
+			verify: func(t *testing.T) {
+				// Find the #CUSTOMER-ID scalar field (level 1, non-redefine)
+				var found *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "#CUSTOMER-ID" && defs[i].Type != "" {
+						found = &defs[i]
+						break
+					}
+				}
+				if found == nil {
+					t.Fatal("Could not find #CUSTOMER-ID scalar field in definitions")
+				}
+				// Per T3 AC: non-redefine fields have Redefines == ""
+				if found.Redefines != "" {
+					t.Errorf("#CUSTOMER-ID.Redefines = %q, want \"\" (non-redefine)", found.Redefines)
+				}
+			},
+		},
+		{
+			name: "redefine_children_have_redefines_stamp",
+			verify: func(t *testing.T) {
+				// Find the #CUSTOMER-ID field and check its Children for Redefines stamps
+				var targetField *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "#CUSTOMER-ID" && defs[i].Type != "" {
+						targetField = &defs[i]
+						break
+					}
+				}
+				if targetField == nil {
+					t.Fatal("Could not find target field #CUSTOMER-ID")
+				}
+
+				if len(targetField.Children) == 0 {
+					t.Fatal("Target field has no children (redefine sub-fields not merged)")
+				}
+
+				// Per T3 AC: each redefine sub-field's Redefines == target name
+				// The lexer normalizes case, so expect uppercase "#CUSTOMER-ID"
+				expectedRedefines := "#CUSTOMER-ID"
+
+				// Check #REGION (2nd level, typed)
+				if len(targetField.Children) > 0 {
+					region := &targetField.Children[0]
+					if region.Name != "#REGION" {
+						t.Errorf("Child[0].Name = %q, want #REGION", region.Name)
+					}
+					if region.Redefines != expectedRedefines {
+						t.Errorf("Child[0].Redefines = %q, want %q", region.Redefines, expectedRedefines)
+					}
+					if region.Type != "A2" {
+						t.Errorf("Child[0].Type = %q, want A2", region.Type)
+					}
+				}
+
+				// Check #SEQ (2nd level, typed)
+				if len(targetField.Children) > 1 {
+					seq := &targetField.Children[1]
+					if seq.Name != "#SEQ" {
+						t.Errorf("Child[1].Name = %q, want #SEQ", seq.Name)
+					}
+					if seq.Redefines != expectedRedefines {
+						t.Errorf("Child[1].Redefines = %q, want %q", seq.Redefines, expectedRedefines)
+					}
+					if seq.Type != "N8" {
+						t.Errorf("Child[1].Type = %q, want N8", seq.Type)
+					}
+				}
+
+				// Check FILLER (2nd level, nX format)
+				if len(targetField.Children) > 2 {
+					filler := &targetField.Children[2]
+					// FILLER may have empty Name or "FILLER" depending on parser
+					if filler.Redefines != expectedRedefines {
+						t.Errorf("Child[2].Redefines = %q, want %q", filler.Redefines, expectedRedefines)
+					}
+					// FILLER carries the count in Type, e.g., "3X"
+					if filler.Type != "3X" {
+						t.Errorf("Child[2].Type = %q, want 3X (FILLER gap)", filler.Type)
+					}
+				}
+
+				// Check #CODE (2nd level, typed)
+				if len(targetField.Children) > 3 {
+					code := &targetField.Children[3]
+					if code.Name != "#CODE" {
+						t.Errorf("Child[3].Name = %q, want #CODE", code.Name)
+					}
+					if code.Redefines != expectedRedefines {
+						t.Errorf("Child[3].Redefines = %q, want %q", code.Redefines, expectedRedefines)
+					}
+					if code.Type != "A3" {
+						t.Errorf("Child[3].Type = %q, want A3", code.Type)
+					}
+				}
+			},
+		},
+		{
+			name: "no_diagnostics_for_legal_redefine",
+			verify: func(t *testing.T) {
+				// Per T3 AC: no diagnostic emitted for legal partial/overlapping coverage (FR-17)
+				if len(diags) > 0 {
+					t.Errorf("Expected 0 diagnostics, got %d: %v", len(diags), diags)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.verify)
+	}
+}

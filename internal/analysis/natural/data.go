@@ -142,8 +142,10 @@ func convertArrayBounds(bounds []ArrayBound) []model.ArrayDimension {
 // fieldToDefinition converts a single AST DataField into a model.DataDefinition.
 // sectionKind is propagated only at the top level; children inherit a blank kind
 // (callers descend only one level — the section-level kind is not repeated on subfields).
+// redefines is set on the output definition when the field is a redefine subfield
+// (i.e., merged from a REDEFINE block). For non-redefine children, pass "".
 // Recursively converts child fields. Never panics on nil children slices.
-func fieldToDefinition(field *DataField, sectionKind string) model.DataDefinition {
+func fieldToDefinition(field *DataField, sectionKind, redefines string) model.DataDefinition {
 	def := model.DataDefinition{
 		Name:        field.Name,
 		Level:       field.Level,
@@ -152,6 +154,7 @@ func fieldToDefinition(field *DataField, sectionKind string) model.DataDefinitio
 		SectionKind: sectionKind,
 		Range:       model.Range{Start: field.StartPos, End: field.EndPos},
 		NameRange:   field.NameRange,
+		Redefines:   redefines,
 	}
 	if len(field.Children) > 0 {
 		def.Children = make([]model.DataDefinition, 0, len(field.Children))
@@ -161,7 +164,9 @@ func fieldToDefinition(field *DataField, sectionKind string) model.DataDefinitio
 			}
 			// Children do not carry a SectionKind — the section kind is a
 			// top-level property and is not repeated on nested subfields.
-			def.Children = append(def.Children, fieldToDefinition(child, ""))
+			// Children also do not inherit parent's Redefines — each field
+			// carries its own redefines relationship.
+			def.Children = append(def.Children, fieldToDefinition(child, "", ""))
 		}
 	}
 	return def
@@ -262,17 +267,23 @@ func extractDefinitions(prog *Program) []model.DataDefinition {
 			if field.Name == "" && field.Redefines != "" {
 				if idx, ok := fieldIdx[field.Redefines]; ok {
 					// Append redefine subfields to the target field's Children.
-					// fieldToDefinition with "" sectionKind for the children (they
-					// inherit the target's kind implicitly through the parent).
-					extra := fieldToDefinition(field, "")
-					defs[idx].Children = append(defs[idx].Children, extra.Children...)
+					// Each child is converted with Redefines set to the target name
+					// (the AST field.Redefines, normalized by the lexer).
+					for _, child := range field.Children {
+						if child == nil {
+							continue
+						}
+						// Convert the child with its Redefines relationship stamped
+						childDef := fieldToDefinition(child, "", field.Redefines)
+						defs[idx].Children = append(defs[idx].Children, childDef)
+					}
 				}
 				// No entry emitted for the REDEFINE block itself.
 				continue
 			}
 
 			fieldIdx[field.Name] = len(defs)
-			defs = append(defs, fieldToDefinition(field, section.Kind))
+			defs = append(defs, fieldToDefinition(field, section.Kind, ""))
 		}
 	}
 

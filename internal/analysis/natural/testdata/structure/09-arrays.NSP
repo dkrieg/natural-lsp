@@ -1,0 +1,11 @@
+* T4 fixture: DEFINE DATA with array fields (single-dim, multi-dim, unbounded)
+* Exercises: single-dimension array (1:10), multi-dimension array (1:5,1:10), unbounded array (1:*)
+
+DEFINE DATA
+LOCAL
+  1 #TAGS (A10/1:10)
+  1 #SCORES (P9.2/1:5,1:10)
+  1 #EXTENDED-BUFFER (A20/1:*)
+END DEFINE
+
+END

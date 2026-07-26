@@ -872,3 +872,274 @@ func TestFileAnalysisStructureField(t *testing.T) {
 		})
 	}
 }
+
+// TestSymbolMetadataFields verifies that the Symbol type carries additive metadata
+// fields for Phase A (typed outline) of feature 28 (rich symbol detail & VIEW OF binding).
+// These fields (Type, Level, Dimensions, Redefines, ViewOfDDM) are all optional/zero-valued
+// by default, and are used to enrich document outline detail and hover information.
+//
+// The test asserts (FR-55):
+//   - A zero-value Symbol{} leaves all five new fields empty/zero (default-safe additive).
+//   - A constructed Symbol round-trips the new fields: Type string, Level int, Dimensions
+//     []ArrayDimension, Redefines string, ViewOfDDM string.
+func TestSymbolMetadataFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		symbol func() Symbol
+		verify func(t *testing.T, s Symbol)
+	}{
+		{
+			name: "Zero_value_Symbol_leaves_all_metadata_fields_empty",
+			symbol: func() Symbol {
+				return Symbol{}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				// Verify Type is empty
+				if s.Type != "" {
+					t.Errorf("Symbol.Type = %q, want %q", s.Type, "")
+				}
+				// Verify Level is zero
+				if s.Level != 0 {
+					t.Errorf("Symbol.Level = %d, want 0", s.Level)
+				}
+				// Verify Dimensions is nil/empty
+				if len(s.Dimensions) != 0 {
+					t.Errorf("Symbol.Dimensions = %v, want nil/empty slice", s.Dimensions)
+				}
+				// Verify Redefines is empty
+				if s.Redefines != "" {
+					t.Errorf("Symbol.Redefines = %q, want %q", s.Redefines, "")
+				}
+				// Verify ViewOfDDM is empty
+				if s.ViewOfDDM != "" {
+					t.Errorf("Symbol.ViewOfDDM = %q, want %q", s.ViewOfDDM, "")
+				}
+			},
+		},
+		{
+			name: "Symbol_with_scalar_type_and_level",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind:  SymbolDataField,
+					Name:  "CUSTOMER_ID",
+					Type:  "A26",
+					Level: 2,
+					Range: Range{
+						Start: Position{Line: 5, Column: 1},
+						End:   Position{Line: 5, Column: 30},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 5, Column: 1},
+						End:   Position{Line: 5, Column: 12},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if s.Type != "A26" {
+					t.Errorf("Symbol.Type = %q, want %q", s.Type, "A26")
+				}
+				if s.Level != 2 {
+					t.Errorf("Symbol.Level = %d, want 2", s.Level)
+				}
+			},
+		},
+		{
+			name: "Symbol_with_array_dimensions",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind:  SymbolDataField,
+					Name:  "ITEMS",
+					Type:  "A10",
+					Level: 1,
+					Dimensions: []ArrayDimension{
+						{Lower: 1, Upper: 10, UpperUnbounded: false},
+					},
+					Range: Range{
+						Start: Position{Line: 3, Column: 1},
+						End:   Position{Line: 3, Column: 20},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 3, Column: 1},
+						End:   Position{Line: 3, Column: 6},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if s.Type != "A10" {
+					t.Errorf("Symbol.Type = %q, want %q", s.Type, "A10")
+				}
+				if len(s.Dimensions) != 1 {
+					t.Errorf("Symbol.Dimensions length = %d, want 1", len(s.Dimensions))
+				}
+				if s.Dimensions[0].Lower != 1 {
+					t.Errorf("Dimensions[0].Lower = %d, want 1", s.Dimensions[0].Lower)
+				}
+				if s.Dimensions[0].Upper != 10 {
+					t.Errorf("Dimensions[0].Upper = %d, want 10", s.Dimensions[0].Upper)
+				}
+				if s.Dimensions[0].UpperUnbounded {
+					t.Errorf("Dimensions[0].UpperUnbounded = %v, want false", s.Dimensions[0].UpperUnbounded)
+				}
+			},
+		},
+		{
+			name: "Symbol_with_unbounded_array_dimension",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind:  SymbolDataField,
+					Name:  "DYNAMIC_ARRAY",
+					Type:  "A20",
+					Level: 1,
+					Dimensions: []ArrayDimension{
+						{Lower: 1, Upper: 0, UpperUnbounded: true},
+					},
+					Range: Range{
+						Start: Position{Line: 4, Column: 1},
+						End:   Position{Line: 4, Column: 25},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 4, Column: 1},
+						End:   Position{Line: 4, Column: 14},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if len(s.Dimensions) != 1 {
+					t.Errorf("Symbol.Dimensions length = %d, want 1", len(s.Dimensions))
+				}
+				if !s.Dimensions[0].UpperUnbounded {
+					t.Errorf("Dimensions[0].UpperUnbounded = %v, want true", s.Dimensions[0].UpperUnbounded)
+				}
+			},
+		},
+		{
+			name: "Symbol_with_multi_dimensional_array",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind:  SymbolDataField,
+					Name:  "MATRIX",
+					Type:  "N9",
+					Level: 2,
+					Dimensions: []ArrayDimension{
+						{Lower: 1, Upper: 5, UpperUnbounded: false},
+						{Lower: 1, Upper: 10, UpperUnbounded: false},
+					},
+					Range: Range{
+						Start: Position{Line: 6, Column: 1},
+						End:   Position{Line: 6, Column: 30},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 6, Column: 1},
+						End:   Position{Line: 6, Column: 7},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if len(s.Dimensions) != 2 {
+					t.Errorf("Symbol.Dimensions length = %d, want 2", len(s.Dimensions))
+				}
+				if s.Dimensions[0].Upper != 5 {
+					t.Errorf("Dimensions[0].Upper = %d, want 5", s.Dimensions[0].Upper)
+				}
+				if s.Dimensions[1].Upper != 10 {
+					t.Errorf("Dimensions[1].Upper = %d, want 10", s.Dimensions[1].Upper)
+				}
+			},
+		},
+		{
+			name: "Symbol_with_Redefines",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind:      SymbolDataField,
+					Name:      "SALARY_BREAKDOWN",
+					Type:      "P9.2",
+					Level:     2,
+					Redefines: "SALARY",
+					Range: Range{
+						Start: Position{Line: 8, Column: 1},
+						End:   Position{Line: 8, Column: 40},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 8, Column: 1},
+						End:   Position{Line: 8, Column: 16},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if s.Redefines != "SALARY" {
+					t.Errorf("Symbol.Redefines = %q, want %q", s.Redefines, "SALARY")
+				}
+			},
+		},
+		{
+			name: "Symbol_with_ViewOfDDM",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind:      SymbolDataField,
+					Name:      "EMP_VIEW",
+					ViewOfDDM: "EMPLOYEES",
+					Level:     1,
+					Range: Range{
+						Start: Position{Line: 7, Column: 1},
+						End:   Position{Line: 7, Column: 35},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 7, Column: 1},
+						End:   Position{Line: 7, Column: 9},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if s.ViewOfDDM != "EMPLOYEES" {
+					t.Errorf("Symbol.ViewOfDDM = %q, want %q", s.ViewOfDDM, "EMPLOYEES")
+				}
+			},
+		},
+		{
+			name: "Symbol_all_metadata_fields_together",
+			symbol: func() Symbol {
+				return Symbol{
+					Kind:       SymbolDataField,
+					Name:       "COMPLEX_FIELD",
+					Type:       "A30",
+					Level:      3,
+					Dimensions: []ArrayDimension{{Lower: 1, Upper: 5, UpperUnbounded: false}},
+					Redefines:  "TARGET_FIELD",
+					ViewOfDDM:  "MYVIEW",
+					Range: Range{
+						Start: Position{Line: 10, Column: 1},
+						End:   Position{Line: 10, Column: 50},
+					},
+					SelectionRange: Range{
+						Start: Position{Line: 10, Column: 1},
+						End:   Position{Line: 10, Column: 14},
+					},
+				}
+			},
+			verify: func(t *testing.T, s Symbol) {
+				if s.Type != "A30" {
+					t.Errorf("Symbol.Type = %q, want %q", s.Type, "A30")
+				}
+				if s.Level != 3 {
+					t.Errorf("Symbol.Level = %d, want 3", s.Level)
+				}
+				if len(s.Dimensions) != 1 {
+					t.Errorf("Symbol.Dimensions length = %d, want 1", len(s.Dimensions))
+				}
+				if s.Redefines != "TARGET_FIELD" {
+					t.Errorf("Symbol.Redefines = %q, want %q", s.Redefines, "TARGET_FIELD")
+				}
+				if s.ViewOfDDM != "MYVIEW" {
+					t.Errorf("Symbol.ViewOfDDM = %q, want %q", s.ViewOfDDM, "MYVIEW")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sym := tc.symbol()
+			tc.verify(t, sym)
+		})
+	}
+}

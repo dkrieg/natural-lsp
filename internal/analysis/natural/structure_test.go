@@ -928,3 +928,185 @@ func TestExtractStructure_TwoLocalSections(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractStructure_TypedFields tests feature 28, phase A, T2:
+// dataDefinitionToSymbol must carry Type, Level, and Dimensions metadata
+// from the DataDefinition onto the emitted Symbol nodes. Group headers
+// (Type == "") have no Detail (nil), while scalars show their type.
+//
+// Fixture: 07-typed-fields.NSP has typed scalars (A26, N8, P9,2, I4, (A) DYNAMIC)
+// and group headers with nested children (FR-55 / feature 28 T2).
+func TestExtractStructure_TypedFields(t *testing.T) {
+	fixturePath := filepath.Join("testdata", "structure", "07-typed-fields.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	prog, err := NewParser(NewLexer(string(content))).Parse()
+	if prog == nil {
+		t.Fatalf("parser returned nil AST (err=%v)", err)
+	}
+
+	defs := extractDefinitions(prog)
+	access := extractDataAccess(prog)
+	sym := extractStructure(fixturePath, prog, defs, access)
+
+	if sym == nil {
+		t.Fatal("extractStructure returned nil, want *Symbol")
+	}
+
+	// Find the LOCAL data section
+	var localSection *model.Symbol
+	for i := range sym.Children {
+		if sym.Children[i].Kind == model.SymbolDataSection &&
+			(sym.Children[i].Name == "LOCAL" || sym.Children[i].Name == "local") {
+			localSection = &sym.Children[i]
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("LOCAL section not found, want DEFINE DATA LOCAL children")
+	}
+
+	// Build a map of field name to symbol for assertions
+	fieldsByName := make(map[string]*model.Symbol)
+	var collectFields func(*model.Symbol)
+	collectFields = func(s *model.Symbol) {
+		for i := range s.Children {
+			if s.Children[i].Kind == model.SymbolDataField {
+				fieldsByName[s.Children[i].Name] = &s.Children[i]
+				collectFields(&s.Children[i])
+			}
+		}
+	}
+	collectFields(localSection)
+
+	// Test table: test case name → field name to find → assertions
+	tests := []struct {
+		name      string
+		fieldName string
+		verify    func(t *testing.T, field *model.Symbol)
+	}{
+		{
+			name:      "simple_string_A26",
+			fieldName: "SIMPLE-STRING",
+			verify: func(t *testing.T, field *model.Symbol) {
+				if field.Type != "A26" {
+					t.Errorf("field.Type = %q, want %q", field.Type, "A26")
+				}
+				if field.Level != 1 {
+					t.Errorf("field.Level = %d, want 1", field.Level)
+				}
+			},
+		},
+		{
+			name:      "numeric_field_N8",
+			fieldName: "NUMERIC-FIELD",
+			verify: func(t *testing.T, field *model.Symbol) {
+				if field.Type != "N8" {
+					t.Errorf("field.Type = %q, want %q", field.Type, "N8")
+				}
+				if field.Level != 1 {
+					t.Errorf("field.Level = %d, want 1", field.Level)
+				}
+			},
+		},
+		{
+			name:      "packed_decimal_P9_2",
+			fieldName: "PACKED-DEC",
+			verify: func(t *testing.T, field *model.Symbol) {
+				if field.Type != "P9,2" {
+					t.Errorf("field.Type = %q, want %q", field.Type, "P9,2")
+				}
+				if field.Level != 1 {
+					t.Errorf("field.Level = %d, want 1", field.Level)
+				}
+			},
+		},
+		{
+			name:      "integer_I4",
+			fieldName: "INTEGER-VAL",
+			verify: func(t *testing.T, field *model.Symbol) {
+				if field.Type != "I4" {
+					t.Errorf("field.Type = %q, want %q", field.Type, "I4")
+				}
+				if field.Level != 1 {
+					t.Errorf("field.Level = %d, want 1", field.Level)
+				}
+			},
+		},
+		{
+			name:      "dynamic_string",
+			fieldName: "DYNAMIC-STRING",
+			verify: func(t *testing.T, field *model.Symbol) {
+				if field.Type != "(A) DYNAMIC" {
+					t.Errorf("field.Type = %q, want %q", field.Type, "(A) DYNAMIC")
+				}
+				if field.Level != 1 {
+					t.Errorf("field.Level = %d, want 1", field.Level)
+				}
+			},
+		},
+		{
+			name:      "group_header_customer",
+			fieldName: "CUSTOMER-GROUP",
+			verify: func(t *testing.T, field *model.Symbol) {
+				if field.Type != "" {
+					t.Errorf("group header Type = %q, want empty string (group headers have no type)", field.Type)
+				}
+				if field.Level != 1 {
+					t.Errorf("group header Level = %d, want 1", field.Level)
+				}
+				// Group headers must have children
+				if len(field.Children) == 0 {
+					t.Error("group header has no children, want nested fields")
+				}
+			},
+		},
+		{
+			name:      "nested_customer_id",
+			fieldName: "CUSTOMER-ID",
+			verify: func(t *testing.T, field *model.Symbol) {
+				if field.Type != "A10" {
+					t.Errorf("field.Type = %q, want %q", field.Type, "A10")
+				}
+				if field.Level != 2 {
+					t.Errorf("field.Level = %d, want 2", field.Level)
+				}
+			},
+		},
+		{
+			name:      "nested_group_address",
+			fieldName: "ADDRESS-DETAILS",
+			verify: func(t *testing.T, field *model.Symbol) {
+				if field.Type != "" {
+					t.Errorf("nested group Type = %q, want empty", field.Type)
+				}
+				if field.Level != 2 {
+					t.Errorf("nested group Level = %d, want 2", field.Level)
+				}
+				if len(field.Children) == 0 {
+					t.Error("nested group has no children, want STREET and CITY")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			field, ok := fieldsByName[tc.fieldName]
+			if !ok {
+				t.Fatalf("field %q not found in structure", tc.fieldName)
+			}
+
+			if field == nil {
+				t.Fatal("field symbol is nil")
+			}
+
+			// Call verify logic
+			if tc.verify != nil {
+				tc.verify(t, field)
+			}
+		})
+	}
+}

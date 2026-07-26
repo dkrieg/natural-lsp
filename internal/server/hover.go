@@ -145,6 +145,26 @@ func parameterInterface(defs []model.DataDefinition) []paramItem {
 	return params
 }
 
+// formatDimensions returns the dimension list for an array field in "(lower:upper,...)"
+// notation — unbounded upper renders as "*". Returns "" when the slice is empty.
+// Used by both renderParamType (hover/signature-help) and symbolDetail (document outline)
+// so they cannot drift from each other.
+// No I/O, no locks — a pure function.
+func formatDimensions(dims []model.ArrayDimension) string {
+	if len(dims) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(dims))
+	for _, d := range dims {
+		if d.UpperUnbounded {
+			parts = append(parts, fmt.Sprintf("%d:*", d.Lower))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d:%d", d.Lower, d.Upper))
+		}
+	}
+	return "(" + strings.Join(parts, ",") + ")"
+}
+
 // renderParamType returns the "TYPE (dims)" string for a data-field definition.
 // For a leaf field with a type, it appends the dimension list in "(lower:upper,...)"
 // notation (unbounded upper renders as "*"). For a group header (Type == ""), it
@@ -154,18 +174,11 @@ func renderParamType(def model.DataDefinition) string {
 	if def.Type == "" {
 		return ""
 	}
-	if len(def.Dimensions) == 0 {
+	dimStr := formatDimensions(def.Dimensions)
+	if dimStr == "" {
 		return def.Type
 	}
-	dims := make([]string, 0, len(def.Dimensions))
-	for _, d := range def.Dimensions {
-		if d.UpperUnbounded {
-			dims = append(dims, fmt.Sprintf("%d:*", d.Lower))
-		} else {
-			dims = append(dims, fmt.Sprintf("%d:%d", d.Lower, d.Upper))
-		}
-	}
-	return def.Type + " (" + strings.Join(dims, ",") + ")"
+	return def.Type + " " + dimStr
 }
 
 // buildParamLines recursively renders parameter definitions with indentation.

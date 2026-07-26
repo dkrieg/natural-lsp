@@ -78,12 +78,15 @@ func provideDocumentSymbols(hctx *handlerContext, params protocol.DocumentSymbol
 // (structure.go) is responsible for normalizing names to the model's uppercase
 // convention before they reach this converter.
 //
+// Feature 28 T2: sets Detail for data fields to their Type (or nil for group headers).
+//
 // This is a pure function: no I/O, no locks, no handler state.
 func symbolToDocumentSymbol(sym model.Symbol, content string, enc protocol.PositionEncodingKind) protocol.DocumentSymbol {
 	kind := modelSymbolKindToProtocol(sym.Kind)
 	protoRange := toProtocolRange(sym.Range, content, enc)
 	protoSelectionRange := toProtocolRange(sym.SelectionRange, content, enc)
 	children := symbolsToDocumentSymbols(sym.Children, content, enc)
+	detail := symbolDetail(sym)
 
 	return protocol.DocumentSymbol{
 		Name:           sym.Name,
@@ -91,7 +94,44 @@ func symbolToDocumentSymbol(sym model.Symbol, content string, enc protocol.Posit
 		Range:          protoRange,
 		SelectionRange: protoSelectionRange,
 		Children:       children,
+		Detail:         detail,
 	}
+}
+
+// symbolDetail returns the detail string for a symbol, used to populate
+// DocumentSymbol.Detail in the typed outline (feature 28 T4).
+// For data fields with a non-empty Type, returns a pointer to the formatted detail string:
+//   - Type verbatim (e.g., "A26", "P9,2", "(A) DYNAMIC")
+//   - Array dimensions appended if present (e.g., " (1:10)", " (1:5,1:10)", " (1:*)")
+//   - REDEFINE label appended if Redefines != "" (e.g., " REDEFINE #CUSTOMER-ID")
+//
+// For group headers (Type == ""), returns nil.
+// For non-field symbols, returns nil.
+func symbolDetail(sym model.Symbol) *string {
+	// Only SymbolDataField can have detail
+	if sym.Kind != model.SymbolDataField {
+		return nil
+	}
+	// Group headers (Type == "") have no detail
+	if sym.Type == "" {
+		return nil
+	}
+
+	// Three-part composition: type / dims / redefine label.
+	detail := sym.Type
+
+	// Append dimensions if present — delegates to the shared formatDimensions helper
+	// (same format as hover's renderParamType: "(lower:upper,...)", unbounded → "*").
+	if dimStr := formatDimensions(sym.Dimensions); dimStr != "" {
+		detail += " " + dimStr
+	}
+
+	// Append REDEFINE label if this field redefines another
+	if sym.Redefines != "" {
+		detail += " REDEFINE " + sym.Redefines
+	}
+
+	return &detail
 }
 
 // modelSymbolKindToProtocol maps a model.SymbolKind to the corresponding

@@ -957,3 +957,491 @@ func TestProvideDocumentSymbols_MarshaledNonEmptyCase(t *testing.T) {
 		t.Errorf("non-empty documentSymbol wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
 	}
 }
+
+// TestSymbolToDocumentSymbol_TypedFieldsDetail tests feature 28, phase A, T2:
+// symbolToDocumentSymbol must set DocumentSymbol.Detail for data fields.
+// Scalar fields show their Type verbatim (e.g., "A26", "P9,2", "(A) DYNAMIC");
+// group headers (Type == "") have no Detail (nil).
+//
+// Fixture: 07-typed-fields.NSP has typed scalars and group headers.
+// FR-55 / feature 28 T2: typed outline with field metadata.
+func TestSymbolToDocumentSymbol_TypedFieldsDetail(t *testing.T) {
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "07-typed-fields.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	// Analyze the fixture
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	contentStr := string(content)
+
+	// Test table: field name → expected Detail string (or nil for groups)
+	tests := []struct {
+		name         string
+		fieldName    string
+		expectedType string
+		expectNilDtl bool // if true, expect Detail == nil (group header); else expect Detail == expectedType
+	}{
+		{
+			name:         "scalar_A26",
+			fieldName:    "SIMPLE-STRING",
+			expectedType: "A26",
+			expectNilDtl: false,
+		},
+		{
+			name:         "scalar_N8",
+			fieldName:    "NUMERIC-FIELD",
+			expectedType: "N8",
+			expectNilDtl: false,
+		},
+		{
+			name:         "scalar_P9_2",
+			fieldName:    "PACKED-DEC",
+			expectedType: "P9,2",
+			expectNilDtl: false,
+		},
+		{
+			name:         "scalar_I4",
+			fieldName:    "INTEGER-VAL",
+			expectedType: "I4",
+			expectNilDtl: false,
+		},
+		{
+			name:         "scalar_dynamic",
+			fieldName:    "DYNAMIC-STRING",
+			expectedType: "(A) DYNAMIC",
+			expectNilDtl: false,
+		},
+		{
+			name:         "group_header_CUSTOMER_GROUP",
+			fieldName:    "CUSTOMER-GROUP",
+			expectedType: "",
+			expectNilDtl: true,
+		},
+		{
+			name:         "nested_group_ADDRESS_DETAILS",
+			fieldName:    "ADDRESS-DETAILS",
+			expectedType: "",
+			expectNilDtl: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Walk the structure to find the target field
+			var targetModelSym *model.Symbol
+			var walkSymbols func(s *model.Symbol)
+			walkSymbols = func(s *model.Symbol) {
+				if s.Kind == model.SymbolDataField && s.Name == tc.fieldName {
+					targetModelSym = s
+					return
+				}
+				for i := range s.Children {
+					walkSymbols(&s.Children[i])
+					if targetModelSym != nil {
+						return
+					}
+				}
+			}
+			walkSymbols(analysis.Structure)
+
+			if targetModelSym == nil {
+				t.Skipf("field %q not found in structure tree", tc.fieldName)
+			}
+
+			// Convert to protocol.DocumentSymbol via the real converter
+			docSym := symbolToDocumentSymbol(*targetModelSym, contentStr, protocol.PositionEncodingKindUTF8)
+
+			// Assertion: Detail presence and content
+			if tc.expectNilDtl {
+				// Group header: Detail must be nil
+				if docSym.Detail != nil {
+					t.Errorf("group header Detail = %s, want nil (groups have no Detail)", *docSym.Detail)
+				}
+			} else {
+				// Scalar field: Detail must be set to the Type
+				if docSym.Detail == nil {
+					t.Errorf("scalar field Detail is nil, want %q", tc.expectedType)
+				} else if *docSym.Detail != tc.expectedType {
+					t.Errorf("scalar field Detail = %q, want %q", *docSym.Detail, tc.expectedType)
+				}
+			}
+		})
+	}
+}
+
+// TestSymbolToDocumentSymbol_TypedFieldsPreservesOutline tests that the
+// addition of Detail metadata in T2 is purely enriching and does NOT change
+// the set of outline nodes, their names, ranges, or structure hierarchy
+// (pure enrichment regression guard).
+func TestSymbolToDocumentSymbol_TypedFieldsPreservesOutline(t *testing.T) {
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "07-typed-fields.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	contentStr := string(content)
+
+	// Expected node set (derived from fixture 07-typed-fields.NSP):
+	// - root: object
+	//   - LOCAL (section)
+	//     - SIMPLE-STRING (field, scalar)
+	//     - NUMERIC-FIELD (field, scalar)
+	//     - PACKED-DEC (field, scalar)
+	//     - INTEGER-VAL (field, scalar)
+	//     - DYNAMIC-STRING (field, scalar)
+	//     - CUSTOMER-GROUP (field, group with children)
+	//       - CUSTOMER-ID (field)
+	//       - CUSTOMER-NAME (field)
+	//       - ADDRESS-DETAILS (field, group with children)
+	//         - STREET (field)
+	//         - CITY (field)
+
+	// Walk the converted tree and count nodes / verify structure
+	docSym := symbolToDocumentSymbol(*analysis.Structure, contentStr, protocol.PositionEncodingKindUTF8)
+
+	// Find the LOCAL section
+	var localSection *protocol.DocumentSymbol
+	for i := range docSym.Children {
+		if docSym.Children[i].Kind == protocol.SymbolKindNamespace && docSym.Children[i].Name == "LOCAL" {
+			localSection = &docSym.Children[i]
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("LOCAL section not found in converted outline")
+	}
+
+	// Expected scalar fields (order preserved from fixture)
+	expectedScalars := []string{
+		"SIMPLE-STRING",
+		"NUMERIC-FIELD",
+		"PACKED-DEC",
+		"INTEGER-VAL",
+		"DYNAMIC-STRING",
+	}
+
+	// Expected group fields
+	expectedGroups := []string{
+		"CUSTOMER-GROUP",
+	}
+
+	// Verify scalar fields are present and at the right level
+	scalarCount := 0
+	for _, child := range localSection.Children {
+		if child.Kind == protocol.SymbolKindField {
+			for _, expected := range expectedScalars {
+				if child.Name == expected {
+					scalarCount++
+					// Verify it's a leaf (no children, but that's not guaranteed for all scalars)
+					break
+				}
+			}
+		}
+	}
+	if scalarCount != len(expectedScalars) {
+		t.Errorf("found %d scalar fields, want %d (expect %v)", scalarCount, len(expectedScalars), expectedScalars)
+	}
+
+	// Verify group fields are present and have children
+	groupCount := 0
+	for _, child := range localSection.Children {
+		if child.Kind == protocol.SymbolKindField {
+			for _, expected := range expectedGroups {
+				if child.Name == expected {
+					groupCount++
+					if len(child.Children) == 0 {
+						t.Errorf("group %q has no children, want nested fields", child.Name)
+					}
+					// Check for known children: CUSTOMER-ID, CUSTOMER-NAME, ADDRESS-DETAILS
+					childNames := make(map[string]bool)
+					for _, nestedChild := range child.Children {
+						childNames[nestedChild.Name] = true
+					}
+					if !childNames["CUSTOMER-ID"] {
+						t.Error("CUSTOMER-ID not found in CUSTOMER-GROUP children")
+					}
+					if !childNames["CUSTOMER-NAME"] {
+						t.Error("CUSTOMER-NAME not found in CUSTOMER-GROUP children")
+					}
+					if !childNames["ADDRESS-DETAILS"] {
+						t.Error("ADDRESS-DETAILS not found in CUSTOMER-GROUP children")
+					}
+					break
+				}
+			}
+		}
+	}
+	if groupCount != len(expectedGroups) {
+		t.Errorf("found %d group fields, want %d (expect %v)", groupCount, len(expectedGroups), expectedGroups)
+	}
+}
+
+// TestSymbolDetail_Arrays tests the symbolDetail function for array fields (FR-55, feature 28, task T4).
+//
+// Exercises: arrays with single dimension (A10 (1:10)), multi-dimensional arrays (P9.2 (1:5,1:10)),
+// and unbounded arrays (A20 (1:*)); asserts that OCCURS never appears in output.
+//
+// Fixture: 09-arrays.NSP has three array fields: single-dim, multi-dim, and unbounded.
+func TestSymbolDetail_Arrays(t *testing.T) {
+	// Read the fixture: 09-arrays.NSP with array fields
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "09-arrays.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	// Analyze to get FileAnalysis with Structure
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	// Extract the LOCAL data section to inspect its field children
+	var localSection *model.Symbol
+	for _, child := range analysis.Structure.Children {
+		if child.Kind == model.SymbolDataSection && strings.ToUpper(child.Name) == "LOCAL" {
+			localSection = &child
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("expected a LOCAL data section in the structure")
+	}
+
+	// Test cases for each array field
+	tests := []struct {
+		name          string
+		fieldName     string
+		expectDetail  string
+		checkNoOccurs bool // Assert that "OCCURS" does not appear in detail
+	}{
+		{
+			name:          "single_dim_array",
+			fieldName:     "#TAGS",
+			expectDetail:  "A10 (1:10)",
+			checkNoOccurs: true,
+		},
+		{
+			name:          "multi_dim_array",
+			fieldName:     "#SCORES",
+			expectDetail:  "P9.2 (1:5,1:10)",
+			checkNoOccurs: true,
+		},
+		{
+			name:          "unbounded_array",
+			fieldName:     "#EXTENDED-BUFFER",
+			expectDetail:  "A20 (1:*)",
+			checkNoOccurs: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Find the field in the section's children
+			var targetField *model.Symbol
+			for i := range localSection.Children {
+				if localSection.Children[i].Name == tc.fieldName {
+					targetField = &localSection.Children[i]
+					break
+				}
+			}
+			if targetField == nil {
+				t.Fatalf("expected field %s in LOCAL section", tc.fieldName)
+			}
+
+			// Act: call symbolDetail to get the rendered detail string
+			detail := symbolDetail(*targetField)
+
+			// Assert: detail is not nil
+			if detail == nil {
+				t.Errorf("symbolDetail(%s) returned nil, want non-nil detail", tc.fieldName)
+				return
+			}
+
+			// Assert: detail matches expected string
+			if *detail != tc.expectDetail {
+				t.Errorf("symbolDetail(%s) = %q, want %q", tc.fieldName, *detail, tc.expectDetail)
+			}
+
+			// Assert: no "OCCURS" appears in detail
+			if tc.checkNoOccurs && strings.Contains(*detail, "OCCURS") {
+				t.Errorf("symbolDetail(%s) = %q contains forbidden word 'OCCURS'", tc.fieldName, *detail)
+			}
+		})
+	}
+}
+
+// TestSymbolDetail_RedefineAndFiller tests the symbolDetail function for REDEFINE blocks and FILLER gaps
+// (FR-55, feature 28, task T4).
+//
+// Exercises: REDEFINE sub-field labeling contract per OQ-2: a symbol with Redefines != "" renders
+// its detail as "<type> REDEFINE <target>" (e.g., "A2 REDEFINE #CUSTOMER-ID" for a redefine sub-field,
+// "3X REDEFINE #CUSTOMER-ID" for a FILLER gap). A non-redefine field (Redefines=="") shows only its
+// type (e.g., "A10" for the top-level target). The implementation requires:
+//  1. dataDefinitionToSymbol (structure.go) to carry def.Redefines onto model.Symbol.Redefines
+//  2. symbolDetail to append " REDEFINE <target>" when Redefines != ""
+//
+// Fixture: 08-redefine.NSP has a target field (#CUSTOMER-ID) with REDEFINE sub-fields (#REGION, #SEQ,
+// FILLER, #CODE) per T3's flatten-with-stamp approach.
+func TestSymbolDetail_RedefineAndFiller(t *testing.T) {
+	// Read the fixture: 08-redefine.NSP
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "08-redefine.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	// Analyze to get FileAnalysis with Structure
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	// Extract the LOCAL data section
+	var localSection *model.Symbol
+	for _, child := range analysis.Structure.Children {
+		if child.Kind == model.SymbolDataSection && strings.ToUpper(child.Name) == "LOCAL" {
+			localSection = &child
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("expected a LOCAL data section in the structure")
+	}
+
+	// The structure (per T3's flatten-with-stamp approach) should have:
+	// 1. #CUSTOMER-ID (A10) — the target field
+	// 2. Children of #CUSTOMER-ID: sub-fields with Redefines set
+	//    - #REGION (A2) with Redefines="#CUSTOMER-ID"
+	//    - #SEQ (N8) with Redefines="#CUSTOMER-ID"
+	//    - FILLER (3X) with Redefines="#CUSTOMER-ID"
+	//    - #CODE (A3) with Redefines="#CUSTOMER-ID"
+
+	// Helper function to find a field by name in the LOCAL section or as a child of #CUSTOMER-ID
+	findFieldByName := func(name string) *model.Symbol {
+		// First, try to find it in the LOCAL section directly (e.g., #CUSTOMER-ID)
+		for i := range localSection.Children {
+			if localSection.Children[i].Name == name {
+				return &localSection.Children[i]
+			}
+		}
+		// Next, try to find it as a child of #CUSTOMER-ID (redefine sub-fields)
+		for i := range localSection.Children {
+			if localSection.Children[i].Name == "#CUSTOMER-ID" {
+				for j := range localSection.Children[i].Children {
+					if localSection.Children[i].Children[j].Name == name {
+						return &localSection.Children[i].Children[j]
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	tests := []struct {
+		name          string
+		fieldName     string
+		expectDetail  string
+		expectNonNil  bool
+		checkNoOccurs bool
+	}{
+		{
+			name:          "target_field_no_redefine_label",
+			fieldName:     "#CUSTOMER-ID",
+			expectDetail:  "A10", // Top-level target: no REDEFINE label (Redefines=="")
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+		{
+			name:          "redefine_subfield_region",
+			fieldName:     "#REGION",
+			expectDetail:  "A2 REDEFINE #CUSTOMER-ID", // Sub-field: type + REDEFINE label
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+		{
+			name:          "redefine_subfield_seq",
+			fieldName:     "#SEQ",
+			expectDetail:  "N8 REDEFINE #CUSTOMER-ID", // Sub-field: type + REDEFINE label
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+		{
+			name:          "filler_gap",
+			fieldName:     "FILLER",
+			expectDetail:  "3X REDEFINE #CUSTOMER-ID", // FILLER: format + REDEFINE label
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+		{
+			name:          "redefine_subfield_code",
+			fieldName:     "#CODE",
+			expectDetail:  "A3 REDEFINE #CUSTOMER-ID", // Another sub-field: type + REDEFINE label
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Find the field
+			targetField := findFieldByName(tc.fieldName)
+			if targetField == nil {
+				t.Fatalf("expected to find field %s in the structure", tc.fieldName)
+			}
+
+			// Act: call symbolDetail
+			detail := symbolDetail(*targetField)
+
+			// Assert: nil/non-nil expectation
+			if tc.expectNonNil && detail == nil {
+				t.Errorf("symbolDetail(%s) returned nil, want non-nil detail", tc.fieldName)
+				return
+			}
+
+			// Assert: detail matches expected
+			if detail != nil {
+				if *detail != tc.expectDetail {
+					t.Errorf("symbolDetail(%s) = %q, want %q", tc.fieldName, *detail, tc.expectDetail)
+				}
+
+				// Assert: no "OCCURS"
+				if tc.checkNoOccurs && strings.Contains(*detail, "OCCURS") {
+					t.Errorf("symbolDetail(%s) = %q contains forbidden word 'OCCURS'", tc.fieldName, *detail)
+				}
+			}
+		})
+	}
+}

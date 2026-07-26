@@ -1,0 +1,14 @@
+* T3 fixture: DEFINE DATA with REDEFINE block containing typed sub-fields and FILLER gap
+* Exercises: scalar field, REDEFINE relationship, sub-fields with types, FILLER gap
+
+DEFINE DATA
+LOCAL
+  1 #CUSTOMER-ID (A10)
+  1 REDEFINE #CUSTOMER-ID
+    2 #REGION (A2)
+    2 #SEQ (N8)
+    2 FILLER 3X
+    2 #CODE (A3)
+END DEFINE
+
+END
