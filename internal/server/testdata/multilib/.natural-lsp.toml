@@ -1,0 +1,21 @@
+# Multi-library fixture for feature 27 SERVER-RESOLUTION (finding 2).
+# APP has COMMON as a steplib; ALT is NOT in APP's chain (unreachable).
+# CUSTLDA.NSL and EMPLOYEE.NSD exist in BOTH COMMON (chain winner) and ALT
+# (unreachable same-named copy) to prove chain resolution + unreachable-exclusion.
+#
+# NOTE: ALT's path sorts BEFORE COMMON, so LookupByName's Path-sorted candidates[0]
+# is the UNREACHABLE ALT copy — a naive candidates[0] pick resolves to the WRONG
+# file, which is exactly what the chain-based resolution must exclude.
+
+[[resolution.library]]
+name = "APP"
+path = "APP"
+steplibs = ["COMMON"]
+
+[[resolution.library]]
+name = "COMMON"
+path = "COMMON"
+
+[[resolution.library]]
+name = "ALT"
+path = "ALT"

@@ -18,6 +18,7 @@ LOCAL
     2 #SUB-FIELD-2 REDEFINE #REDEF-FIELD (A10)
   1 #TABLE (A10/1:5)
   1 #INDEX (N2)
+  1 #FIELD-EXT (A10)
 END-DEFINE
 
 * Line with variable uses in MOVE
@@ -49,5 +50,13 @@ MOVE *DATE TO #COUNTER
 
 * Dynamic substitution (should NOT be captured or flagged separately)
 CALLNAT #CALLNAT-NAME #COUNTER
+
+* &-dynamic name (should NOT be captured — modeled gap per OQ-1)
+MOVE &DYNVAR TO #INDEX
+
+* Substring decoy: #FIELD-EXT is a REAL, distinct use-site. A scan for #FIELD
+* must NOT match #FIELD-EXT (exact-name matching, not substring). #FIELD itself
+* appears ONLY in the comment above, so it must yield zero refs.
+WRITE #FIELD-EXT
 
 END

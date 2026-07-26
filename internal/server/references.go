@@ -195,13 +195,12 @@ func provideReferences(hctx *handlerContext, params protocol.ReferenceParams) ([
 		targetName = edge.TargetName
 		targetType = resolution.Type
 	} else if dataAccess != nil {
-		// We found a data-access entry; resolve it to a DDM/view path (feature 27 T9)
-		// Resolve the DDM name via the steplib chain
-		candidates := idx.LookupByName(dataAccess.Name, model.ObjectDDM, &hctx.cfg)
-		if len(candidates) > 0 {
-			// Use the first candidate (LookupByName respects library map)
-			targetPath = candidates[0].Path
-		}
+		// We found a data-access entry; resolve it to a DDM/view path (feature 27 T9).
+		// Resolve the DDM name via the steplib chain (non-transitive): a same-named
+		// DDM in a library outside the caller's chain is unreachable and excluded.
+		// idx.LookupByName returns ALL name+type matches UNFILTERED, so candidates[0]
+		// would bypass the chain — use workspace.ResolveDDMPath instead.
+		targetPath = workspace.ResolveDDMPath(dataAccess.Name, idx, relPath, &hctx.cfg)
 		// If unresolved, targetPath remains "" and referenceSites will use name-based matching
 		targetName = dataAccess.Name
 		targetType = model.ObjectDDM
@@ -455,17 +454,16 @@ func findVariableReferencesAcrossFiles(
 
 	// Try each USING reference in the source file's data-area refs
 	for _, dataAreaRef := range sourceFA.DataAreaRefs {
-		// Resolve the field in the data area
-		declRange := workspace.ResolveDataAreaField(varRef.Name, dataAreaRef, idx, referencingRelPath, cfg)
+		// Resolve the field AND the chain-selected data-area object path together
+		// (steplib chain, non-transitive) so the field range and the object path
+		// stay consistent and an unreachable same-named copy is excluded.
+		declRange, dataAreaPath := workspace.ResolveDataAreaFieldLocation(varRef.Name, dataAreaRef, idx, referencingRelPath, cfg)
 		if declRange.Start.Line == 0 && declRange.End.Line == 0 {
 			// Field not found in this data area; try the next one
 			continue
 		}
-
-		// Get the data-area path for the Location URI
-		dataAreaPath := lookupDataAreaPath(dataAreaRef.Name, idx, referencingRelPath, cfg)
 		if dataAreaPath == "" {
-			// Couldn't locate data-area object; skip
+			// Couldn't locate the data-area object via the chain; skip
 			continue
 		}
 

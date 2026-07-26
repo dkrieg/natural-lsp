@@ -143,13 +143,15 @@ func TestProvideDocumentHighlight_VariableBasic(t *testing.T) {
 				}
 			}
 
-			// Expect: each highlight carries a Kind (Read/Write/Text, defaults to Text if omitted)
+			// Pin the real behavior (Finding 4): the provider is best-effort per the
+			// plan and does NOT derive read/write direction — every highlight is emitted
+			// as DocumentHighlightKindText. Write-direction (e.g. distinguishing the
+			// MOVE … TO #X assignment target as DocumentHighlightKindWrite) is out of
+			// scope for feature 27. Assert EXACTLY Text so a future direction-aware
+			// change is a deliberate, test-visible decision rather than silently allowed.
 			for i, hl := range highlights {
-				// DocumentHighlightKind is a uint32, with 0 meaning omitted (defaults to Text).
-				// Valid values are 1 (Text), 2 (Read), 3 (Write).
-				if hl.Kind != 0 && hl.Kind != protocol.DocumentHighlightKindText &&
-					hl.Kind != protocol.DocumentHighlightKindRead && hl.Kind != protocol.DocumentHighlightKindWrite {
-					t.Errorf("highlight[%d] has invalid Kind %v; want 0 (omitted/default), 1 (Text), 2 (Read), or 3 (Write)", i, hl.Kind)
+				if hl.Kind != protocol.DocumentHighlightKindText {
+					t.Errorf("highlight[%d] Kind = %v; want exactly DocumentHighlightKindText (write-direction is out of scope for feature 27)", i, hl.Kind)
 				}
 			}
 		})

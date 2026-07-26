@@ -912,6 +912,63 @@ Fixtures: `internal/server/testdata/skipfiles/` (tiny `max_file_size` → too_la
 `internal/workspace/index.go` (`SkipRecord`/`Skips`/`addSkip`), `internal/workspace/cache.go` (`CacheExists`);
 `internal/config/config.go` (`SkipUnreadable`/`SkipAnalyzerPanic`).
 
+## ADR-028 — Server cross-file object-location goes through the steplib chain, never candidates[0] (2026-07-26)
+**Context:** feature 27 (variable navigation), SERVER-RESOLUTION review cluster. The LSP definition
+and references providers located cross-file targets by calling `idx.LookupByName(name, type, cfg)` and
+taking `candidates[0]`. `LookupByName` returns ALL name+type matches UNFILTERED, sorted by Path — so
+`candidates[0]` is whichever library's copy sorts first alphabetically, NOT the library reachable from
+the caller. A same-named object in a library outside the caller's steplib chain (unreachable) could be
+picked over the true chain winner. This affected `provideDDMDefinition`, `references.go`'s DDM branch,
+and the USING data-area path (`lookupDataAreaPath`). The stale comment "LookupByName respects library
+map" was FALSE.
+**Decision:** Route ALL server cross-file object-location through the SAME chain helper the
+field-resolver already used (`buildSearchChain`/`resolveViaChain`, ADR-004, non-transitive). Two new
+exported workspace helpers on top of a shared `resolveCandidateViaChain`:
+`ResolveDataAreaFieldLocation` (returns field range AND chain-resolved object path together, so the
+two never disagree) and `ResolveDDMPath` (DDM name → `.NSD` path via the chain). `ResolveDataAreaField`
+now delegates to the location-aware sibling. The server's `lookupDataAreaPath` (candidates[0]) was
+deleted; `provideDDMDefinition`/`references.go` consume `ResolveDDMPath`.
+**Rationale:** One resolution path means the definition provider, references provider, and the
+field-resolver can never diverge on which library's object wins; unreachable same-named copies are
+excluded exactly as Natural's runtime would (first chain library with a match wins). Flat-namespace
+callers (no library map) keep the first-candidate pick unchanged.
+**Consequence / test:** New multi-library fixture (`internal/{server,workspace}/testdata/multilib/`):
+caller in `APP` with steplib `COMMON`; the data-area `.NSL` and DDM `.NSD` exist in BOTH `COMMON`
+(reachable) and `ALT` (NOT in APP's chain). `ALT` deliberately sorts BEFORE `COMMON`, so the old
+`candidates[0]` resolves to the UNREACHABLE `ALT` copy — the regression is genuinely load-bearing
+(proven RED: both server tests resolved to `…/ALT/…` before the fix). Tests assert the chain winner
+(`COMMON`) AND explicit unreachable-exclusion (`/ALT/` never chosen), covering both the USING (T7)
+and SQL-DDM (T9) paths, at the workspace level (helpers) and the server level (providers). The server
+tests build cfg from the fixture `.natural-lsp.toml` via `config.Bootstrap` (NOT `config.Defaults()`)
+so the library map is actually exercised. No `internal/model` change, no cache-format bump (0.8.0),
+Analyzer seam intact.
+
+## ADR-029 — Group-qualification `#GROUP.#FIELD` reconstructed from source, not from the ref token (2026-07-26)
+**Context:** feature 27, same review cluster. The T2 variable-ref scanner emits a group-qualified
+reference `#GROUP.#FIELD` as SEPARATE tokens (`#GROUP`, then `#FIELD`) with the `.` dropped, so a leaf
+`VariableRef` carries only the bare leaf name. `resolveVariableDefinition` never reconstructed the
+qualifier (a `TODO`), so it searched the whole `Definitions` tree for the bare leaf and only worked
+when the leaf was unique — a leaf declared in two level-1 groups returned BOTH candidates even when the
+reference was qualified.
+**Decision:** Reconstruct the qualifier from the source at resolve time (`qualifierBeforeRef`): read
+left of the leaf token's start, skip a single `.` (with optional inline whitespace), and read back the
+preceding identifier; that identifier (uppercased) is the level-1 group qualifier. When present,
+`findDeclaration(defs, leaf, groupName, …)` scopes matching to the sub-field WITHIN that level-1 group;
+when absent, the unqualified path is unchanged (all candidates → genuine ambiguity).
+**Rationale:** Source reconstruction is the minimal correct fix given the scanner's token shape (no
+model change, no scanner change owned by a parallel agent). Only the reference's own line is inspected
+(a name/dot never spans a line break in practice); out-of-range positions return "" (FR-43). CRLF
+tolerated via a trailing `\r` strip.
+**Consequence / test:** `AMBIG.NSP` (two level-1 groups each with `#FIELD`, plus a qualified reference
+`#GROUP-A.#FIELD TO #GROUP-B.#FIELD`) drives the new `TestProvideDefinition_VariableGroupQualified_TwoGroups`:
+`#GROUP-A.#FIELD` resolves to EXACTLY `#GROUP-A`'s sub-field (source line 8) and `#GROUP-B.#FIELD` to
+`#GROUP-B`'s (line 10) — not both, not the wrong group. The pre-existing weak group-qualified test now
+asserts exactly one sub-field location; the unqualified-ambiguous test (all candidates) still passes.
+Also in this cluster: deleted the `uriToRelPath` `os.Getwd()` cwd-munging fallback (dead vs. absolute-path
+tests, reintroduced the feature-20-removed cwd dependency), and pinned `documentHighlight` Kind to
+EXACTLY `DocumentHighlightKindText` (the provider is best-effort and derives no read/write direction —
+write-direction is out of scope for feature 27, now a test-visible decision).
+
 ## Sources
 - Internal (authoritative): `README.md`, `docs/plans/natural-lsp-prd.md`, `CLAUDE.md`,
   `docs/plans/features/`.

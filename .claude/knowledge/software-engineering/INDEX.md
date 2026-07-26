@@ -28,6 +28,30 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 
 ## Changelog
 
+- 2026-07-26 — **architecture-decisions.md**: recorded **ADR-028** and **ADR-029** (feature 27
+  SERVER-RESOLUTION address-findings cluster). ADR-028: server cross-file object-location (definition +
+  references, data-area USING and SQL DDM) now routes through the steplib chain
+  (`buildSearchChain`/`resolveViaChain`) via new workspace helpers `ResolveDataAreaFieldLocation` +
+  `ResolveDDMPath` instead of an unfiltered `idx.LookupByName(...).candidates[0]` that could pick an
+  unreachable same-named copy; multi-library fixture (`testdata/multilib/`, ALT sorts before COMMON so the
+  old code resolved to the unreachable ALT copy) proves chain-winner + unreachable-exclusion for both
+  T7/T9 paths, server tests load the map via `config.Bootstrap`. ADR-029: `#GROUP.#FIELD`
+  group-qualification reconstructed from source (`qualifierBeforeRef`) since the T2 scanner drops the `.`
+  and emits separate tokens — qualified refs now resolve to the sub-field within the named level-1 group
+  (proven with a same-leaf-in-two-groups fixture), unqualified-ambiguous unchanged; also deleted the
+  `uriToRelPath` `os.Getwd()` cwd-munging fallback and pinned documentHighlight Kind to exactly Text
+  (write-direction out of scope). No model/cache change (0.8.0), Analyzer seam intact, json/v2 marshaling
+  unchanged; `just verify` green.
+- 2026-07-26 — (feature 27 address-findings, analyzer/model cluster) Reinforced the **model-side
+  inclusive-end range convention** (ADR-008): every parser-produced `*.Range.End.Column` must point at
+  the *last* character (`col + len(literal) - 1`), not one past it. The `DEFINE DATA … USING <name>`
+  capture in `parseDataSection` had used `+= len(literal)` (exclusive), one column too wide vs. the
+  field `NameRange`/`tokenRange`; corrected to `- 1`. Guard: `TestDataAreaRef_RangeEndInclusive`
+  (`internal/analysis/natural/data_test.go`) pins the exact inclusive `End.Column`. Downstream LSP
+  consumers pass these through `toProtocolRange` (inclusive→exclusive), so the narrower range is the
+  correct input. Also: Natural has **no COBOL `OCCURS`** — arrays use index-range syntax `(D/1:10)`;
+  a bad `OCCURS 10` fixture silently produced empty `Dimensions` (parser drops the trailing tokens).
+  No model-shape change, no cache bump (0.8.0), Analyzer seam intact.
 - 2026-07-20 — **architecture-decisions.md**: **ADR-027 follow-up** (branch `ci/windows-job`, PR #39) —
   the new Windows CI `go test ./...` job went red on **test-artifact non-portability, not product bugs**
   (build+vet passed; every failure was a Windows-unaware assertion/harness). Fixed test-side across five

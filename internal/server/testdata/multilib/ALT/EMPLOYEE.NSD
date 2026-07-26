@@ -1,0 +1,8 @@
+DB: 000 FILE: 999  - EMPLOYEE                          DEFAULT SEQUENCE:
+TYPE: ADABAS
+
+T L DB Name                              F Leng  S D Remark
+- - -- --------------------------------  - ----  - - ------------------------
+  1 AA EMP-ID                            N    8  N U
+  1 AB EMP-NAME                          A   50  N D
+******DDM OUTPUT TERMINATED******

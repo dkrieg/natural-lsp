@@ -3,6 +3,7 @@ package natural
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dkrieg/natural-lsp/internal/model"
@@ -145,43 +146,64 @@ func TestExtractVariableRefs_BasicCapture(t *testing.T) {
 			},
 		},
 		{
-			name: "CommentStringExclusion_stringLiteralNotCaptured",
+			name: "CommentStringExclusion_stringAndCommentNotCaptured",
 			verify: func(t *testing.T, refs []model.VariableRef) {
-				// The fixture line ~38:
-				// MOVE '#CUSTOMER-NAME' TO #COUNTER
-				// has #CUSTOMER-NAME INSIDE a string literal (should NOT be captured).
-				// The #COUNTER on line ~38 (outside the string) SHOULD be captured.
-
-				// We expect #COUNTER to be captured, but ONLY the real ones (not inside strings).
-				// Count refs and verify the string-literal #CUSTOMER-NAME is NOT among them.
-
-				foundCustomerInString := false
+				// The fixture uses #CUSTOMER-NAME in exactly two REAL statement
+				// positions (MOVE #CUSTOMER-NAME TO #COUNTER, and
+				// MOVE #TABLE(#INDEX) TO #CUSTOMER-NAME) plus once INSIDE a string
+				// literal (MOVE '#CUSTOMER-NAME' TO #COUNTER). The string occurrence
+				// must NOT be captured, so the count is exactly 2 — and the string
+				// occurrence sits on the MOVE '...' line, which must be absent.
+				var customerRefs []model.VariableRef
 				for _, ref := range refs {
 					if ref.Name == "#CUSTOMER-NAME" {
-						// Check if this is the one at line ~38 inside the string.
-						// The string literal is on line ~38 at column ~9-26.
-						// For now, we'll assert that we don't have too many #CUSTOMER-NAME refs.
-						// (More precise check would require line/column inspection, deferred to next task.)
+						customerRefs = append(customerRefs, ref)
+					}
+				}
+				if len(customerRefs) != 2 {
+					t.Fatalf("Found %d #CUSTOMER-NAME refs, want exactly 2 (the string-literal occurrence excluded)", len(customerRefs))
+				}
+				// Locate the MOVE '#CUSTOMER-NAME' line so we can prove no capture landed on it.
+				stringLine := findLineContaining(t, "MOVE '#CUSTOMER-NAME'")
+				for _, ref := range customerRefs {
+					if ref.Range.Start.Line == stringLine {
+						t.Errorf("Captured #CUSTOMER-NAME at line %d, which is inside a string literal", stringLine)
 					}
 				}
 
-				// More concrete check: the comment has `* This is a comment with #FIELD inside it`
-				// We should NOT capture #FIELD from that comment line.
-				fieldFromCommentRefs := 0
+				// #FIELD appears ONLY inside the comment line
+				// (* This is a comment with #FIELD inside it) and, as a distinct
+				// name, nowhere else. It must yield ZERO refs. This simultaneously
+				// proves comment exclusion AND exact-name matching: the real
+				// #FIELD-EXT use-site must NOT be counted as a #FIELD match.
 				for _, ref := range refs {
-					// A #FIELD that appears only in a comment would have a line number matching the comment.
-					// For now, verify we don't have suspicious #FIELD refs.
 					if ref.Name == "#FIELD" {
-						fieldFromCommentRefs++
+						t.Errorf("Captured #FIELD at line %d; it appears only inside a comment (and #FIELD-EXT must not match as #FIELD)", ref.Range.Start.Line)
 					}
 				}
-
-				// Verify the test at least runs (we'll refine the assertion once implementation is clear)
-				if foundCustomerInString {
-					t.Error("Captured a #CUSTOMER-NAME that should have been in a string literal")
+			},
+		},
+		{
+			name: "SubstringDecoy_exactNameMatchingNotSubstring",
+			verify: func(t *testing.T, refs []model.VariableRef) {
+				// #FIELD-EXT is a real, distinct use-site (WRITE #FIELD-EXT). It
+				// must be captured exactly once, and must never be conflated with
+				// the shorter, comment-only #FIELD name.
+				fieldExtRefs := 0
+				for _, ref := range refs {
+					if ref.Name == "#FIELD-EXT" {
+						fieldExtRefs++
+					}
 				}
-
-				t.Logf("Found %d #FIELD refs (from comments or real uses)", fieldFromCommentRefs)
+				if fieldExtRefs != 1 {
+					t.Errorf("Found %d #FIELD-EXT refs, want exactly 1 (the real WRITE use-site)", fieldExtRefs)
+				}
+				// Guard the decoy direction explicitly: no ref named #FIELD exists.
+				for _, ref := range refs {
+					if ref.Name == "#FIELD" {
+						t.Error("A #FIELD ref exists; #FIELD-EXT must not be matched as the substring #FIELD")
+					}
+				}
 			},
 		},
 		{
@@ -212,22 +234,32 @@ func TestExtractVariableRefs_BasicCapture(t *testing.T) {
 		{
 			name: "DynamicVariableExclusion_ampersandVarNotCaptured",
 			verify: func(t *testing.T, refs []model.VariableRef) {
-				// Line ~44: CALLNAT #CALLNAT-NAME #COUNTER
-				// #CALLNAT-NAME is a dynamic variable (used in a CALLNAT target position)
-				// and should NOT be captured (modeled gap per OQ-1).
-
+				// The fixture has MOVE &DYNVAR TO #INDEX. &DYNVAR is a &-dynamic
+				// (source-substitution) name and is a modeled gap per OQ-1 — it must
+				// NOT be captured. The lexer preserves the leading & sigil, so the
+				// excluded token is "&DYNVAR"; assert neither form leaks in.
 				for _, ref := range refs {
-					if ref.Name == "#CALLNAT-NAME" {
-						// For Phase A, we may or may not capture this;
-						// it's a dynamic ref (unresolvable at extraction time).
-						// The plan says `&`-dynamic are "excluded or flagged as dynamic" (OQ-6).
-						// For the test, we document the design decision:
-						// - Dynamic in CALLNAT target position: NOT captured (modeled gap).
-						t.Logf("Found #CALLNAT-NAME (dynamic in CALLNAT target): captured or excluded per design")
+					if ref.Name == "&DYNVAR" || ref.Name == "DYNVAR" {
+						t.Errorf("Captured &-dynamic variable %q at line %d; it must be excluded (modeled gap)", ref.Name, ref.Range.Start.Line)
 					}
 				}
-
-				// This test documents the decision; implementer will clarify in T2 GREEN.
+				// Any name beginning with the & sigil must be absent entirely.
+				for _, ref := range refs {
+					if len(ref.Name) > 0 && ref.Name[0] == '&' {
+						t.Errorf("Captured &-prefixed ref %q; all &-dynamic names must be excluded", ref.Name)
+					}
+				}
+				// Sanity: the real #INDEX on the same statement IS captured, proving
+				// exclusion is scoped to the &-name, not the whole statement.
+				indexRefs := 0
+				for _, ref := range refs {
+					if ref.Name == "#INDEX" {
+						indexRefs++
+					}
+				}
+				if indexRefs < 1 {
+					t.Error("Expected #INDEX to be captured (the &-exclusion must not drop the surrounding statement)")
+				}
 			},
 		},
 	}
@@ -280,4 +312,23 @@ func TestExtractVariableRefs_FuzzNeverPanics(t *testing.T) {
 			}
 		})
 	}
+}
+
+// findLineContaining returns the 1-based line number of the first line in the
+// 01-basic-captures fixture that contains substr. It is a test helper for
+// asserting that no captured VariableRef lands on a specific source line
+// (e.g., a string-literal line whose contents must be excluded).
+func findLineContaining(t *testing.T, substr string) int {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join("testdata", "variablerefs", "01-basic-captures.NSP"))
+	if err != nil {
+		t.Fatalf("Failed to read fixture: %v", err)
+	}
+	for i, line := range strings.Split(string(content), "\n") {
+		if strings.Contains(line, substr) {
+			return i + 1
+		}
+	}
+	t.Fatalf("fixture does not contain a line with %q", substr)
+	return 0
 }

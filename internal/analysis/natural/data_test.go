@@ -3,6 +3,7 @@ package natural
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/dkrieg/natural-lsp/internal/model"
@@ -2261,6 +2262,28 @@ func TestExtractDefinitions_DataArea(t *testing.T) {
 					}
 				}
 			}
+
+			// Verify array-dimension extraction from a data area (Feature 27, review fix).
+			// The complex fixture declares #DATES-ARRAY as a 1-D array using Natural's
+			// index-range syntax (D/1:10). Its Dimensions must be exactly one bounded
+			// [1:10] dimension — this guards that array bounds actually flow from a
+			// DEFINE DATA declaration in a data-area file, not just from programs.
+			if tt.name == "complex_local_data_area" {
+				var datesArray *model.DataDefinition
+				for i := range result.Definitions {
+					if result.Definitions[i].Name == "#DATES-ARRAY" {
+						datesArray = &result.Definitions[i]
+						break
+					}
+				}
+				if datesArray == nil {
+					t.Fatal("expected a #DATES-ARRAY definition, found none")
+				}
+				wantDims := []model.ArrayDimension{{Lower: 1, Upper: 10, UpperUnbounded: false}}
+				if !reflect.DeepEqual(datesArray.Dimensions, wantDims) {
+					t.Errorf("#DATES-ARRAY Dimensions = %+v, want %+v", datesArray.Dimensions, wantDims)
+				}
+			}
 		})
 	}
 }
@@ -2422,12 +2445,53 @@ END-DEFINE`
 		t.Errorf("Range.Start.Line = %d, want 2 (LOCAL USING CUSTLDA line)", ref.Range.Start.Line)
 	}
 
-	// Extract the text at the range
+	// Extract the text at the range.
+	// Range.End.Column is inclusive (points at the last character, ADR-008),
+	// so the exclusive Go slice upper bound is End.Column (not End.Column-1).
 	line := lines[ref.Range.Start.Line-1]
-	rangeText := line[ref.Range.Start.Column-1 : ref.Range.End.Column-1]
+	rangeText := line[ref.Range.Start.Column-1 : ref.Range.End.Column]
 
 	// It should be "CUSTLDA", not "USING CUSTLDA"
 	if rangeText != "CUSTLDA" {
 		t.Errorf("Range text = %q, want CUSTLDA", rangeText)
+	}
+
+	// CUSTLDA occupies columns 13-19 (1-based, inclusive) on the LOCAL line.
+	// Assert the exact inclusive End.Column so an off-by-one in the USING-clause
+	// range capture cannot regress silently (must be 19, not 20).
+	if ref.Range.Start.Column != 13 {
+		t.Errorf("Range.Start.Column = %d, want 13", ref.Range.Start.Column)
+	}
+	if ref.Range.End.Column != 19 {
+		t.Errorf("Range.End.Column = %d, want 19 (inclusive last char of CUSTLDA)", ref.Range.End.Column)
+	}
+}
+
+// TestDataAreaRef_RangeEndInclusive pins the exact inclusive End.Column of a
+// USING data-area name, guarding the ADR-008 range convention (feature 27
+// review fix). GLOBAL USING MYGDA places MYGDA at columns 14-18 (1-based); the
+// inclusive End.Column must be 18 (a prior off-by-one produced 19).
+func TestDataAreaRef_RangeEndInclusive(t *testing.T) {
+	content := `DEFINE DATA
+GLOBAL USING MYGDA
+END-DEFINE`
+
+	lexer := NewLexer(content)
+	parser := NewParser(lexer)
+	prog, _ := parser.Parse()
+	refs := extractDataAreaRefs(prog)
+
+	if len(refs) != 1 {
+		t.Fatalf("Expected 1 ref, got %d", len(refs))
+	}
+	ref := refs[0]
+	if ref.Name != "MYGDA" {
+		t.Errorf("Name = %q, want MYGDA", ref.Name)
+	}
+	if ref.Range.Start.Column != 14 {
+		t.Errorf("Range.Start.Column = %d, want 14 (start of MYGDA)", ref.Range.Start.Column)
+	}
+	if ref.Range.End.Column != 18 {
+		t.Errorf("Range.End.Column = %d, want 18 (inclusive last char of MYGDA)", ref.Range.End.Column)
 	}
 }

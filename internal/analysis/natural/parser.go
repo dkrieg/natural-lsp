@@ -166,7 +166,9 @@ func (p *Parser) parseDataSection(ast *Program, startPos model.Position) {
 				usingName = p.current.Literal
 				usingStart := p.currentPos()
 				usingEnd := p.currentPos()
-				usingEnd.Column += len(p.current.Literal)
+				// Inclusive end: point at the last character of the name token,
+				// matching the field NameRange / tokenRange convention (ADR-008).
+				usingEnd.Column += len(p.current.Literal) - 1
 				usingRange = model.Range{Start: usingStart, End: usingEnd}
 				p.advance()
 			}

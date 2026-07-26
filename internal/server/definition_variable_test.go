@@ -277,14 +277,104 @@ func TestProvideDefinition_VariableGroupQualified(t *testing.T) {
 		t.Fatalf("provideDefinition failed: %v", err)
 	}
 
-	// Assert: expect one location (the sub-field declaration)
-	if locations == nil || len(locations) == 0 {
-		t.Errorf("expected location for group-qualified #GROUP.#SUB-FIELD, got nil")
-		return
+	// Assert: expect EXACTLY one location — the sub-field declaration within the
+	// named group, not the parent group and not all same-named candidates.
+	if len(locations) != 1 {
+		t.Fatalf("expected exactly 1 location for group-qualified #GROUP.#SUB-FIELD, got %d", len(locations))
+	}
+	loc := locations[0]
+	if string(loc.URI) != string(uri.File(fixtureFile)) {
+		t.Errorf("expected same file, got %q", loc.URI.FsPath())
+	}
+	// The resolved range must be the level-2 sub-field's NameRange, not the level-1
+	// group's. In VARTEST.NSP the #SUB-FIELD declaration is a distinct line from
+	// its #GROUP; assert the target is not the group's own line by requiring a
+	// non-zero range that differs from the group declaration.
+	if loc.Range.Start.Line == 0 && loc.Range.End.Line == 0 && loc.Range.Start.Character == 0 {
+		t.Errorf("expected a concrete sub-field range, got zero range")
+	}
+}
+
+// TestProvideDefinition_VariableGroupQualified_TwoGroups is the load-bearing
+// group-qualification regression: the SAME leaf name (#FIELD) is declared in TWO
+// different level-1 groups (#GROUP-A and #GROUP-B). A QUALIFIED reference
+// #GROUP-A.#FIELD must resolve to EXACTLY #GROUP-A's sub-field (line 8), NOT
+// #GROUP-B's (line 10), and NOT return both candidates. Finding 1 (T3).
+func TestProvideDefinition_VariableGroupQualified_TwoGroups(t *testing.T) {
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "variablenav")
+
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+	resSet := workspace.Resolve(idx, &cfg)
+
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+		az:          az,
 	}
 
-	// TODO (T3): Assert that the resolved location is the sub-field (level-2),
-	// not the parent group (level-1).
+	fixtureFile := filepath.Join(fixtureRoot, "AMBIG.NSP")
+
+	// AMBIG.NSP line 17: "MOVE #GROUP-A.#FIELD TO #GROUP-B.#FIELD"
+	// The #FIELD after "#GROUP-A." is at 1-based cols 15-20 (0-based char 14-19).
+	// Cursor mid-token at 0-based char 16.
+	params := protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(fixtureFile)},
+			Position:     protocol.Position{Line: 16, Character: 16},
+		},
+	}
+
+	locations, err := provideDefinition(hctx, params)
+	if err != nil {
+		t.Fatalf("provideDefinition failed: %v", err)
+	}
+
+	// Assert: EXACTLY one location — #GROUP-A's sub-field, not both, not #GROUP-B's.
+	if len(locations) != 1 {
+		t.Fatalf("expected exactly 1 location for #GROUP-A.#FIELD, got %d (must not return all candidates)", len(locations))
+	}
+	loc := locations[0]
+	// #GROUP-A's #FIELD declaration NameRange is line 8 (1-based) → protocol line 7.
+	if loc.Range.Start.Line != 7 {
+		t.Errorf("qualified #GROUP-A.#FIELD resolved to protocol line %d, want 7 (#GROUP-A's sub-field on source line 8); #GROUP-B's is line 10/protocol 9",
+			loc.Range.Start.Line)
+	}
+
+	// And the sibling qualifier #GROUP-B.#FIELD (cols 34-39, 0-based char 33-38)
+	// must resolve to #GROUP-B's sub-field on source line 10 (protocol line 9).
+	paramsB := protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(fixtureFile)},
+			Position:     protocol.Position{Line: 16, Character: 35},
+		},
+	}
+	locationsB, err := provideDefinition(hctx, paramsB)
+	if err != nil {
+		t.Fatalf("provideDefinition (GROUP-B) failed: %v", err)
+	}
+	if len(locationsB) != 1 {
+		t.Fatalf("expected exactly 1 location for #GROUP-B.#FIELD, got %d", len(locationsB))
+	}
+	if locationsB[0].Range.Start.Line != 9 {
+		t.Errorf("qualified #GROUP-B.#FIELD resolved to protocol line %d, want 9 (#GROUP-B's sub-field on source line 10)",
+			locationsB[0].Range.Start.Line)
+	}
 }
 
 // TestProvideDefinition_VariableArrayField tests that a cursor on an array element

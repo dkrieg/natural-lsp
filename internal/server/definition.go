@@ -265,37 +265,13 @@ func uriToRelPath(root string, fileURI uri.URI) (absPath, relPath string, err er
 		}
 	}
 
-	// Ensure absPath is absolute (uri.FsPath should give us absolute path on non-Windows,
-	// but be defensive). Also try to detect and fix malformed URIs from relative paths.
+	// Ensure absPath is absolute (uri.FsPath yields an absolute path for a valid
+	// file URI, but be defensive against a relative path slipping through).
 	if !filepath.IsAbs(absPath) {
 		var absErr error
 		absPath, absErr = filepath.Abs(absPath)
 		if absErr != nil {
 			return "", "", absErr
-		}
-	} else {
-		// absPath is already absolute, but it might be a malformed URI from a relative path.
-		// If the path doesn't exist but would exist relative to the current directory,
-		// try to fix it.
-		if _, err := os.Stat(absPath); os.IsNotExist(err) {
-			// Path doesn't exist. Try prepending the current working directory.
-			// This handles the case where uri.File() was called on a relative path,
-			// which creates file:///relative/path instead of file:///abs/path.
-			if !filepath.IsAbs(absPath) || strings.HasPrefix(absPath, "/") && len(absPath) > 1 && !strings.HasPrefix(absPath, "//") {
-				// It's a "/" + relative path; try to fix it
-				potentialPath := absPath
-				if potentialPath[0] == '/' && len(potentialPath) > 1 {
-					// Strip the leading / and try to make it relative to cwd
-					relativePart := potentialPath[1:]
-					if cwdAbs, cwdErr := os.Getwd(); cwdErr == nil {
-						potentialPath = filepath.Join(cwdAbs, relativePart)
-						if _, statErr := os.Stat(potentialPath); statErr == nil {
-							// This path exists! Use it instead
-							absPath = potentialPath
-						}
-					}
-				}
-			}
 		}
 	}
 
@@ -408,23 +384,22 @@ func resolveVariableDefinition(varRef *model.VariableRef, sourceFA *model.FileAn
 		return nil
 	}
 
-	// Parse the variable name: check for group qualification (#GROUP.FIELD)
+	// The leaf variable name at the cursor. The T2 scanner emits a group-qualified
+	// reference #GROUP.#FIELD as SEPARATE tokens (#GROUP, then #FIELD) with the '.'
+	// dropped, so varRef.Name is just the leaf ("#FIELD"). Recover the qualifier by
+	// reading back through the source: if the token immediately preceding this ref
+	// (across a single '.') is an identifier, that identifier is the level-1 group
+	// qualifier and resolution must be scoped to that group's sub-fields.
 	varName := varRef.Name
+	groupName := qualifierBeforeRef(content, varRef.Range)
 
-	// Check if the name contains a group qualifier (e.g., #GROUP.#FIELD)
-	// The scanner emits group-qualified refs with the full span, so we need to parse it.
-	// For now, use a simple approach: if the varRef.Name contains a dot, split on it.
-	// (Note: the scanner may emit the full qualified name as a single string, or as separate tokens.
-	// Check the actual behavior from ExtractVariableRefs.)
-	// For phase A, we'll implement the simple case where varRef.Name is just the field name,
-	// and group qualification is handled separately by the caller if needed.
-	// TODO (T3): extend this to handle #GROUP.#FIELD parsing.
-
-	// Simple matching: find the declaration with the matching name.
-	// For ambiguous (unqualified) names that appear in multiple groups,
-	// collect ALL matching declarations.
+	// Matching: find the declaration(s) with the matching name.
+	//   - Qualified (groupName != ""): match only the sub-field WITHIN that level-1
+	//     group, so #GROUP-A.#FIELD resolves to #GROUP-A's #FIELD, not #GROUP-B's.
+	//   - Unqualified (groupName == ""): collect ALL matching declarations (a name
+	//     present in multiple groups is genuinely ambiguous → all candidates).
 	var candidates []protocol.Location
-	findDeclaration(sourceFA.Definitions, varName, "", func(decl *model.DataDefinition) {
+	findDeclaration(sourceFA.Definitions, varName, groupName, func(decl *model.DataDefinition) {
 		// Use NameRange if available (feature 27 T1), otherwise fall back to Range
 		rng := decl.NameRange
 		if rng.Start.Line == 0 && rng.End.Line == 0 {
@@ -441,6 +416,78 @@ func resolveVariableDefinition(varRef *model.VariableRef, sourceFA *model.FileAn
 	})
 
 	return candidates
+}
+
+// qualifierBeforeRef reconstructs the level-1 group qualifier of a group-qualified
+// variable reference (#GROUP.#FIELD) from the source content.
+//
+// The T2 scanner emits #GROUP and #FIELD as separate tokens with the '.' dropped,
+// so a leaf ref carries no group context. This helper reads the source immediately
+// to the left of leafRange.Start: it skips at most a single '.' (optionally
+// surrounded by inline whitespace) and, if found, reads back the contiguous
+// identifier before it. That identifier (uppercased, matching the Name convention)
+// is returned as the qualifier. When there is no preceding '.', it returns "" —
+// the reference is unqualified.
+//
+// leafRange is 1-based inclusive (model coordinates). Only the reference's own line
+// is inspected (a qualified reference never spans a line break between name and dot
+// in practice). Robust against out-of-range positions (returns "" — FR-43).
+func qualifierBeforeRef(content string, leafRange model.Range) string {
+	lines := strings.Split(content, "\n")
+	lineIdx := leafRange.Start.Line - 1
+	if lineIdx < 0 || lineIdx >= len(lines) {
+		return ""
+	}
+	line := lines[lineIdx]
+	// Strip a trailing '\r' so column math matches the source (CRLF tolerance).
+	line = strings.TrimSuffix(line, "\r")
+
+	// Byte index just before the leaf token's first character (1-based → 0-based,
+	// then step one left). Column is a 1-based byte offset per the model convention.
+	i := leafRange.Start.Column - 2
+	if i < 0 || i >= len(line) {
+		return ""
+	}
+
+	// Skip inline whitespace immediately before the leaf.
+	for i >= 0 && (line[i] == ' ' || line[i] == '\t') {
+		i--
+	}
+	// Require a single '.' separator.
+	if i < 0 || line[i] != '.' {
+		return ""
+	}
+	i--
+	// Skip inline whitespace between the '.' and the group identifier.
+	for i >= 0 && (line[i] == ' ' || line[i] == '\t') {
+		i--
+	}
+	// Read back the contiguous identifier (Natural identifiers: letters, digits,
+	// '-', and the sigils '#', '&', '@', '+'). end is inclusive.
+	end := i
+	for i >= 0 && isIdentifierByte(line[i]) {
+		i--
+	}
+	start := i + 1
+	if start > end {
+		return ""
+	}
+	return strings.ToUpper(line[start : end+1])
+}
+
+// isIdentifierByte reports whether b can appear in a Natural identifier token as
+// emitted by the lexer (letters, digits, hyphen, and the identifier sigils).
+func isIdentifierByte(b byte) bool {
+	switch {
+	case b >= 'A' && b <= 'Z',
+		b >= 'a' && b <= 'z',
+		b >= '0' && b <= '9':
+		return true
+	case b == '-' || b == '#' || b == '&' || b == '@' || b == '+' || b == '_':
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveVariableDefinitionCrossFile resolves a variable via cross-file USING references.
@@ -465,17 +512,17 @@ func resolveVariableDefinitionCrossFile(
 
 	// Try each USING reference in the source file's data-area refs
 	for _, dataAreaRef := range sourceFA.DataAreaRefs {
-		// Call the workspace resolver to find the field in the data area
-		fieldRange := workspace.ResolveDataAreaField(varRef.Name, dataAreaRef, idx, referencingRelPath, cfg)
+		// Resolve the field AND the chain-selected data-area object path together.
+		// The location-aware helper keeps the field range and the object path
+		// consistent (both come from the same steplib-chain winner) and avoids a
+		// separate unfiltered candidates[0] pick that would bypass the chain
+		// (unreachable-exclusion).
+		fieldRange, dataAreaPath := workspace.ResolveDataAreaFieldLocation(varRef.Name, dataAreaRef, idx, referencingRelPath, cfg)
 
 		// If the field was found, build a Location in the data-area object
 		if fieldRange.Start.Line > 0 || fieldRange.End.Line > 0 {
-			// Resolve the data-area object path for the Location URI
-			// ResolveDataAreaField returns the field's NameRange, but we need the data-area object path
-			// We'll look it up from the index using the dataAreaRef name
-			dataAreaPath := lookupDataAreaPath(dataAreaRef.Name, idx, referencingRelPath, cfg)
 			if dataAreaPath == "" {
-				// Couldn't locate data-area object; skip
+				// Couldn't locate the data-area object via the chain; skip
 				continue
 			}
 
@@ -497,32 +544,6 @@ func resolveVariableDefinitionCrossFile(
 	}
 
 	return nil
-}
-
-// lookupDataAreaPath resolves a data-area object name to its workspace-relative path.
-// It tries all three data-area types (.NSL, .NSA, .NSG) and returns the path of the first
-// resolved candidate via the steplib chain, or empty string if not found.
-// Helper for resolveVariableDefinitionCrossFile (feature 27, T7).
-func lookupDataAreaPath(dataAreaName string, idx *workspace.Index, referencingRelPath string, cfg *config.Config) string {
-	// Try each data-area object type in order
-	candidates := idx.LookupByName(dataAreaName, model.ObjectLocalDataArea, cfg)
-	if len(candidates) == 0 {
-		candidates = idx.LookupByName(dataAreaName, model.ObjectParameterDataArea, cfg)
-	}
-	if len(candidates) == 0 {
-		candidates = idx.LookupByName(dataAreaName, model.ObjectGlobalDataArea, cfg)
-	}
-
-	if len(candidates) == 0 {
-		return ""
-	}
-
-	// For now, return the first candidate (may need steplib chain resolution in future)
-	if len(candidates) > 0 {
-		return candidates[0].Path
-	}
-
-	return ""
 }
 
 // findDeclaration recursively searches a Definitions tree for declarations matching the given name.
@@ -617,16 +638,16 @@ func provideDDMDefinition(
 		return nil
 	}
 
-	// Look up the DDM name
-	// LookupByName returns all candidates matching the name and type
-	candidates := idx.LookupByName(dataAccess.Name, model.ObjectDDM, cfg)
-	if len(candidates) == 0 {
-		// DDM not found; return nil (FR-17)
+	// Resolve the DDM name to its .NSD path via the steplib chain (non-transitive).
+	// idx.LookupByName returns ALL name+type matches UNFILTERED — picking candidates[0]
+	// bypasses the chain and can land on a same-named DDM in a non-chain library.
+	// workspace.ResolveDDMPath applies buildSearchChain/resolveViaChain so an
+	// unreachable copy is excluded.
+	targetPath := workspace.ResolveDDMPath(dataAccess.Name, idx, referencingRelPath, cfg)
+	if targetPath == "" {
+		// DDM not found or not reachable via the chain; return nil (FR-17)
 		return nil
 	}
-
-	// Use first candidate (flat namespace or library map resolved by LookupByName)
-	targetPath := candidates[0].Path
 
 	// Fetch the DDM file's analysis
 	ddmFA, ok := idx.Get(targetPath)

@@ -432,8 +432,10 @@ type HostVarRef struct {
 // declarations. Array subscripts are stripped (e.g., #T(1:10) becomes #T as a separate ref, with
 // the index variable captured as its own ref).
 //
-// Range is the source span of the variable occurrence in the statement. For group-qualified names
-// like #GROUP.FIELD, the range spans the full qualified token sequence.
+// Range is the source span of the variable occurrence in the statement. A group-qualified
+// reference like #GROUP.FIELD is NOT captured as a single span: ExtractVariableRefs emits the
+// group (#GROUP) and the field (FIELD) as separate VariableRef entries, each with its own Range
+// pointing at just that identifier token, so a cursor on either component resolves independently.
 //
 // This type is additive and in-memory only (feature 27) — it is NOT persisted in the cache.
 type VariableRef struct {
