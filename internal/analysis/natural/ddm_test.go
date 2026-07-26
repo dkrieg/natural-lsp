@@ -380,3 +380,48 @@ func TestExtractDDMDefinitions_Customer(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractDDMDefinitions_NameRange verifies that DDM field definitions now have
+// their NameRange populated (feature 28, T8b). The NameRange spans the field name token
+// in the source line, and is necessary for go-to-definition on VIEW OF fields to work.
+// Previously NameRange was zero; it must now be non-zero and span the field name.
+func TestExtractDDMDefinitions_NameRange(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("testdata", "ddm", "customer.NSD"))
+	if err != nil {
+		t.Fatalf("Failed to read fixture: %v", err)
+	}
+
+	a := New(nil)
+	result, err := a.Analyze(filepath.Join("testdata", "ddm", "customer.NSD"), content)
+	if err != nil {
+		t.Fatalf("Analyze error = %v", err)
+	}
+
+	// Find CUSTOMER-ID field and verify its NameRange
+	var custID *model.DataDefinition
+	for i := range result.Definitions {
+		if result.Definitions[i].Name == "CUSTOMER-ID" {
+			custID = &result.Definitions[i]
+			break
+		}
+	}
+	if custID == nil {
+		t.Fatal("CUSTOMER-ID not found")
+	}
+
+	// NameRange must be non-zero (populated)
+	if custID.NameRange.Start.Line == 0 && custID.NameRange.End.Line == 0 {
+		t.Error("CUSTOMER-ID.NameRange is zero; expected non-zero (feature 28, T8b)")
+	}
+
+	// NameRange should span the name token "CUSTOMER-ID"
+	if custID.NameRange.Start.Line != custID.NameRange.End.Line {
+		t.Errorf("CUSTOMER-ID.NameRange spans multiple lines: %v to %v", custID.NameRange.Start, custID.NameRange.End)
+	}
+
+	// Verify the range is within the full line range
+	if custID.NameRange.Start.Line < custID.Range.Start.Line || custID.NameRange.Start.Line > custID.Range.End.Line {
+		t.Errorf("CUSTOMER-ID.NameRange.Start.Line = %d, not within full Range %v to %v",
+			custID.NameRange.Start.Line, custID.Range.Start.Line, custID.Range.End.Line)
+	}
+}

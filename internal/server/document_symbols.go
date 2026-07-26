@@ -5,7 +5,9 @@ import (
 
 	"go.lsp.dev/protocol"
 
+	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/model"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // provideDocumentSymbols handles textDocument/documentSymbol requests (feature 11, FR-27).
@@ -21,6 +23,9 @@ import (
 //     lock, then read the file and convert the indexed Structure. The lock is released before
 //     any I/O so reads cannot block in-progress index updates.
 //
+// Feature 28 T8c: resolves inherited types for bare view fields from the index (post-processing
+// the Symbol tree with DDM field types).
+//
 // Returns nil, nil (no error) when hctx is nil, the URI is not found, or Structure is absent
 // (FR-43 graceful degradation — a file that failed extraction still returns nothing, not a panic).
 func provideDocumentSymbols(hctx *handlerContext, params protocol.DocumentSymbolParams) ([]protocol.DocumentSymbol, error) {
@@ -32,6 +37,7 @@ func provideDocumentSymbols(hctx *handlerContext, params protocol.DocumentSymbol
 	// Resolution order 1: open-document store (current, unsaved edits — Story 2).
 	doc, ok := hctx.store.Get(params.TextDocument.URI)
 	if ok && doc != nil && doc.Analysis.Structure != nil {
+		// Store-first: no index available, so no inherited type resolution
 		return []protocol.DocumentSymbol{
 			symbolToDocumentSymbol(*doc.Analysis.Structure, string(doc.Content), hctx.posEncoding),
 		}, nil
@@ -65,8 +71,9 @@ func provideDocumentSymbols(hctx *handlerContext, params protocol.DocumentSymbol
 		return nil, nil
 	}
 
+	// Convert with index context for inherited type resolution (feature 28, T8c)
 	return []protocol.DocumentSymbol{
-		symbolToDocumentSymbol(*fa.Structure, string(content), hctx.posEncoding),
+		symbolToDocumentSymbolWithTypeResolution(*fa.Structure, string(content), hctx.posEncoding, idx, relPath, &hctx.cfg),
 	}, nil
 }
 
@@ -96,6 +103,82 @@ func symbolToDocumentSymbol(sym model.Symbol, content string, enc protocol.Posit
 		Children:       children,
 		Detail:         detail,
 	}
+}
+
+// symbolToDocumentSymbolWithTypeResolution is like symbolToDocumentSymbol but also resolves
+// inherited types for bare view fields from a DDM (feature 28, T8c, OQ-C).
+// It passes the index and referencingPath down through the tree to enable per-request
+// inherited-type resolution (no cache, per-request resolution).
+//
+// For bare view fields (owning view has ViewOfDDM != "", field has Type == ""),
+// it resolves the field's type from the DDM. Fallback order (OQ-5):
+// (1) DDM field's type; (2) if DDM unresolved/absent/SQL → no type; (3) else no type.
+func symbolToDocumentSymbolWithTypeResolution(
+	sym model.Symbol,
+	content string,
+	enc protocol.PositionEncodingKind,
+	idx *workspace.Index,
+	referencingPath string,
+	cfg *config.Config,
+) protocol.DocumentSymbol {
+	return symbolToDocumentSymbolRecursive(sym, content, enc, nil, idx, referencingPath, cfg)
+}
+
+// symbolToDocumentSymbolRecursive is the internal recursive helper for type resolution.
+// It tracks the owning VIEW OF node (if any) to determine whether to resolve inherited types.
+func symbolToDocumentSymbolRecursive(
+	sym model.Symbol,
+	content string,
+	enc protocol.PositionEncodingKind,
+	owningView *model.Symbol, // The enclosing VIEW OF node, if any
+	idx *workspace.Index,
+	referencingPath string,
+	cfg *config.Config,
+) protocol.DocumentSymbol {
+	kind := modelSymbolKindToProtocol(sym.Kind)
+	protoRange := toProtocolRange(sym.Range, content, enc)
+	protoSelectionRange := toProtocolRange(sym.SelectionRange, content, enc)
+
+	// Update the owning view context when we enter a VIEW OF node
+	newOwningView := owningView
+	if sym.ViewOfDDM != "" {
+		newOwningView = &sym
+	}
+
+	// Recurse into children with updated view context
+	children := symbolsToDocumentSymbolsRecursive(sym.Children, content, enc, newOwningView, idx, referencingPath, cfg)
+
+	// Compute detail with inherited-type resolution
+	detail := symbolDetailWithTypeResolution(sym, newOwningView, idx, referencingPath, cfg)
+
+	return protocol.DocumentSymbol{
+		Name:           sym.Name,
+		Kind:           kind,
+		Range:          protoRange,
+		SelectionRange: protoSelectionRange,
+		Children:       children,
+		Detail:         detail,
+	}
+}
+
+// symbolsToDocumentSymbolsRecursive is the batch converter with view context.
+func symbolsToDocumentSymbolsRecursive(
+	syms []model.Symbol,
+	content string,
+	enc protocol.PositionEncodingKind,
+	owningView *model.Symbol,
+	idx *workspace.Index,
+	referencingPath string,
+	cfg *config.Config,
+) []protocol.DocumentSymbol {
+	if len(syms) == 0 {
+		return nil
+	}
+	result := make([]protocol.DocumentSymbol, len(syms))
+	for i, sym := range syms {
+		result[i] = symbolToDocumentSymbolRecursive(sym, content, enc, owningView, idx, referencingPath, cfg)
+	}
+	return result
 }
 
 // symbolDetail returns the detail string for a symbol, used to populate
@@ -174,4 +257,70 @@ func symbolsToDocumentSymbols(syms []model.Symbol, content string, enc protocol.
 		result[i] = symbolToDocumentSymbol(sym, content, enc)
 	}
 	return result
+}
+
+// symbolDetailWithTypeResolution is like symbolDetail but also resolves inherited types
+// for bare view fields from a DDM (feature 28, T8c, OQ-C).
+//
+// For a bare view field (owningView != nil && owningView.ViewOfDDM != "", sym.Type == ""),
+// it resolves the field's type from the DDM via workspace.ResolveDDMFieldType.
+// Fallback order (OQ-5): (1) DDM field's type; (2) no type if DDM unresolved/absent/SQL.
+//
+// For non-view fields or restated fields, delegates to symbolDetail.
+func symbolDetailWithTypeResolution(
+	sym model.Symbol,
+	owningView *model.Symbol,
+	idx *workspace.Index,
+	referencingPath string,
+	cfg *config.Config,
+) *string {
+	// Only SymbolDataField can have detail
+	if sym.Kind != model.SymbolDataField {
+		return nil
+	}
+
+	// VIEW OF binding takes precedence: a VIEW OF node is a view declaration
+	if sym.ViewOfDDM != "" {
+		detail := "VIEW OF " + sym.ViewOfDDM
+		return &detail
+	}
+
+	// If this is a bare view field (inside a view, no local type), resolve inherited type
+	if owningView != nil && owningView.ViewOfDDM != "" && sym.Type == "" {
+		// Resolve the field's type from the DDM (FR-17: graceful degradation on failure)
+		inheritedType := workspace.ResolveDDMFieldType(sym.Name, owningView.ViewOfDDM, idx, referencingPath, cfg)
+		if inheritedType != "" {
+			// Return the inherited type with dimensions and REDEFINE label if present
+			detail := inheritedType
+
+			if dimStr := formatDimensions(sym.Dimensions); dimStr != "" {
+				detail += " " + dimStr
+			}
+
+			if sym.Redefines != "" {
+				detail += " REDEFINE " + sym.Redefines
+			}
+
+			return &detail
+		}
+		// DDM unresolved/absent/SQL or field not found — return nil (no detail, FR-17)
+		return nil
+	}
+
+	// Restated field or non-view field: delegate to symbolDetail (which uses sym.Type)
+	if sym.Type == "" {
+		return nil
+	}
+
+	detail := sym.Type
+
+	if dimStr := formatDimensions(sym.Dimensions); dimStr != "" {
+		detail += " " + dimStr
+	}
+
+	if sym.Redefines != "" {
+		detail += " REDEFINE " + sym.Redefines
+	}
+
+	return &detail
 }

@@ -7,8 +7,10 @@ import (
 
 	"go.lsp.dev/protocol"
 
+	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/model"
 	"github.com/dkrieg/natural-lsp/internal/paths"
+	"github.com/dkrieg/natural-lsp/internal/workspace"
 )
 
 // buildModuleHover returns a Markdown hover card for a resolved module target.
@@ -359,7 +361,21 @@ func provideHover(hctx *handlerContext, params protocol.HoverParams) (*protocol.
 	// Find the edge (data-access, or variable ref) at the cursor position
 	edge, dataAccess, _ := findCursorTarget(sourceFA, cursorPos, string(sourceContent), hctx.az)
 	if edge == nil && dataAccess == nil {
-		// No edge or data-access at cursor position — no hover
+		// Check for view field declarations (feature 28, T8b, use-site-first fallback)
+		if declTarget := findDeclarationTarget(sourceFA, cursorPos); declTarget != nil {
+			hoverStr := provideHoverForViewField(declTarget, &sourceFA, idx, relPath, &hctx.cfg)
+			if hoverStr != "" {
+				rng := toProtocolRange(declTarget.NameRange, string(sourceContent), posEncoding)
+				return &protocol.Hover{
+					Contents: &protocol.MarkupContent{
+						Kind:  protocol.MarkupKindMarkdown,
+						Value: hoverStr,
+					},
+					Range: &rng,
+				}, nil
+			}
+		}
+		// No edge, data-access, or view field at cursor position — no hover
 		return nil, nil
 	}
 
@@ -514,4 +530,68 @@ func provideHover(hctx *handlerContext, params protocol.HoverParams) (*protocol.
 	}
 
 	return nil, nil
+}
+
+// provideHoverForViewField returns a hover card for a VIEW OF field declaration (feature 28, T8b).
+// It builds a hover card showing the field's type (inherited from DDM or restated locally).
+//
+// For bare view fields, it resolves the field's type from the DDM via workspace.ResolveDDMFieldType.
+// For restated fields, it uses the locally-declared type.
+// Returns an empty string when there's no DDM context or the type cannot be resolved (FR-17, FR-43).
+func provideHoverForViewField(
+	declTarget *DeclarationTarget,
+	sourceFA *model.FileAnalysis,
+	idx *workspace.Index,
+	referencingPath string,
+	cfg *config.Config,
+) string {
+	if declTarget == nil || declTarget.Symbol == nil {
+		return ""
+	}
+
+	sym := declTarget.Symbol
+
+	// Only data fields can have hover details
+	if sym.Kind != model.SymbolDataField {
+		return ""
+	}
+
+	// VIEW NAME nodes (symbol itself has ViewOfDDM) — show VIEW OF definition
+	if sym.ViewOfDDM != "" {
+		// This is the VIEW itself, not a field within it
+		return fmt.Sprintf("**VIEW OF %s**\n\nView over DDM: `%s`", sym.Name, sym.ViewOfDDM)
+	}
+
+	// For view fields, determine the type to display (inherited or restated)
+	var typeToShow string
+
+	// If inside a view and type is empty (bare field), resolve from DDM
+	if declTarget.OwningView != nil && declTarget.OwningView.ViewOfDDM != "" && sym.Type == "" {
+		typeToShow = workspace.ResolveDDMFieldType(sym.Name, declTarget.OwningView.ViewOfDDM, idx, referencingPath, cfg)
+		if typeToShow == "" {
+			// DDM unresolved/absent/SQL or field not found — no type to show
+			return ""
+		}
+	} else {
+		// Restated field or non-view field: use the declared type
+		typeToShow = sym.Type
+		if typeToShow == "" {
+			// Group header with no type — no card
+			return ""
+		}
+	}
+
+	// Build a simple hover card showing the type
+	// Append dimensions and REDEFINE info if present
+	detail := typeToShow
+
+	if dimStr := formatDimensions(sym.Dimensions); dimStr != "" {
+		detail += " " + dimStr
+	}
+
+	if sym.Redefines != "" {
+		detail += ", REDEFINE " + sym.Redefines
+	}
+
+	return fmt.Sprintf("**%s**\n\nType: `%s`", sym.Name, detail)
 }

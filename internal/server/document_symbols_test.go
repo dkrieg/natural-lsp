@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"go.lsp.dev/uri"
 
 	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/document"
 	"github.com/dkrieg/natural-lsp/internal/model"
 	"github.com/dkrieg/natural-lsp/internal/workspace"
@@ -1601,6 +1603,155 @@ func TestSymbolDetail_RedefineAndFiller(t *testing.T) {
 				// Assert: no "OCCURS"
 				if tc.checkNoOccurs && strings.Contains(*detail, "OCCURS") {
 					t.Errorf("symbolDetail(%s) = %q contains forbidden word 'OCCURS'", tc.fieldName, *detail)
+				}
+			}
+		})
+	}
+}
+
+// TestProvideDocumentSymbols_ViewFieldInheritedType tests that a bare view field shows
+// the DDM's inherited type in the outline Detail (feature 28, T8b, Story 4 AC1).
+// A restated view field shows its written type. Unresolved DDM or SQL-type DDM
+// result in no inherited type (modeled gap — FR-17, FR-43).
+//
+// This test uses the view fixture (empview.NSP + customer.NSD) and verifies outline Detail
+// by building a workspace index and calling provideDocumentSymbols through a handlerContext.
+// The test currently FAILS because bare view fields have nil Detail (T6 does not yet resolve
+// inherited types — OQ-C, T8b).
+func TestProvideDocumentSymbols_ViewFieldInheritedType(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	tt := []struct {
+		name                 string
+		sourceFile           string
+		fieldName            string
+		expectDetailContains string // Substring expected in Detail for inherited/resolved type
+		wantResolved         bool   // Whether to expect a resolved inherited type
+		description          string
+	}{
+		{
+			// AC1a: bare view field CUSTOMER-ID (no local type)
+			// → should inherit DDM's type: "N8"
+			// FAILS now: bare field Detail is nil (OQ-C, T8b not implemented)
+			name:                 "VIEW_bare_field_inherited_type",
+			sourceFile:           "empview.NSP",
+			fieldName:            "CUSTOMER-ID",
+			expectDetailContains: "N8",
+			wantResolved:         true,
+			description:          "bare view field CUSTOMER-ID shows DDM's type N8",
+		},
+		{
+			// AC1b: bare view field BALANCE (no local type)
+			// → should inherit DDM's type: "P9,2"
+			// FAILS now: bare field Detail is nil (OQ-C, T8b not implemented)
+			name:                 "VIEW_bare_field_balance_type",
+			sourceFile:           "empview.NSP",
+			fieldName:            "BALANCE",
+			expectDetailContains: "P9,2",
+			wantResolved:         true,
+			description:          "bare view field BALANCE shows DDM's type P9,2",
+		},
+		{
+			// AC1c: restated view field CUSTOMER-NAME (A50)
+			// → shows its written type "A50", not the DDM's type
+			// Likely passes from T6 (restated fields carry their own type)
+			name:                 "VIEW_restated_field_type",
+			sourceFile:           "empview.NSP",
+			fieldName:            "CUSTOMER-NAME",
+			expectDetailContains: "A50",
+			wantResolved:         true,
+			description:          "restated view field CUSTOMER-NAME shows written type A50",
+		},
+	}
+
+	// Build the workspace index from the view fixture (same setup as definition tests)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "viewdef")
+
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(
+		context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("failed to build workspace index: %v", err)
+	}
+
+	// Resolve the workspace (required by provideDocumentSymbols)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Create a document store (required by provideDocumentSymbols, which checks store first)
+	// We pass a nil AnalyzeFunc since the index is already populated
+	store := document.New(fixtureRoot, nil, logger)
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: read the source file
+			sourceAbs := filepath.Join(fixtureRoot, tc.sourceFile)
+			_, readErr := os.ReadFile(sourceAbs)
+			if readErr != nil {
+				t.Fatalf("failed to read source file: %v", readErr)
+			}
+
+			// Build the handlerContext (simulating the server state with index + resolution)
+			hctx := &handlerContext{
+				idx:         idx,
+				res:         resSet,
+				posEncoding: enc,
+				root:        fixtureRoot,
+				cfg:         cfg,
+				logger:      logger,
+				az:          az,
+				store:       store,
+			}
+
+			// Act: call provideDocumentSymbols
+			params := protocol.DocumentSymbolParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(sourceAbs),
+				},
+			}
+
+			docSymbols, err := provideDocumentSymbols(hctx, params)
+
+			// Assert: no error
+			if err != nil {
+				t.Fatalf("provideDocumentSymbols failed: %v", err)
+			}
+
+			// Walk the symbol tree to find the field by name
+			var findField func([]protocol.DocumentSymbol, string) *protocol.DocumentSymbol
+			findField = func(symbols []protocol.DocumentSymbol, name string) *protocol.DocumentSymbol {
+				for i := range symbols {
+					if symbols[i].Name == name {
+						return &symbols[i]
+					}
+					if found := findField(symbols[i].Children, name); found != nil {
+						return found
+					}
+				}
+				return nil
+			}
+
+			foundField := findField(docSymbols, tc.fieldName)
+			if foundField == nil {
+				t.Errorf("%s: field %q not found in document symbols", tc.description, tc.fieldName)
+				return
+			}
+
+			// Assert: Detail contains the expected inherited type
+			if tc.wantResolved {
+				if foundField.Detail == nil {
+					t.Errorf("%s: expected Detail containing %q, got nil (T8b not yet implemented)", tc.description, tc.expectDetailContains)
+					return
+				}
+				if !strings.Contains(*foundField.Detail, tc.expectDetailContains) {
+					t.Errorf("%s: Detail %q does not contain expected %q", tc.description, *foundField.Detail, tc.expectDetailContains)
 				}
 			}
 		})

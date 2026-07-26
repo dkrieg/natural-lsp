@@ -145,6 +145,10 @@ func convertArrayBounds(bounds []ArrayBound) []model.ArrayDimension {
 // redefines is set on the output definition when the field is a redefine subfield
 // (i.e., merged from a REDEFINE block). For non-redefine children, pass "".
 // Recursively converts child fields. Never panics on nil children slices.
+//
+// REDEFINE handling (Feature 28, T4): When a child is a REDEFINE block (Name="" && Redefines!=""),
+// its sub-fields are recursively merged into the target field's Children (not emitted as a
+// separate definition). This handles REDEFINE blocks at any nesting level, not just top-level.
 func fieldToDefinition(field *DataField, sectionKind, redefines string) model.DataDefinition {
 	def := model.DataDefinition{
 		Name:        field.Name,
@@ -163,6 +167,36 @@ func fieldToDefinition(field *DataField, sectionKind, redefines string) model.Da
 			if child == nil {
 				continue // graceful degradation: skip malformed AST child nodes
 			}
+
+			// REDEFINE block handling (Feature 28, T4): a child with empty Name and
+			// non-empty Redefines is a redefine block — its sub-fields are merged into
+			// the parent (target field) instead of being emitted as a separate definition.
+			// Find the target field in the current definition's Children and merge there.
+			if child.Name == "" && child.Redefines != "" {
+				// Scan the already-built Children for the target field
+				targetIdx := -1
+				for i := range def.Children {
+					if def.Children[i].Name == child.Redefines {
+						targetIdx = i
+						break
+					}
+				}
+
+				if targetIdx >= 0 {
+					// Found the target; merge REDEFINE sub-fields into it
+					for _, redefSubChild := range child.Children {
+						if redefSubChild == nil {
+							continue
+						}
+						// Recursively convert the REDEFINE sub-field with Redefines set
+						subDef := fieldToDefinition(redefSubChild, "", child.Redefines)
+						def.Children[targetIdx].Children = append(def.Children[targetIdx].Children, subDef)
+					}
+				}
+				// No entry emitted for the REDEFINE block itself (continue to next child)
+				continue
+			}
+
 			// Children do not carry a SectionKind — the section kind is a
 			// top-level property and is not repeated on nested subfields.
 			// Children also do not inherit parent's Redefines — each field

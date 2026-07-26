@@ -13,10 +13,13 @@ import (
 //   - NameRange: the declaration's name-token span
 //   - Definition: the owning DataDefinition (for ViewOfDDM, Redefines, etc.)
 //   - Symbol: the owning Symbol (for tree structure, SelectionRange for same-file nav)
+//   - OwningView: the owning VIEW OF node's Symbol (if this field is part of a view), else nil.
+//     Used to determine if a field should resolve to a DDM field or a same-file structure.
 type DeclarationTarget struct {
 	NameRange  model.Range
 	Definition *model.DataDefinition
 	Symbol     *model.Symbol
+	OwningView *model.Symbol // The enclosing VIEW OF node, if any (feature 28, T8b)
 }
 
 // rangeContains reports whether position p falls within range r (1-based, inclusive on both ends).
@@ -170,10 +173,11 @@ func findCursorTarget(fa model.FileAnalysis, pos model.Position, content string,
 // The function walks fa.Structure (the recursive Symbol tree) to find the smallest-containing
 // SelectionRange that encloses the cursor position. When found, it populates DeclarationTarget
 // with the node's NameRange, the matching DataDefinition from fa.Definitions (if resolvable),
-// and the matched Symbol itself (always set when a declaration is found).
+// the matched Symbol itself (always set when a declaration is found), and the OwningView
+// (if the matched Symbol is a field within a VIEW OF) — feature 28, T8b.
 //
 // Modeled gaps (missing or unresolved definitions) are gracefully handled: Symbol is always
-// set on a match, but Definition may be nil if the definition cannot be located (FR-43).
+// set on a match, but Definition and OwningView may be nil if not applicable (FR-43).
 func findDeclarationTarget(fa model.FileAnalysis, pos model.Position) *DeclarationTarget {
 	// findDefinitionByName searches fa.Definitions (and their Children) for a definition
 	// whose Name matches the given name. Returns nil when not found (graceful, FR-43).
@@ -192,26 +196,37 @@ func findDeclarationTarget(fa model.FileAnalysis, pos model.Position) *Declarati
 
 	// Walk the Symbol tree to find the Symbol whose SelectionRange is the smallest
 	// range that still contains pos. This mirrors findCursorTarget's span tie-break.
+	// Also track the owning VIEW OF node (if any) during the walk.
 	var smallestSymbol *model.Symbol
 	var smallestLineSpan, smallestColSpan int
+	var owningView *model.Symbol
 
-	var walk func(*model.Symbol)
-	walk = func(sym *model.Symbol) {
+	var walk func(*model.Symbol, *model.Symbol) // (current sym, owning view or nil)
+	walk = func(sym *model.Symbol, view *model.Symbol) {
+		// Update the owning view context when we enter a VIEW OF node
+		newView := view
+		if sym.ViewOfDDM != "" {
+			newView = sym
+		}
+
 		if rangeContains(sym.SelectionRange, pos) {
 			lineSpan, colSpan := rangeSpanSize(sym.SelectionRange)
 			if smallestSymbol == nil || isSmallerSpan(lineSpan, colSpan, smallestLineSpan, smallestColSpan) {
 				smallestSymbol = sym
 				smallestLineSpan = lineSpan
 				smallestColSpan = colSpan
+				owningView = newView
 			}
 		}
+
+		// Recurse into children, passing down the view context
 		for i := range sym.Children {
-			walk(&sym.Children[i])
+			walk(&sym.Children[i], newView)
 		}
 	}
 
 	if fa.Structure != nil {
-		walk(fa.Structure)
+		walk(fa.Structure, nil)
 	}
 
 	if smallestSymbol == nil {
@@ -219,8 +234,9 @@ func findDeclarationTarget(fa model.FileAnalysis, pos model.Position) *Declarati
 	}
 
 	result := &DeclarationTarget{
-		NameRange: smallestSymbol.SelectionRange,
-		Symbol:    smallestSymbol,
+		NameRange:  smallestSymbol.SelectionRange,
+		Symbol:     smallestSymbol,
+		OwningView: owningView,
 	}
 	// Resolve the backing DataDefinition by name; may be nil for structural symbols
 	// (e.g. data-section nodes, subroutines) that have no corresponding DataDefinition (FR-43).

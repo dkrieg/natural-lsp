@@ -86,6 +86,9 @@ func extractDDMDefinitions(content string) []model.DataDefinition {
 
 		ddType, dimensions := parseFormatAndDimensions(line, typeFlag)
 
+		// Compute NameRange: the span of the field name in the source line (feature 28, T8b)
+		nameRange := computeNameRange(line, lineNo)
+
 		def := model.DataDefinition{
 			Name:       name,
 			Level:      level,
@@ -95,6 +98,7 @@ func extractDDMDefinitions(content string) []model.DataDefinition {
 				Start: model.Position{Line: lineNo + 1, Column: 1},
 				End:   model.Position{Line: lineNo + 1, Column: len(line) + 1},
 			},
+			NameRange: nameRange,
 		}
 
 		// Pop the stack to the nearest ancestor with a strictly lower level.
@@ -276,4 +280,51 @@ func isDashedLine(line string) bool {
 		}
 	}
 	return true
+}
+
+// computeNameRange computes the NameRange (selection range for the field name) within a DDM line.
+// The name column starts at fixed offset ddmOffsetName (7 bytes, 0-based).
+// Since parseName trims the field, we reconstruct the name's actual byte span in the line.
+//
+// Returns a model.Range with Start and End (1-based line, 1-based column — model coordinates).
+// The range spans from the first non-space character in the name field to the last.
+// If the name cannot be located (short line, empty after trim), returns a zero Range (FR-43).
+func computeNameRange(line string, lineNo int) model.Range {
+	// Extract the 32-char name field from offset 7
+	if len(line) <= ddmOffsetName {
+		return model.Range{} // Line too short; return zero range
+	}
+
+	end := ddmOffsetName + ddmNameLen
+	if end > len(line) {
+		end = len(line)
+	}
+	nameField := line[ddmOffsetName:end]
+
+	// Find the first and last non-space character within nameField
+	first := -1
+	last := -1
+	for i, ch := range nameField {
+		if ch != ' ' {
+			if first == -1 {
+				first = i
+			}
+			last = i
+		}
+	}
+
+	// If the name field is all spaces, return zero range
+	if first == -1 {
+		return model.Range{}
+	}
+
+	// Compute byte offsets in the original line (0-based)
+	nameStart := ddmOffsetName + first  // Start of the name (0-based)
+	nameEnd := ddmOffsetName + last + 1 // End of the name (exclusive, 0-based)
+
+	// Convert to model coordinates (1-based line, 1-based column)
+	return model.Range{
+		Start: model.Position{Line: lineNo + 1, Column: nameStart + 1},
+		End:   model.Position{Line: lineNo + 1, Column: nameEnd + 1},
+	}
 }

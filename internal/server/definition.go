@@ -100,6 +100,16 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 	// Convert protocol position (0-based) to model position (1-based)
 	cursorPos := fromProtocolPosition(params.Position, string(sourceContent), hctx.posEncoding)
 
+	// Handle VIEW OF field navigation FIRST (feature 28, T8b, priority before use-sites).
+	// If the cursor is on a data-field declaration inside a VIEW OF, resolve per the view binding.
+	if declTarget := findDeclarationTarget(sourceFA, cursorPos); declTarget != nil {
+		if locations, err := provideDefinitionForViewField(hctx, declTarget, absPath, relPath); locations != nil {
+			// VIEW field navigation succeeded; return the location
+			return locations, err
+		}
+		// Not a VIEW field, or VIEW resolution failed; continue to other handlers below
+	}
+
 	// Find the edge (data-access, or variable ref) at the cursor position
 	// Pass content and analyzer for on-demand variable ref extraction
 	edge, dataAccess, varRef := findCursorTarget(sourceFA, cursorPos, string(sourceContent), hctx.az)
@@ -665,4 +675,96 @@ func provideDDMDefinition(
 	// Build the Location using definitionLocation helper
 	loc := definitionLocation(root, targetPath, ddmFA, string(ddmContent), enc)
 	return &loc
+}
+
+// provideDefinitionForViewField handles go-to-definition for VIEW OF field declarations (feature 28, T8b).
+// Given a declaration target (from findDeclarationTarget), it determines whether the cursor is on:
+//
+// 1. A VIEW NAME node (Symbol.ViewOfDDM != ""): navigate to the view's own line (same-file).
+// 2. A bare view field (no local type): navigate to the DDM field's NameRange in the .NSD.
+// 3. A restated view field: navigate to the DDM field.
+// 4. A view-local REDEFINE sub-field (Symbol.Redefines != ""): navigate to same-file REDEFINE line.
+// 5. Non-view field: no special handling, return nil (let the caller handle edges).
+//
+// Returns a Location slice on success, nil on no-match or modeled gap (FR-17, FR-43).
+func provideDefinitionForViewField(hctx *handlerContext, declTarget *DeclarationTarget, absPath, relPath string) ([]protocol.Location, error) {
+	if declTarget == nil || declTarget.Symbol == nil {
+		return nil, nil
+	}
+
+	sym := declTarget.Symbol
+
+	// Case 1: VIEW NAME node (symbol itself has ViewOfDDM) — navigate to own SelectionRange (same-file)
+	if sym.ViewOfDDM != "" && sym.Kind == model.SymbolDataField {
+		// Read the source file content for position conversion
+		content, err := os.ReadFile(absPath)
+		if err != nil {
+			return nil, nil // FR-43: graceful degradation
+		}
+
+		loc := protocol.Location{
+			URI:   uri.File(absPath),
+			Range: toProtocolRange(sym.SelectionRange, string(content), hctx.posEncoding),
+		}
+		return []protocol.Location{loc}, nil
+	}
+
+	// For the remaining cases (field within a view), we need an owning VIEW OF node
+	if declTarget.OwningView == nil || declTarget.OwningView.ViewOfDDM == "" {
+		// Not a view field, or view context not available — return nil (no special handling)
+		return nil, nil
+	}
+
+	// Case 4: view-local REDEFINE sub-field (Redefines != "" inside a view)
+	// Navigate to the REDEFINE line itself (same-file), not the DDM
+	if sym.Redefines != "" {
+		content, err := os.ReadFile(absPath)
+		if err != nil {
+			return nil, nil // FR-43
+		}
+
+		loc := protocol.Location{
+			URI:   uri.File(absPath),
+			Range: toProtocolRange(sym.SelectionRange, string(content), hctx.posEncoding),
+		}
+		return []protocol.Location{loc}, nil
+	}
+
+	// Cases 2 & 3: bare or restated view field — resolve to the DDM field via steplib chain
+	// Acquire read lock to access idx safely
+	hctx.idxResMu.RLock()
+	idx := hctx.idx
+	hctx.idxResMu.RUnlock()
+
+	if idx == nil {
+		return nil, nil // Index not ready; graceful degradation (FR-43)
+	}
+
+	// Resolve the DDM field location via the steplib chain
+	ddmFieldRange, ddmPath := workspace.ResolveDDMFieldLocation(
+		sym.Name,
+		declTarget.OwningView.ViewOfDDM,
+		idx,
+		relPath,
+		&hctx.cfg,
+	)
+
+	if ddmFieldRange == (model.Range{}) || ddmPath == "" {
+		// DDM unresolved, TYPE: SQL, or field absent → return empty (FR-17, FR-43)
+		return nil, nil
+	}
+
+	// Read the DDM file content for range conversion
+	ddmAbsPath := filepath.Join(hctx.root, ddmPath)
+	ddmContent, err := os.ReadFile(ddmAbsPath)
+	if err != nil {
+		return nil, nil
+	}
+
+	// Convert the field range to protocol coordinates
+	loc := protocol.Location{
+		URI:   uri.File(ddmAbsPath),
+		Range: toProtocolRange(ddmFieldRange, string(ddmContent), hctx.posEncoding),
+	}
+	return []protocol.Location{loc}, nil
 }
