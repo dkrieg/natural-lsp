@@ -1,0 +1,25 @@
+* Task 5 (Feature 28, Phase B) fixture: DEFINE DATA with VIEW OF declarations
+* Exercises:
+* - VIEW OF syntax (with and without OF keyword)
+* - Bare selected fields (inherit type from DDM)
+* - Restated-format field (explicit type in the view declaration)
+* - Array field
+* - In-view REDEFINE block
+* - Ordinary non-view field (regression check)
+
+DEFINE DATA LOCAL
+1 #EMPLOYEE
+1 EMP-VIEW VIEW OF EMPLOYEES
+  2 PERSONNEL-ID
+  2 FULL-NAME (A40)
+  2 SALARY (P9,2)
+  2 TAGS (A10/1:10)
+  2 REDEFINE PERSONNEL-ID
+    3 #ID-PREFIX (A2)
+    3 #ID-NUM (N6)
+1 ANOTHER-VIEW VIEW CUSTOMER
+  2 CUST-ID
+  2 CUST-NAME (A30)
+END-DEFINE
+
+END

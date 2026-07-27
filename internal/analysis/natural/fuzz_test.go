@@ -13,19 +13,21 @@ import (
 // arbitrary input — even malformed, garbage, or edge-case bytes.
 //
 // The seed corpus is drawn from the committed testdata/parser fixtures
-// (01-19) representing real, known-interesting Natural constructs (lexer
-// tokens, statements, READ/STORE, DEFINE DATA arrays/redefine, parse errors,
-// inline comments, embedded SQL, parse error recovery), plus hand-written edge
-// cases (empty, unterminated string, lone parentheses, deeply nested parens,
-// multi-byte UTF-8, very long line, unterminated SELECT loop, unterminated
-// PROCESS SQL << >> span).
+// (01-19, 24, 28) representing real, known-interesting Natural constructs
+// (lexer tokens, statements, READ/STORE, DEFINE DATA arrays/redefine, parse
+// errors, inline comments, embedded SQL, parse error recovery, VIEW OF
+// declarations), plus hand-written edge cases (empty, unterminated string,
+// lone parentheses, deeply nested parens, multi-byte UTF-8, very long line,
+// unterminated SELECT loop, unterminated PROCESS SQL << >> span, VIEW clause
+// with and without OF, malformed VIEW with no DDM name).
 //
 // Feature 00 Task 11; M-6, FR-43, ADR-013. ES-10 adds fixtures 09-19 and
 // unterminated-SQL seeds. Refactor phase adds seeds for the clause-skip path
 // (SELECT/SELECT SINGLE with GROUP BY, ORDER BY, HAVING — both terminated and
 // unterminated) to cover the infinite-loop class that was the blocker.
+// Feature 28 T5 refactor adds fixture 28 (VIEW OF) and VIEW-clause seeds.
 func FuzzParse(f *testing.F) {
-	// Seed from the existing testdata/parser fixtures (01-19).
+	// Seed from the existing testdata/parser fixtures (01-19, 24, 28).
 	// Read at fuzz-setup time; if a read fails, skip that seed with a warning
 	// (fixture not found is not a test failure — it's a missing file that the
 	// build will have flagged already).
@@ -50,6 +52,8 @@ func FuzzParse(f *testing.F) {
 		"18-sql-merge.nsp",
 		"19-sql-parse-errors.nsp",
 		"24-work-file.nsp",
+		// Feature 28 T5: VIEW OF declarations in DEFINE DATA.
+		"28-view-of.NSP",
 	}
 
 	for _, name := range fixtureNames {
@@ -128,6 +132,22 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("DEFINE WORK FILE 1.5 'X'\n"))               // non-integer number (decimal)
 	f.Add([]byte("DEFINE WORK FILE 1\n"))                     // missing name
 	f.Add([]byte("DEFINE WORK FILE 1 'GOOD'\nCALLNAT 'X'\n")) // well-formed followed by another stmt
+
+	// Feature 28 T5: VIEW OF clause seeds (FR-43, graceful-degradation).
+	// Exercises the new VIEW [OF] <ddm-name> branch in parseDataField.
+
+	// Well-formed VIEW OF (with OF keyword): the normal path.
+	f.Add([]byte("DEFINE DATA LOCAL\n1 EMP-VIEW VIEW OF EMPLOYEES\n  2 FIELD1\nEND-DEFINE\nEND\n"))
+
+	// Well-formed VIEW (no OF keyword): OF is optional per the Natural syntax.
+	f.Add([]byte("DEFINE DATA LOCAL\n1 CUST-VIEW VIEW CUSTOMER\n  2 ID\nEND-DEFINE\nEND\n"))
+
+	// Malformed VIEW — no DDM name follows: parser must not panic and must
+	// create the field with an empty ViewOfDDM (FR-43 graceful degradation).
+	f.Add([]byte("DEFINE DATA LOCAL\n1 BAD-VIEW VIEW\nEND-DEFINE\nEND\n"))
+
+	// Malformed VIEW — no DDM name, and nothing follows (bare EOF after VIEW).
+	f.Add([]byte("DEFINE DATA LOCAL\n1 V VIEW"))
 
 	f.Fuzz(func(t *testing.T, input []byte) {
 		// Arrange: construct the lexer and parser from the arbitrary input.

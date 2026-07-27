@@ -2304,3 +2304,263 @@ func TestParser_DefineWorkFile_Malformed(t *testing.T) {
 		})
 	}
 }
+
+// TestParser_ViewOf_ParsesDataFields tests the parsing of VIEW OF declarations
+// (Feature 28, T5, Phase B). A VIEW OF clause declares a data field that
+// selects specific fields from a DDM. The clause is optional (OF keyword).
+// The view's selected fields follow on higher-level lines and are parsed by
+// the existing level-nesting field loop.
+func TestParser_ViewOf_ParsesDataFields(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		expectViewOf   bool
+		viewName       string
+		ddmName        string
+		expectChildren int
+	}{
+		{
+			// TEST 1: VIEW OF (OF keyword present) with selected fields
+			name: "VIEW OF with OF keyword",
+			input: `DEFINE DATA LOCAL
+1 EMP-VIEW VIEW OF EMPLOYEES
+  2 PERSONNEL-ID
+  2 FULL-NAME (A40)
+  2 SALARY (P9,2)
+END-DEFINE
+END`,
+			expectViewOf:   true,
+			viewName:       "EMP-VIEW",
+			ddmName:        "EMPLOYEES",
+			expectChildren: 3,
+		},
+		{
+			// TEST 2: VIEW (no OF) — OF keyword is optional
+			name: "VIEW without OF keyword",
+			input: `DEFINE DATA LOCAL
+1 CUST-VIEW VIEW CUSTOMER
+  2 CUST-ID
+  2 CUST-NAME (A30)
+END-DEFINE
+END`,
+			expectViewOf:   true,
+			viewName:       "CUST-VIEW",
+			ddmName:        "CUSTOMER",
+			expectChildren: 2,
+		},
+		{
+			// TEST 3: Bare selected fields (no restated format) inherit from DDM
+			name: "VIEW with bare fields",
+			input: `DEFINE DATA LOCAL
+1 V-BARE VIEW OF DDM1
+  2 FIELD1
+  2 FIELD2
+  2 FIELD3
+END-DEFINE
+END`,
+			expectViewOf:   true,
+			viewName:       "V-BARE",
+			ddmName:        "DDM1",
+			expectChildren: 3,
+		},
+		{
+			// TEST 4: VIEW with restated-format fields (explicit type in view)
+			name: "VIEW with restated-format field",
+			input: `DEFINE DATA LOCAL
+1 V-TYPED VIEW OF DDM2
+  2 ID-NUM (N8)
+  2 NAME (A50)
+END-DEFINE
+END`,
+			expectViewOf:   true,
+			viewName:       "V-TYPED",
+			ddmName:        "DDM2",
+			expectChildren: 2,
+		},
+		{
+			// TEST 5: VIEW with array field
+			name: "VIEW with array field",
+			input: `DEFINE DATA LOCAL
+1 V-ARRAY VIEW OF DDM3
+  2 ITEMS (A10/1:10)
+END-DEFINE
+END`,
+			expectViewOf:   true,
+			viewName:       "V-ARRAY",
+			ddmName:        "DDM3",
+			expectChildren: 1,
+		},
+		{
+			// TEST 6: Ordinary non-view field (regression check)
+			name: "ordinary non-view field",
+			input: `DEFINE DATA LOCAL
+1 #ORDINARY (A10)
+END-DEFINE
+END`,
+			expectViewOf:   false,
+			viewName:       "#ORDINARY",
+			ddmName:        "",
+			expectChildren: 0,
+		},
+		{
+			// TEST 7: Malformed VIEW with no DDM name on same line (VIEW alone at EOL)
+			// Bug regression: the parser should NOT consume END-DEFINE as the DDM name.
+			// ViewOfDDM should be "" and END-DEFINE must still terminate the block.
+			name: "malformed VIEW at EOL (no DDM name)",
+			input: `DEFINE DATA LOCAL
+1 EMP-VIEW VIEW
+END-DEFINE
+END`,
+			expectViewOf:   false,
+			viewName:       "EMP-VIEW",
+			ddmName:        "",
+			expectChildren: 0,
+		},
+		{
+			// TEST 8: Malformed VIEW OF with no DDM name on same line
+			// Bug regression: the parser should NOT consume END-DEFINE as the DDM name.
+			// ViewOfDDM should be "" and END-DEFINE must still terminate the block.
+			name: "malformed VIEW OF (no DDM name)",
+			input: `DEFINE DATA LOCAL
+1 EMP-VIEW VIEW OF
+END-DEFINE
+END`,
+			expectViewOf:   false,
+			viewName:       "EMP-VIEW",
+			ddmName:        "",
+			expectChildren: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lexer := NewLexer(tt.input)
+			parser := NewParser(lexer)
+			prog, err := parser.Parse()
+
+			if prog == nil {
+				t.Fatal("Parser returned nil AST")
+			}
+			if err != nil {
+				t.Errorf("Parse returned error %v; expected nil", err)
+			}
+
+			// Find the data section with the field we're testing
+			if len(prog.DataSections) == 0 {
+				t.Fatal("No DataSections in program")
+			}
+
+			section := prog.DataSections[0]
+			if len(section.Fields) == 0 {
+				t.Fatal("No fields in first section")
+			}
+
+			// The first field should be the one we're testing
+			field := section.Fields[0]
+
+			// Check field name
+			if field.Name != tt.viewName {
+				t.Errorf("field.Name = %q, want %q", field.Name, tt.viewName)
+			}
+
+			// Check ViewOfDDM
+			if tt.expectViewOf {
+				if field.ViewOfDDM != tt.ddmName {
+					t.Errorf("field.ViewOfDDM = %q, want %q", field.ViewOfDDM, tt.ddmName)
+				}
+			} else {
+				if field.ViewOfDDM != "" {
+					t.Errorf("field.ViewOfDDM = %q, want empty string (non-view field)", field.ViewOfDDM)
+				}
+			}
+
+			// Check children count (selected fields)
+			if len(field.Children) != tt.expectChildren {
+				t.Errorf("len(field.Children) = %d, want %d", len(field.Children), tt.expectChildren)
+			}
+		})
+	}
+}
+
+// TestDataDefinition_ViewOf_Populate tests that DataDefinition.ViewOfDDM is
+// populated from the AST after extractDefinitions (Feature 28, T5).
+// This test verifies that fieldToDefinition correctly copies ViewOfDDM from
+// the AST DataField to the model DataDefinition.
+func TestDataDefinition_ViewOf_Populate(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		expectName  string
+		expectDDM   string
+		expectLevel int
+	}{
+		{
+			name: "VIEW OF with DDM binding",
+			input: `DEFINE DATA LOCAL
+1 EMP-VIEW VIEW OF EMPLOYEES
+  2 PERSONNEL-ID
+END-DEFINE
+END`,
+			expectName:  "EMP-VIEW",
+			expectDDM:   "EMPLOYEES",
+			expectLevel: 1,
+		},
+		{
+			name: "VIEW without OF keyword still captures DDM",
+			input: `DEFINE DATA LOCAL
+1 CUST-VIEW VIEW CUSTOMER
+  2 ID
+END-DEFINE
+END`,
+			expectName:  "CUST-VIEW",
+			expectDDM:   "CUSTOMER",
+			expectLevel: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lexer := NewLexer(tt.input)
+			parser := NewParser(lexer)
+			prog, err := parser.Parse()
+
+			if prog == nil {
+				t.Fatal("Parser returned nil AST")
+			}
+			if err != nil {
+				t.Errorf("Parse returned error %v; expected nil", err)
+			}
+
+			// Extract definitions
+			defs := extractDefinitions(prog)
+
+			// Find the view definition
+			var viewDef *model.DataDefinition
+			for i := range defs {
+				if defs[i].Name == tt.expectName {
+					viewDef = &defs[i]
+					break
+				}
+			}
+
+			if viewDef == nil {
+				t.Fatalf("Definition %q not found in extracted definitions", tt.expectName)
+			}
+
+			// Check ViewOfDDM
+			if viewDef.ViewOfDDM != tt.expectDDM {
+				t.Errorf("viewDef.ViewOfDDM = %q, want %q", viewDef.ViewOfDDM, tt.expectDDM)
+			}
+
+			// Check level
+			if viewDef.Level != tt.expectLevel {
+				t.Errorf("viewDef.Level = %d, want %d", viewDef.Level, tt.expectLevel)
+			}
+
+			// Check name
+			if viewDef.Name != tt.expectName {
+				t.Errorf("viewDef.Name = %q, want %q", viewDef.Name, tt.expectName)
+			}
+		})
+	}
+}

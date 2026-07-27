@@ -218,6 +218,9 @@ func extractStructure(path string, prog *Program, defs []model.DataDefinition, a
 // dataDefinitionToSymbol converts a DataDefinition (and its children) into one or more
 // Symbol entries. Returns a slice of SymbolDataField symbols that can be appended to a
 // parent's Children slice.
+//
+// Feature 28 T2: copies Type, Level, and Dimensions metadata from the DataDefinition
+// onto the emitted Symbol for use in the typed outline (DocumentSymbol.Detail).
 func dataDefinitionToSymbol(def model.DataDefinition) []model.Symbol {
 	var symbols []model.Symbol
 
@@ -243,6 +246,14 @@ func dataDefinitionToSymbol(def model.DataDefinition) []model.Symbol {
 		},
 		SelectionRange: selectionRange,
 		Children:       make([]model.Symbol, 0),
+		// Feature 28 T2: carry metadata for typed outline
+		Type:       def.Type,
+		Level:      def.Level,
+		Dimensions: def.Dimensions,
+		// Feature 28 T4: carry REDEFINE target for outline detail
+		Redefines: def.Redefines,
+		// Feature 28 T6: carry VIEW OF target for outline detail
+		ViewOfDDM: def.ViewOfDDM,
 	}
 
 	// Recursively convert child definitions into SymbolDataField symbols.

@@ -107,6 +107,7 @@ type DataField struct {
 	Redefines  string       // target field name for REDEFINE; "" if not a redefine
 	Children   []*DataField // group members and redefine subfields
 	NameRange  model.Range  // source span of just the name token(s); zero for REDEFINE headers
+	ViewOfDDM  string       // DDM name for VIEW OF clause; "" if not a view (feature 28, T5)
 }
 
 func (df *DataField) Position() (model.Position, model.Position) {

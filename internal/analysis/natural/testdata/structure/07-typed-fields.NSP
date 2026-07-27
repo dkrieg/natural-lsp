@@ -1,0 +1,20 @@
+* T2 fixture: DEFINE DATA with typed scalars, group headers, and nested groups
+* Exercises: Type, Level, and Dimensions metadata flowing into Symbol nodes
+* Tests that Detail is populated from Type/Level/Dimensions and nil for group headers
+
+DEFINE DATA
+LOCAL
+  1 SIMPLE-STRING (A26)
+  1 NUMERIC-FIELD (N8)
+  1 PACKED-DEC (P9,2)
+  1 INTEGER-VAL (I4)
+  1 DYNAMIC-STRING ((A) DYNAMIC)
+  1 CUSTOMER-GROUP
+    2 CUSTOMER-ID (A10)
+    2 CUSTOMER-NAME (A40)
+    2 ADDRESS-DETAILS
+      3 STREET (A50)
+      3 CITY (A30)
+END DEFINE
+
+END

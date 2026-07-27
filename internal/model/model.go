@@ -170,6 +170,29 @@ type Symbol struct {
 	// Nil/empty for leaf symbols (subroutines, maps, data fields with no children).
 	// For the object root and data sections, children are nested recursively.
 	Children []Symbol
+
+	// Type is the verbatim data-type notation for a data field (e.g., "A26", "P9,2", "(A) DYNAMIC").
+	// Empty for non-field nodes (subroutines, maps, data sections, object roots) and for
+	// group headers. Added in feature 28 (phase A: typed outline).
+	Type string
+
+	// Level is the nesting level of a data field (1, 2, 3, ...).
+	// Zero for non-field nodes. Added in feature 28 (phase A: typed outline).
+	Level int
+
+	// Dimensions holds array bounds for each dimension of a data field.
+	// Nil/empty for scalar fields and non-field nodes. Added in feature 28 (phase A: typed outline).
+	Dimensions []ArrayDimension
+
+	// Redefines is the name of the data field being redefined by a REDEFINE block.
+	// Empty for non-field nodes and for fields that do not REDEFINE another field.
+	// Added in feature 28 (phase A: typed outline).
+	Redefines string
+
+	// ViewOfDDM is the DDM name for a VIEW OF data field (feature 28, phase B).
+	// Empty for non-field nodes and for fields that do not declare a VIEW OF.
+	// Added in feature 28 (phase B: VIEW OF binding).
+	ViewOfDDM string
 }
 
 // Range represents a span in a file, identified by start and end positions.
@@ -267,6 +290,15 @@ type DataDefinition struct {
 	// Children holds subfields if this is a group or a REDEFINE block.
 	// Nesting order matches declaration order. Nil/empty for scalars and groups with no children.
 	Children []DataDefinition
+
+	// Redefines holds the target field name for a REDEFINE block's sub-fields
+	// (e.g., "#CUSTOMER-ID" when a field is declared under a REDEFINE clause).
+	// Empty string ("") for non-redefine fields (Feature 28, T3).
+	Redefines string
+
+	// ViewOfDDM is the DDM name for a VIEW OF data field (feature 28, phase B).
+	// Empty for non-view fields. Populated by fieldToDefinition during extraction.
+	ViewOfDDM string
 }
 
 // DiagnosticSeverity classifies the severity of an extraction diagnostic.

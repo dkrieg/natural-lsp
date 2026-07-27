@@ -317,17 +317,69 @@ func (p *Parser) parseDataField() *DataField {
 		return nil
 	}
 
+	// Parse the optional VIEW OF clause (Feature 28, T5, Phase B).
+	// Syntax: VIEW [OF] <ddm-name>
+	// VIEW is not a Natural reserved keyword, so matchesLiteral provides a
+	// case-insensitive literal match regardless of token type (the same idiom
+	// used throughout the parser for contextual keywords). OF is consumed only
+	// when present; the DDM name may resolve to either a keyword or identifier
+	// token depending on the lexer's classification. On malformed input (no DDM
+	// name token after VIEW [OF]), viewOfDDM stays "" and the field is still
+	// created — graceful degradation per FR-43.
+	// The DDM name operand must be on the same line as the VIEW keyword to be
+	// consumed — guards against cross-line operand consumption (mirrors the
+	// FILLER nX logic and other operand-parsing patterns in this file).
+	viewOfDDM := ""
+	if !isRedefine && p.matchesLiteral("VIEW") {
+		viewLine := p.current.Line // capture the line of the VIEW token
+		p.advance()                // consume VIEW
+		if p.matchesLiteral("OF") {
+			p.advance() // consume optional OF
+		}
+		// Only consume the DDM name if it is on the same line as VIEW (or VIEW OF).
+		if (p.matches(TokenIdentifier) || p.matches(TokenKeyword)) && p.current.Line == viewLine {
+			viewOfDDM = p.current.Literal
+			p.advance()
+		}
+	}
+
 	// Parse the optional type/format specification: "(TYPE-CODE)" or
 	// "(TYPE-CODE/DIM1,DIM2)". REDEFINE nodes carry no type — their
 	// subfields (Children) carry individual types instead.
+	//
+	// Special case: FILLER nX (where nX is a format code like "3X")
+	// is written without parentheses. If the name is "FILLER" (case-insensitive),
+	// the next tokens form the format code (e.g., "3" + "X" → "3X").
 	fieldType := ""
 	dimensions := []ArrayBound{}
-	if !isRedefine && p.matches(TokenPunctuation, "(") {
-		p.advance()
-		spec := p.parseTypeSpec()
-		fieldType, dimensions = p.parseTypeAndDimensions(spec)
-		if p.matches(TokenPunctuation, ")") {
+	if !isRedefine {
+		if p.matches(TokenPunctuation, "(") {
 			p.advance()
+			spec := p.parseTypeSpec()
+			fieldType, dimensions = p.parseTypeAndDimensions(spec)
+			if p.matches(TokenPunctuation, ")") {
+				p.advance()
+			}
+		} else if name != "" && strings.ToUpper(name) == "FILLER" {
+			// FILLER format code: the source writes "FILLER nX" where n is an integer
+			// count and X is a single-letter format code (e.g. "3X", "10X").
+			// The lexer splits the count and the letter into two tokens:
+			//   TokenLiteralNumeric("3") + TokenIdentifier("X")
+			// Multi-digit counts (e.g. "10") are a single numeric token, so "10X" is
+			// handled identically to "3X".
+			// The identifier is only consumed when it is on the same line as the
+			// count — a cross-line identifier belongs to the next field declaration.
+			if p.matches(TokenLiteralNumeric) {
+				numLine := p.current.Line
+				fieldType = p.current.Literal
+				p.advance()
+				// Consume the format letter only when it immediately follows on the
+				// same line (guards against accidentally consuming the next field name).
+				if p.matches(TokenIdentifier) && p.current.Line == numLine {
+					fieldType += p.current.Literal
+					p.advance()
+				}
+			}
 		}
 	}
 
@@ -346,15 +398,45 @@ func (p *Parser) parseDataField() *DataField {
 		EndPos:     endPos,
 		Children:   make([]*DataField, 0),
 		NameRange:  nameRange,
+		ViewOfDDM:  viewOfDDM,
 	}
 }
 
-// parseTypeSpec reads tokens until closing paren and concatenates them without spaces
+// parseTypeSpec reads tokens until closing paren and concatenates them.
+// Handles nested parentheses (e.g. "((A) DYNAMIC)") by tracking paren depth.
+// Preserves spacing by checking if there's a gap between successive tokens.
 func (p *Parser) parseTypeSpec() string {
 	var spec string
-	for p.current.Type != TokenEOF && !p.matches(TokenPunctuation, ")") {
-		spec += p.current.Literal
-		p.advance()
+	depth := 0 // Depth of nested parens inside the type spec
+	for p.current.Type != TokenEOF {
+		// Check if we need to add a space before this token
+		// (there's a gap between the previous token's end and this token's start).
+		if spec != "" && p.prev.Line == p.current.Line {
+			prevEnd := p.prev.Column + len(p.prev.Literal) - 1
+			currStart := p.current.Column
+			if currStart > prevEnd+1 {
+				// There's a gap; add a space
+				spec += " "
+			}
+		}
+
+		if p.matches(TokenPunctuation, "(") {
+			depth++
+			spec += p.current.Literal
+			p.advance()
+		} else if p.matches(TokenPunctuation, ")") {
+			if depth == 0 {
+				// This is the closing paren of the type spec itself
+				break
+			}
+			// This is a nested closing paren
+			depth--
+			spec += p.current.Literal
+			p.advance()
+		} else {
+			spec += p.current.Literal
+			p.advance()
+		}
 	}
 	return spec
 }

@@ -56,7 +56,12 @@ exported to files before it can be indexed.
 > didOpen/didChange/didClose/watched-file changes (clearing via an empty array on fix, close, or delete).
 > Modeled gaps (dynamic/unresolved references) are never diagnostics (FR-17). **All planned LSP
 > providers are now wired** (navigation, document outline, hover, code lens, diagnostics, completion,
-> signature help, call hierarchy). There are no published binaries yet; build from source or via the
+> signature help, call hierarchy).
+> **Rich symbol detail & `VIEW OF` binding is now implemented** (feature 28): the document outline gained
+> a typed record layout (field type/level/array/REDEFINE detail), and `VIEW OF` declarations are parsed,
+> shown with their DDM, and their fields decode to the DDM's logical fields — a bare view field shows the
+> inherited type and go-to-definition reaches the `.NSD` field. Extends `documentSymbol`/`definition`/`hover`
+> with no new capability. There are no published binaries yet; build from source or via the
 > VS Code extension.
 >
 > **A full independent assessment (2026-07-14) — [`docs/assessment-2026-07-14.md`](docs/assessment-2026-07-14.md) —
@@ -84,12 +89,20 @@ The capabilities below define the **target** feature set for the first stable re
   (physical Adabas/IMS runtime metadata remains out of scope; an un-indexed DDM shows an honest
   "unavailable" message rather than fabricated fields)
 
-**Document outline** *(provider shipped — feature 11)*
+**Document outline** *(provider shipped — feature 11; typed detail + `VIEW OF` — feature 28)*
 
 - Full symbol tree: `DEFINE DATA` sections, subroutines, maps, DDM references — the underlying
   hierarchical symbol model (feature 09, `FileAnalysis.Structure`) and the `textDocument/documentSymbol`
   provider that renders it as a nested `DocumentSymbol[]` are both **shipped**. The outline is served from
   the open-document buffer, so it reflects unsaved edits.
+- **Typed record layout** (feature 28): each field carries a `Detail` string — verbatim type
+  (`A26`/`P9,2`/`(A) DYNAMIC`), array index ranges (`(1:10)`, `(1:5,1:10)`, `(1:*)` — never "OCCURS"),
+  and REDEFINE overlays (`<type> REDEFINE <target>`, `FILLER nX` gaps) — **shipped**
+- **`VIEW OF` binding** (feature 28): `level view-name VIEW [OF] ddm-name` is parsed and shown as a
+  `VIEW OF <ddm>` node; a bare view field inherits its type from the referenced `.NSD` and
+  go-to-definition on it jumps to the DDM field declaration (view name → its own line; a view-local
+  REDEFINE sub-field → the view's own line) — **shipped** (a `TYPE: SQL` / DB2-backed DDM is not yet
+  parsed, so its view fields list but don't type-resolve — a recorded limit)
 
 **Diagnostics** *(provider shipped — feature 14)*
 

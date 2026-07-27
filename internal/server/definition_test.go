@@ -702,3 +702,304 @@ func TestProvideDefinition_MarshaledNonEmptyCase(t *testing.T) {
 		t.Errorf("non-empty definition wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
 	}
 }
+
+// TestProvideDefinition_ViewFieldNavigation tests go-to-definition on VIEW OF field declarations
+// (feature 28, T8b, Story 4 AC2). The test uses a view over a DDM fixture and verifies that:
+// 1. A cursor on a bare view field (e.g., CUSTOMER-ID) navigates to the DDM field's NameRange.
+// 2. A cursor on a restated view field (e.g., CUSTOMER-NAME (A50)) navigates to the DDM field.
+// 3. A cursor on the VIEW NAME itself navigates to the view's own VIEW OF line (same-file).
+// 4. A cursor on a view-local REDEFINE sub-field navigates to the REDEFINE line, not the DDM.
+//
+// FR-24, FR-17 (modeled gaps), FR-43 (graceful degradation).
+func TestProvideDefinition_ViewFieldNavigation(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	tt := []struct {
+		name             string
+		sourceFile       string
+		cursorLine       int
+		cursorColumn     int
+		wantTargetFile   string
+		description      string
+		wantResolved     bool
+		checkTargetRange func(*testing.T, protocol.Range)
+	}{
+		{
+			// T8b AC1: bare view field CUSTOMER-ID → DDM field NameRange (feature 28, fix)
+			name:           "VIEW_bare_field_to_DDM",
+			sourceFile:     "empview.NSP",
+			cursorLine:     6, // 2 CUSTOMER-ID
+			cursorColumn:   8, // Within CUSTOMER-ID token
+			wantTargetFile: "customer.NSD",
+			wantResolved:   true,
+			description:    "cursor on bare view field CUSTOMER-ID → resolves to DDM field's NameRange",
+			checkTargetRange: func(t *testing.T, got protocol.Range) {
+				// The DDM field CUSTOMER-ID in customer.NSD line 6 (1-based).
+				// Model: Start.Column=8, End.Column=18 (1-based, inclusive).
+				// Protocol: line 5 (0-based), Start.Character=7, End.Character=18 (0-based, exclusive).
+				if got.Start.Line != 5 {
+					t.Errorf("Target range start line = %d, want 5 (DDM CUSTOMER-ID field)", got.Start.Line)
+				}
+				if got.Start.Character != 7 {
+					t.Errorf("Target range start char = %d, want 7 (0-based, column 8 → char 7)", got.Start.Character)
+				}
+				if got.End.Character != 18 {
+					t.Errorf("Target range end char = %d, want 18 (0-based, model End.Column=18 → protocol exclusive 18)", got.End.Character)
+				}
+			},
+		},
+		{
+			// T8b AC2: restated view field CUSTOMER-NAME (A50) → DDM field NameRange
+			name:           "VIEW_restated_field_to_DDM",
+			sourceFile:     "empview.NSP",
+			cursorLine:     8, // 2 CUSTOMER-NAME (A50)
+			cursorColumn:   8, // Within CUSTOMER-NAME token
+			wantTargetFile: "customer.NSD",
+			wantResolved:   true,
+			description:    "cursor on restated view field CUSTOMER-NAME → resolves to DDM field's NameRange",
+		},
+		{
+			// T8b AC3: view name EMP-VIEW → own line's SelectionRange (same-file)
+			name:           "VIEW_name_to_own_line",
+			sourceFile:     "empview.NSP",
+			cursorLine:     5, // 1 EMP-VIEW VIEW OF CUSTOMER
+			cursorColumn:   5, // Within EMP-VIEW token
+			wantTargetFile: "empview.NSP",
+			wantResolved:   true,
+			description:    "cursor on VIEW NAME EMP-VIEW → resolves to same-file VIEW OF line (own SelectionRange)",
+		},
+		{
+			// T8b AC4: view-local REDEFINE sub-field CUST-NUM → the REDEFINE line, not DDM
+			name:           "VIEW_redefine_subfield_to_own_redefine",
+			sourceFile:     "empview.NSP",
+			cursorLine:     10, // 3 CUST-NUM (N4)
+			cursorColumn:   10, // Within CUST-NUM token (accounting for deeper indentation)
+			wantTargetFile: "empview.NSP",
+			wantResolved:   true,
+			description:    "cursor on view-local REDEFINE sub-field CUST-NUM → resolves to same-file REDEFINE line, not DDM",
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: build the workspace index from the view fixture
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("failed to get working directory: %v", err)
+			}
+			fixtureRoot := filepath.Join(wd, "testdata", "viewdef")
+
+			cfg := config.Defaults()
+			idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+			if err != nil {
+				t.Fatalf("failed to build index: %v", err)
+			}
+
+			// Resolve the workspace edges
+			resSet := workspace.Resolve(idx, &cfg)
+
+			// Read the source file content
+			sourceAbs := filepath.Join(fixtureRoot, tc.sourceFile)
+			_, readErr := os.ReadFile(sourceAbs)
+			if readErr != nil {
+				t.Fatalf("failed to read source file: %v", readErr)
+			}
+
+			// Build the handlerContext (simulating the server state)
+			hctx := &handlerContext{
+				idx:         idx,
+				res:         resSet,
+				posEncoding: enc,
+				root:        fixtureRoot,
+				cfg:         cfg,
+				logger:      logger,
+				az:          az,
+			}
+
+			// Act: call provideDefinition with the cursor position
+			params := protocol.DefinitionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(sourceAbs),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine - 1), // Convert from 1-based to 0-based
+						Character: uint32(tc.cursorColumn - 1),
+					},
+				},
+			}
+
+			locations, err := provideDefinition(hctx, params)
+
+			// Assert: check results
+			if err != nil {
+				t.Fatalf("provideDefinition failed: %v", err)
+			}
+
+			if tc.wantResolved {
+				// Expect a non-empty result
+				if locations == nil || len(locations) == 0 {
+					t.Errorf("%s: expected non-empty locations, got %v", tc.description, locations)
+					return
+				}
+
+				// Verify at least one location matches the expected target file
+				found := false
+				for _, loc := range locations {
+					targetPath := loc.URI.FsPath()
+					targetRel, err := filepath.Rel(fixtureRoot, targetPath)
+					if err != nil {
+						t.Fatalf("failed to compute relative path: %v", err)
+					}
+					if strings.EqualFold(targetRel, tc.wantTargetFile) {
+						found = true
+						if tc.checkTargetRange != nil {
+							tc.checkTargetRange(t, loc.Range)
+						}
+						break
+					}
+				}
+				if !found {
+					t.Errorf("%s: expected target file %q in locations, got %v", tc.description, tc.wantTargetFile, locations)
+				}
+			} else {
+				// Expect an empty result
+				if locations != nil && len(locations) > 0 {
+					t.Errorf("%s: expected empty locations, got %v", tc.description, locations)
+				}
+			}
+		})
+	}
+}
+
+// TestProvideDefinition_ViewFieldModeledGaps tests that go-to-definition on view fields
+// with modeled gaps (unresolved DDM, SQL-type DDM, absent field) returns empty results
+// without errors or diagnostics (feature 28, T8b Story 4 AC3, FR-17, FR-43).
+//
+// The three modeled-gap outcomes are:
+// 1. View's DDM is not found (outside chain or nonexistent) → empty result
+// 2. View's DDM is TYPE: SQL (unparseable fields) → empty result
+// 3. View field name is absent from the DDM → empty result
+//
+// Each case verifies that provideDefinition returns nil/empty and never panics,
+// confirming that modeled gaps stay off the error/diagnostic channel.
+func TestProvideDefinition_ViewFieldModeledGaps(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	tt := []struct {
+		name         string
+		sourceFile   string
+		cursorLine   int
+		cursorColumn int
+		wantResolved bool
+		description  string
+	}{
+		{
+			// Gap 1: View's DDM not found in workspace (NONEXISTENT-DDM)
+			// → definition returns empty, no error
+			name:         "VIEW_missing_DDM_unresolved",
+			sourceFile:   "view-missing-ddm.NSP",
+			cursorLine:   6, // 2 SOME-FIELD (line 6, 1-based)
+			cursorColumn: 8, // Within SOME-FIELD token
+			wantResolved: false,
+			description:  "cursor on view field over missing DDM → returns empty (DDM not found)",
+		},
+		{
+			// Gap 2: View's DDM is TYPE: SQL (no parseable fields)
+			// → definition returns empty, no error
+			name:         "VIEW_SQL_DDM_unresolved",
+			sourceFile:   "view-sql-ddm.NSP",
+			cursorLine:   6, // 2 TABLE-COL (line 6, 1-based)
+			cursorColumn: 8, // Within TABLE-COL token
+			wantResolved: false,
+			description:  "cursor on view field over TYPE:SQL DDM → returns empty (SQL fields unparseable)",
+		},
+		{
+			// Gap 3: View field name is absent from the DDM
+			// (empview.NSP has NOT-A-FIELD, but customer.NSD does not)
+			// → definition returns empty, no error
+			name:         "VIEW_field_not_in_DDM",
+			sourceFile:   "empview.NSP",
+			cursorLine:   11, // 2 NOT-A-FIELD
+			cursorColumn: 8,  // Within NOT-A-FIELD token
+			wantResolved: false,
+			description:  "cursor on view field absent from DDM → returns empty (field not in DDM)",
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: build the workspace index from the view fixture
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("failed to get working directory: %v", err)
+			}
+			fixtureRoot := filepath.Join(wd, "testdata", "viewdef")
+
+			cfg := config.Defaults()
+			idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+			if err != nil {
+				t.Fatalf("failed to build index: %v", err)
+			}
+
+			// Resolve the workspace edges
+			resSet := workspace.Resolve(idx, &cfg)
+
+			// Read the source file content
+			sourceAbs := filepath.Join(fixtureRoot, tc.sourceFile)
+			_, readErr := os.ReadFile(sourceAbs)
+			if readErr != nil {
+				t.Fatalf("failed to read source file: %v", readErr)
+			}
+
+			// Build the handlerContext (simulating the server state)
+			hctx := &handlerContext{
+				idx:         idx,
+				res:         resSet,
+				posEncoding: enc,
+				root:        fixtureRoot,
+				cfg:         cfg,
+				logger:      logger,
+				az:          az,
+			}
+
+			// Act: call provideDefinition with the cursor position on the view field
+			params := protocol.DefinitionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(sourceAbs),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine - 1), // Convert from 1-based to 0-based
+						Character: uint32(tc.cursorColumn - 1),
+					},
+				},
+			}
+
+			locations, err := provideDefinition(hctx, params)
+
+			// Assert: check results
+			if err != nil {
+				t.Fatalf("provideDefinition failed: %v", err)
+			}
+
+			if tc.wantResolved {
+				// Expect a non-empty result (not tested here; gap tests expect empty)
+				if locations == nil || len(locations) == 0 {
+					t.Errorf("%s: expected non-empty locations, got %v", tc.description, locations)
+				}
+			} else {
+				// Expect an empty result (modeled gap)
+				if locations != nil && len(locations) > 0 {
+					t.Errorf("%s: expected empty locations for modeled gap, got %v", tc.description, locations)
+				}
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"go.lsp.dev/uri"
 
 	"github.com/dkrieg/natural-lsp/internal/analysis/natural"
+	"github.com/dkrieg/natural-lsp/internal/config"
 	"github.com/dkrieg/natural-lsp/internal/document"
 	"github.com/dkrieg/natural-lsp/internal/model"
 	"github.com/dkrieg/natural-lsp/internal/workspace"
@@ -525,6 +527,167 @@ func TestSymbolToDocumentSymbol_UnknownKindDefaultsToObject(t *testing.T) {
 	}
 }
 
+// TestSymbolToDocumentSymbol_ViewOfBinding tests the conversion of VIEW OF nodes
+// with their Detail rendered as "VIEW OF <ddm-name>" (Feature 28, T6 — RED phase).
+//
+// Exercises:
+// - A VIEW OF data field node with Detail == "VIEW OF EMPLOYEES"
+// - Selected fields as children with Phase-A detail (type for restated fields, nil for bare fields)
+// - Bare field without local type shows nil Detail (inherited type deferred to T8)
+// - Restated-format field shows its written type
+// - Array field shows dimensions
+//
+// Fixture: 10-view.NSP has EMP-VIEW VIEW OF EMPLOYEES with bare + restated + array fields.
+// This test validates that ViewOfDDM is carried onto Symbol.ViewOfDDM and rendered by symbolDetail.
+func TestSymbolToDocumentSymbol_ViewOfBinding(t *testing.T) {
+	// Read fixture
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "10-view.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	// Analyze
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	contentStr := string(content)
+	root := analysis.Structure
+
+	// Find the LOCAL section (first data section child)
+	var localSection *model.Symbol
+	for _, child := range root.Children {
+		if child.Kind == model.SymbolDataSection && child.Name == "LOCAL" {
+			localSection = &child
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("fixture should have a LOCAL data section")
+	}
+
+	// Find the EMP-VIEW field within LOCAL (should be the first data field)
+	var empViewSym *model.Symbol
+	for _, field := range localSection.Children {
+		if field.Kind == model.SymbolDataField && field.Name == "EMP-VIEW" {
+			empViewSym = &field
+			break
+		}
+	}
+	if empViewSym == nil {
+		t.Fatal("LOCAL section should have an EMP-VIEW field")
+	}
+
+	// Act: convert the view node to DocumentSymbol
+	docSym := symbolToDocumentSymbol(*empViewSym, contentStr, protocol.PositionEncodingKindUTF8)
+
+	// Test: the view node's Detail should be "VIEW OF EMPLOYEES"
+	t.Run("view_detail", func(t *testing.T) {
+		if docSym.Detail == nil {
+			t.Error("Detail is nil, want non-nil string pointer for VIEW OF node")
+		} else if *docSym.Detail != "VIEW OF EMPLOYEES" {
+			t.Errorf("Detail = %q, want %q", *docSym.Detail, "VIEW OF EMPLOYEES")
+		}
+	})
+
+	// Test: the view node should have children (the selected fields)
+	t.Run("view_children_present", func(t *testing.T) {
+		if len(docSym.Children) == 0 {
+			t.Error("view node should have children (selected fields)")
+		}
+	})
+
+	// Test: find the FULL-NAME field (restated-format, A40) and verify its Detail
+	t.Run("restated_field_detail", func(t *testing.T) {
+		var fullNameChild *protocol.DocumentSymbol
+		for i := range docSym.Children {
+			if docSym.Children[i].Name == "FULL-NAME" {
+				fullNameChild = &docSym.Children[i]
+				break
+			}
+		}
+		if fullNameChild == nil {
+			t.Skip("fixture does not have FULL-NAME field")
+		}
+		// A restated field with type (A40) should have Detail == "A40"
+		if fullNameChild.Detail == nil {
+			t.Error("FULL-NAME Detail is nil, want string pointer for restated field")
+		} else if *fullNameChild.Detail != "A40" {
+			t.Errorf("FULL-NAME Detail = %q, want %q", *fullNameChild.Detail, "A40")
+		}
+	})
+
+	// Test: find PERSONNEL-ID field (bare, no local type) and verify its Detail is nil
+	t.Run("bare_field_detail_nil", func(t *testing.T) {
+		var persIdChild *protocol.DocumentSymbol
+		for i := range docSym.Children {
+			if docSym.Children[i].Name == "PERSONNEL-ID" {
+				persIdChild = &docSym.Children[i]
+				break
+			}
+		}
+		if persIdChild == nil {
+			t.Skip("fixture does not have PERSONNEL-ID field")
+		}
+		// A bare field with no local type should have nil Detail (inherited type deferred to T8)
+		if persIdChild.Detail != nil {
+			t.Errorf("PERSONNEL-ID Detail = %q, want nil (bare field, T8 handles inheritance)", *persIdChild.Detail)
+		}
+	})
+
+	// Test: find SALARY field (restated-format, P9,2) and verify its Detail
+	t.Run("salary_field_detail", func(t *testing.T) {
+		var salaryChild *protocol.DocumentSymbol
+		for i := range docSym.Children {
+			if docSym.Children[i].Name == "SALARY" {
+				salaryChild = &docSym.Children[i]
+				break
+			}
+		}
+		if salaryChild == nil {
+			t.Skip("fixture does not have SALARY field")
+		}
+		if salaryChild.Detail == nil {
+			t.Error("SALARY Detail is nil, want string pointer")
+		} else if *salaryChild.Detail != "P9,2" {
+			t.Errorf("SALARY Detail = %q, want %q", *salaryChild.Detail, "P9,2")
+		}
+	})
+
+	// Test: find TAGS field (array) and verify its Detail includes dimensions
+	t.Run("array_field_dimensions", func(t *testing.T) {
+		var tagsChild *protocol.DocumentSymbol
+		for i := range docSym.Children {
+			if docSym.Children[i].Name == "TAGS" {
+				tagsChild = &docSym.Children[i]
+				break
+			}
+		}
+		if tagsChild == nil {
+			t.Skip("fixture does not have TAGS array field")
+		}
+		if tagsChild.Detail == nil {
+			t.Error("TAGS Detail is nil, want string pointer with type and dimensions")
+		} else {
+			// Should contain "A10" (the type) and "(1:5)" (dimensions)
+			detail := *tagsChild.Detail
+			if !strings.Contains(detail, "A10") {
+				t.Errorf("TAGS Detail = %q, should contain A10", detail)
+			}
+			if !strings.Contains(detail, "(1:5)") {
+				t.Errorf("TAGS Detail = %q, should contain (1:5)", detail)
+			}
+		}
+	})
+}
+
 // Helper: isContainedInRange checks if inner is contained in outer.
 func isContainedInRange(inner, outer protocol.Range) bool {
 	// inner.Start >= outer.Start AND inner.End <= outer.End
@@ -955,5 +1118,781 @@ func TestProvideDocumentSymbols_MarshaledNonEmptyCase(t *testing.T) {
 	want := `[{"name":"MYPROG","kind":2,"range":{"start":{"line":0,"character":0},"end":{"line":10,"character":0}},"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}}}]`
 	if string(got) != want {
 		t.Errorf("non-empty documentSymbol wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
+	}
+}
+
+// TestSymbolToDocumentSymbol_TypedFieldsDetail tests feature 28, phase A, T2:
+// symbolToDocumentSymbol must set DocumentSymbol.Detail for data fields.
+// Scalar fields show their Type verbatim (e.g., "A26", "P9,2", "(A) DYNAMIC");
+// group headers (Type == "") have no Detail (nil).
+//
+// Fixture: 07-typed-fields.NSP has typed scalars and group headers.
+// FR-55 / feature 28 T2: typed outline with field metadata.
+func TestSymbolToDocumentSymbol_TypedFieldsDetail(t *testing.T) {
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "07-typed-fields.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	// Analyze the fixture
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	contentStr := string(content)
+
+	// Test table: field name → expected Detail string (or nil for groups)
+	tests := []struct {
+		name         string
+		fieldName    string
+		expectedType string
+		expectNilDtl bool // if true, expect Detail == nil (group header); else expect Detail == expectedType
+	}{
+		{
+			name:         "scalar_A26",
+			fieldName:    "SIMPLE-STRING",
+			expectedType: "A26",
+			expectNilDtl: false,
+		},
+		{
+			name:         "scalar_N8",
+			fieldName:    "NUMERIC-FIELD",
+			expectedType: "N8",
+			expectNilDtl: false,
+		},
+		{
+			name:         "scalar_P9_2",
+			fieldName:    "PACKED-DEC",
+			expectedType: "P9,2",
+			expectNilDtl: false,
+		},
+		{
+			name:         "scalar_I4",
+			fieldName:    "INTEGER-VAL",
+			expectedType: "I4",
+			expectNilDtl: false,
+		},
+		{
+			name:         "scalar_dynamic",
+			fieldName:    "DYNAMIC-STRING",
+			expectedType: "(A) DYNAMIC",
+			expectNilDtl: false,
+		},
+		{
+			name:         "group_header_CUSTOMER_GROUP",
+			fieldName:    "CUSTOMER-GROUP",
+			expectedType: "",
+			expectNilDtl: true,
+		},
+		{
+			name:         "nested_group_ADDRESS_DETAILS",
+			fieldName:    "ADDRESS-DETAILS",
+			expectedType: "",
+			expectNilDtl: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Walk the structure to find the target field
+			var targetModelSym *model.Symbol
+			var walkSymbols func(s *model.Symbol)
+			walkSymbols = func(s *model.Symbol) {
+				if s.Kind == model.SymbolDataField && s.Name == tc.fieldName {
+					targetModelSym = s
+					return
+				}
+				for i := range s.Children {
+					walkSymbols(&s.Children[i])
+					if targetModelSym != nil {
+						return
+					}
+				}
+			}
+			walkSymbols(analysis.Structure)
+
+			if targetModelSym == nil {
+				t.Skipf("field %q not found in structure tree", tc.fieldName)
+			}
+
+			// Convert to protocol.DocumentSymbol via the real converter
+			docSym := symbolToDocumentSymbol(*targetModelSym, contentStr, protocol.PositionEncodingKindUTF8)
+
+			// Assertion: Detail presence and content
+			if tc.expectNilDtl {
+				// Group header: Detail must be nil
+				if docSym.Detail != nil {
+					t.Errorf("group header Detail = %s, want nil (groups have no Detail)", *docSym.Detail)
+				}
+			} else {
+				// Scalar field: Detail must be set to the Type
+				if docSym.Detail == nil {
+					t.Errorf("scalar field Detail is nil, want %q", tc.expectedType)
+				} else if *docSym.Detail != tc.expectedType {
+					t.Errorf("scalar field Detail = %q, want %q", *docSym.Detail, tc.expectedType)
+				}
+			}
+		})
+	}
+}
+
+// TestSymbolToDocumentSymbol_TypedFieldsPreservesOutline tests that the
+// addition of Detail metadata in T2 is purely enriching and does NOT change
+// the set of outline nodes, their names, ranges, or structure hierarchy
+// (pure enrichment regression guard).
+func TestSymbolToDocumentSymbol_TypedFieldsPreservesOutline(t *testing.T) {
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "07-typed-fields.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	contentStr := string(content)
+
+	// Expected node set (derived from fixture 07-typed-fields.NSP):
+	// - root: object
+	//   - LOCAL (section)
+	//     - SIMPLE-STRING (field, scalar)
+	//     - NUMERIC-FIELD (field, scalar)
+	//     - PACKED-DEC (field, scalar)
+	//     - INTEGER-VAL (field, scalar)
+	//     - DYNAMIC-STRING (field, scalar)
+	//     - CUSTOMER-GROUP (field, group with children)
+	//       - CUSTOMER-ID (field)
+	//       - CUSTOMER-NAME (field)
+	//       - ADDRESS-DETAILS (field, group with children)
+	//         - STREET (field)
+	//         - CITY (field)
+
+	// Walk the converted tree and count nodes / verify structure
+	docSym := symbolToDocumentSymbol(*analysis.Structure, contentStr, protocol.PositionEncodingKindUTF8)
+
+	// Find the LOCAL section
+	var localSection *protocol.DocumentSymbol
+	for i := range docSym.Children {
+		if docSym.Children[i].Kind == protocol.SymbolKindNamespace && docSym.Children[i].Name == "LOCAL" {
+			localSection = &docSym.Children[i]
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("LOCAL section not found in converted outline")
+	}
+
+	// Expected scalar fields (order preserved from fixture)
+	expectedScalars := []string{
+		"SIMPLE-STRING",
+		"NUMERIC-FIELD",
+		"PACKED-DEC",
+		"INTEGER-VAL",
+		"DYNAMIC-STRING",
+	}
+
+	// Expected group fields
+	expectedGroups := []string{
+		"CUSTOMER-GROUP",
+	}
+
+	// Verify scalar fields are present and at the right level
+	scalarCount := 0
+	for _, child := range localSection.Children {
+		if child.Kind == protocol.SymbolKindField {
+			for _, expected := range expectedScalars {
+				if child.Name == expected {
+					scalarCount++
+					// Verify it's a leaf (no children, but that's not guaranteed for all scalars)
+					break
+				}
+			}
+		}
+	}
+	if scalarCount != len(expectedScalars) {
+		t.Errorf("found %d scalar fields, want %d (expect %v)", scalarCount, len(expectedScalars), expectedScalars)
+	}
+
+	// Verify group fields are present and have children
+	groupCount := 0
+	for _, child := range localSection.Children {
+		if child.Kind == protocol.SymbolKindField {
+			for _, expected := range expectedGroups {
+				if child.Name == expected {
+					groupCount++
+					if len(child.Children) == 0 {
+						t.Errorf("group %q has no children, want nested fields", child.Name)
+					}
+					// Check for known children: CUSTOMER-ID, CUSTOMER-NAME, ADDRESS-DETAILS
+					childNames := make(map[string]bool)
+					for _, nestedChild := range child.Children {
+						childNames[nestedChild.Name] = true
+					}
+					if !childNames["CUSTOMER-ID"] {
+						t.Error("CUSTOMER-ID not found in CUSTOMER-GROUP children")
+					}
+					if !childNames["CUSTOMER-NAME"] {
+						t.Error("CUSTOMER-NAME not found in CUSTOMER-GROUP children")
+					}
+					if !childNames["ADDRESS-DETAILS"] {
+						t.Error("ADDRESS-DETAILS not found in CUSTOMER-GROUP children")
+					}
+					break
+				}
+			}
+		}
+	}
+	if groupCount != len(expectedGroups) {
+		t.Errorf("found %d group fields, want %d (expect %v)", groupCount, len(expectedGroups), expectedGroups)
+	}
+}
+
+// TestSymbolDetail_Arrays tests the symbolDetail function for array fields (FR-55, feature 28, task T4).
+//
+// Exercises: arrays with single dimension (A10 (1:10)), multi-dimensional arrays (P9.2 (1:5,1:10)),
+// and unbounded arrays (A20 (1:*)); asserts that OCCURS never appears in output.
+//
+// Fixture: 09-arrays.NSP has three array fields: single-dim, multi-dim, and unbounded.
+func TestSymbolDetail_Arrays(t *testing.T) {
+	// Read the fixture: 09-arrays.NSP with array fields
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "09-arrays.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	// Analyze to get FileAnalysis with Structure
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	// Extract the LOCAL data section to inspect its field children
+	var localSection *model.Symbol
+	for _, child := range analysis.Structure.Children {
+		if child.Kind == model.SymbolDataSection && strings.ToUpper(child.Name) == "LOCAL" {
+			localSection = &child
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("expected a LOCAL data section in the structure")
+	}
+
+	// Test cases for each array field
+	tests := []struct {
+		name          string
+		fieldName     string
+		expectDetail  string
+		checkNoOccurs bool // Assert that "OCCURS" does not appear in detail
+	}{
+		{
+			name:          "single_dim_array",
+			fieldName:     "#TAGS",
+			expectDetail:  "A10 (1:10)",
+			checkNoOccurs: true,
+		},
+		{
+			name:          "multi_dim_array",
+			fieldName:     "#SCORES",
+			expectDetail:  "P9.2 (1:5,1:10)",
+			checkNoOccurs: true,
+		},
+		{
+			name:          "unbounded_array",
+			fieldName:     "#EXTENDED-BUFFER",
+			expectDetail:  "A20 (1:*)",
+			checkNoOccurs: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Find the field in the section's children
+			var targetField *model.Symbol
+			for i := range localSection.Children {
+				if localSection.Children[i].Name == tc.fieldName {
+					targetField = &localSection.Children[i]
+					break
+				}
+			}
+			if targetField == nil {
+				t.Fatalf("expected field %s in LOCAL section", tc.fieldName)
+			}
+
+			// Act: call symbolDetail to get the rendered detail string
+			detail := symbolDetail(*targetField)
+
+			// Assert: detail is not nil
+			if detail == nil {
+				t.Errorf("symbolDetail(%s) returned nil, want non-nil detail", tc.fieldName)
+				return
+			}
+
+			// Assert: detail matches expected string
+			if *detail != tc.expectDetail {
+				t.Errorf("symbolDetail(%s) = %q, want %q", tc.fieldName, *detail, tc.expectDetail)
+			}
+
+			// Assert: no "OCCURS" appears in detail
+			if tc.checkNoOccurs && strings.Contains(*detail, "OCCURS") {
+				t.Errorf("symbolDetail(%s) = %q contains forbidden word 'OCCURS'", tc.fieldName, *detail)
+			}
+		})
+	}
+}
+
+// TestSymbolDetail_RedefineAndFiller tests the symbolDetail function for REDEFINE blocks and FILLER gaps
+// (FR-55, feature 28, task T4).
+//
+// Exercises: REDEFINE sub-field labeling contract per OQ-2: a symbol with Redefines != "" renders
+// its detail as "<type> REDEFINE <target>" (e.g., "A2 REDEFINE #CUSTOMER-ID" for a redefine sub-field,
+// "3X REDEFINE #CUSTOMER-ID" for a FILLER gap). A non-redefine field (Redefines=="") shows only its
+// type (e.g., "A10" for the top-level target). The implementation requires:
+//  1. dataDefinitionToSymbol (structure.go) to carry def.Redefines onto model.Symbol.Redefines
+//  2. symbolDetail to append " REDEFINE <target>" when Redefines != ""
+//
+// Fixture: 08-redefine.NSP has a target field (#CUSTOMER-ID) with REDEFINE sub-fields (#REGION, #SEQ,
+// FILLER, #CODE) per T3's flatten-with-stamp approach.
+func TestSymbolDetail_RedefineAndFiller(t *testing.T) {
+	// Read the fixture: 08-redefine.NSP
+	fixturePath := filepath.Join("..", "analysis", "natural", "testdata", "structure", "08-redefine.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+
+	// Analyze to get FileAnalysis with Structure
+	az := natural.New(nil)
+	analysis, err := az.Analyze(fixturePath, content)
+	if err != nil {
+		t.Logf("Analyze returned error (graceful degradation): %v", err)
+	}
+
+	if analysis.Structure == nil {
+		t.Fatal("expected FileAnalysis.Structure to be non-nil")
+	}
+
+	// Extract the LOCAL data section
+	var localSection *model.Symbol
+	for _, child := range analysis.Structure.Children {
+		if child.Kind == model.SymbolDataSection && strings.ToUpper(child.Name) == "LOCAL" {
+			localSection = &child
+			break
+		}
+	}
+	if localSection == nil {
+		t.Fatal("expected a LOCAL data section in the structure")
+	}
+
+	// The structure (per T3's flatten-with-stamp approach) should have:
+	// 1. #CUSTOMER-ID (A10) — the target field
+	// 2. Children of #CUSTOMER-ID: sub-fields with Redefines set
+	//    - #REGION (A2) with Redefines="#CUSTOMER-ID"
+	//    - #SEQ (N8) with Redefines="#CUSTOMER-ID"
+	//    - FILLER (3X) with Redefines="#CUSTOMER-ID"
+	//    - #CODE (A3) with Redefines="#CUSTOMER-ID"
+
+	// Helper function to find a field by name in the LOCAL section or as a child of #CUSTOMER-ID
+	findFieldByName := func(name string) *model.Symbol {
+		// First, try to find it in the LOCAL section directly (e.g., #CUSTOMER-ID)
+		for i := range localSection.Children {
+			if localSection.Children[i].Name == name {
+				return &localSection.Children[i]
+			}
+		}
+		// Next, try to find it as a child of #CUSTOMER-ID (redefine sub-fields)
+		for i := range localSection.Children {
+			if localSection.Children[i].Name == "#CUSTOMER-ID" {
+				for j := range localSection.Children[i].Children {
+					if localSection.Children[i].Children[j].Name == name {
+						return &localSection.Children[i].Children[j]
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	tests := []struct {
+		name          string
+		fieldName     string
+		expectDetail  string
+		expectNonNil  bool
+		checkNoOccurs bool
+	}{
+		{
+			name:          "target_field_no_redefine_label",
+			fieldName:     "#CUSTOMER-ID",
+			expectDetail:  "A10", // Top-level target: no REDEFINE label (Redefines=="")
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+		{
+			name:          "redefine_subfield_region",
+			fieldName:     "#REGION",
+			expectDetail:  "A2 REDEFINE #CUSTOMER-ID", // Sub-field: type + REDEFINE label
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+		{
+			name:          "redefine_subfield_seq",
+			fieldName:     "#SEQ",
+			expectDetail:  "N8 REDEFINE #CUSTOMER-ID", // Sub-field: type + REDEFINE label
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+		{
+			name:          "filler_gap",
+			fieldName:     "FILLER",
+			expectDetail:  "3X REDEFINE #CUSTOMER-ID", // FILLER: format + REDEFINE label
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+		{
+			name:          "redefine_subfield_code",
+			fieldName:     "#CODE",
+			expectDetail:  "A3 REDEFINE #CUSTOMER-ID", // Another sub-field: type + REDEFINE label
+			expectNonNil:  true,
+			checkNoOccurs: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Find the field
+			targetField := findFieldByName(tc.fieldName)
+			if targetField == nil {
+				t.Fatalf("expected to find field %s in the structure", tc.fieldName)
+			}
+
+			// Act: call symbolDetail
+			detail := symbolDetail(*targetField)
+
+			// Assert: nil/non-nil expectation
+			if tc.expectNonNil && detail == nil {
+				t.Errorf("symbolDetail(%s) returned nil, want non-nil detail", tc.fieldName)
+				return
+			}
+
+			// Assert: detail matches expected
+			if detail != nil {
+				if *detail != tc.expectDetail {
+					t.Errorf("symbolDetail(%s) = %q, want %q", tc.fieldName, *detail, tc.expectDetail)
+				}
+
+				// Assert: no "OCCURS"
+				if tc.checkNoOccurs && strings.Contains(*detail, "OCCURS") {
+					t.Errorf("symbolDetail(%s) = %q contains forbidden word 'OCCURS'", tc.fieldName, *detail)
+				}
+			}
+		})
+	}
+}
+
+// TestProvideDocumentSymbols_ViewFieldInheritedType tests that a bare view field shows
+// the DDM's inherited type in the outline Detail (feature 28, T8b, Story 4 AC1).
+// A restated view field shows its written type. Unresolved DDM or SQL-type DDM
+// result in no inherited type (modeled gap — FR-17, FR-43).
+//
+// This test uses the view fixture (empview.NSP + customer.NSD) and verifies outline Detail
+// by building a workspace index and calling provideDocumentSymbols through a handlerContext.
+// The test currently FAILS because bare view fields have nil Detail (T6 does not yet resolve
+// inherited types — OQ-C, T8b).
+func TestProvideDocumentSymbols_ViewFieldInheritedType(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	tt := []struct {
+		name                 string
+		sourceFile           string
+		fieldName            string
+		expectDetailContains string // Substring expected in Detail for inherited/resolved type
+		wantResolved         bool   // Whether to expect a resolved inherited type
+		description          string
+	}{
+		{
+			// AC1a: bare view field CUSTOMER-ID (no local type)
+			// → should inherit DDM's type: "N8"
+			// FAILS now: bare field Detail is nil (OQ-C, T8b not implemented)
+			name:                 "VIEW_bare_field_inherited_type",
+			sourceFile:           "empview.NSP",
+			fieldName:            "CUSTOMER-ID",
+			expectDetailContains: "N8",
+			wantResolved:         true,
+			description:          "bare view field CUSTOMER-ID shows DDM's type N8",
+		},
+		{
+			// AC1b: bare view field BALANCE (no local type)
+			// → should inherit DDM's type: "P9,2"
+			// FAILS now: bare field Detail is nil (OQ-C, T8b not implemented)
+			name:                 "VIEW_bare_field_balance_type",
+			sourceFile:           "empview.NSP",
+			fieldName:            "BALANCE",
+			expectDetailContains: "P9,2",
+			wantResolved:         true,
+			description:          "bare view field BALANCE shows DDM's type P9,2",
+		},
+		{
+			// AC1c: restated view field CUSTOMER-NAME (A50)
+			// → shows its written type "A50", not the DDM's type
+			// Likely passes from T6 (restated fields carry their own type)
+			name:                 "VIEW_restated_field_type",
+			sourceFile:           "empview.NSP",
+			fieldName:            "CUSTOMER-NAME",
+			expectDetailContains: "A50",
+			wantResolved:         true,
+			description:          "restated view field CUSTOMER-NAME shows written type A50",
+		},
+	}
+
+	// Build the workspace index from the view fixture (same setup as definition tests)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "viewdef")
+
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(
+		context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("failed to build workspace index: %v", err)
+	}
+
+	// Resolve the workspace (required by provideDocumentSymbols)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Create a document store (required by provideDocumentSymbols, which checks store first)
+	// We pass a nil AnalyzeFunc since the index is already populated
+	store := document.New(fixtureRoot, nil, logger)
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: read the source file
+			sourceAbs := filepath.Join(fixtureRoot, tc.sourceFile)
+			_, readErr := os.ReadFile(sourceAbs)
+			if readErr != nil {
+				t.Fatalf("failed to read source file: %v", readErr)
+			}
+
+			// Build the handlerContext (simulating the server state with index + resolution)
+			hctx := &handlerContext{
+				idx:         idx,
+				res:         resSet,
+				posEncoding: enc,
+				root:        fixtureRoot,
+				cfg:         cfg,
+				logger:      logger,
+				az:          az,
+				store:       store,
+			}
+
+			// Act: call provideDocumentSymbols
+			params := protocol.DocumentSymbolParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(sourceAbs),
+				},
+			}
+
+			docSymbols, err := provideDocumentSymbols(hctx, params)
+
+			// Assert: no error
+			if err != nil {
+				t.Fatalf("provideDocumentSymbols failed: %v", err)
+			}
+
+			// Walk the symbol tree to find the field by name
+			var findField func([]protocol.DocumentSymbol, string) *protocol.DocumentSymbol
+			findField = func(symbols []protocol.DocumentSymbol, name string) *protocol.DocumentSymbol {
+				for i := range symbols {
+					if symbols[i].Name == name {
+						return &symbols[i]
+					}
+					if found := findField(symbols[i].Children, name); found != nil {
+						return found
+					}
+				}
+				return nil
+			}
+
+			foundField := findField(docSymbols, tc.fieldName)
+			if foundField == nil {
+				t.Errorf("%s: field %q not found in document symbols", tc.description, tc.fieldName)
+				return
+			}
+
+			// Assert: Detail contains the expected inherited type
+			if tc.wantResolved {
+				if foundField.Detail == nil {
+					t.Errorf("%s: expected Detail containing %q, got nil (T8b not yet implemented)", tc.description, tc.expectDetailContains)
+					return
+				}
+				if !strings.Contains(*foundField.Detail, tc.expectDetailContains) {
+					t.Errorf("%s: Detail %q does not contain expected %q", tc.description, *foundField.Detail, tc.expectDetailContains)
+				}
+			}
+		})
+	}
+}
+
+// TestProvideDocumentSymbols_ViewFieldModeledGaps tests that document outline for view fields
+// with modeled gaps (unresolved DDM, SQL-type DDM, absent field) shows the field in the outline
+// but with no inherited-type Detail, and no diagnostics (feature 28, T8b Story 4 AC3, FR-17, FR-43).
+//
+// The three modeled-gap outcomes are:
+// 1. View's DDM is not found (outside chain or nonexistent) → field in outline, nil Detail
+// 2. View's DDM is TYPE: SQL (unparseable fields) → field in outline, nil Detail
+// 3. View field name is absent from the DDM → field in outline, nil Detail
+//
+// Each case verifies that the field appears in the outline (not dropped) but has no inherited type,
+// confirming that modeled gaps stay off the error/diagnostic channel (FR-17).
+func TestProvideDocumentSymbols_ViewFieldModeledGaps(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	tt := []struct {
+		name        string
+		sourceFile  string
+		fieldName   string
+		description string
+	}{
+		{
+			// Gap 1: View's DDM not found in workspace (NONEXISTENT-DDM)
+			// → field appears in outline, Detail is nil (no inherited type)
+			name:        "VIEW_missing_DDM_in_outline",
+			sourceFile:  "view-missing-ddm.NSP",
+			fieldName:   "SOME-FIELD",
+			description: "view field over missing DDM appears in outline with nil Detail",
+		},
+		{
+			// Gap 2: View's DDM is TYPE: SQL (no parseable fields)
+			// → field appears in outline, Detail is nil
+			name:        "VIEW_SQL_DDM_in_outline",
+			sourceFile:  "view-sql-ddm.NSP",
+			fieldName:   "TABLE-COL",
+			description: "view field over TYPE:SQL DDM appears in outline with nil Detail",
+		},
+		{
+			// Gap 3: View field name is absent from the DDM
+			// (empview.NSP has NOT-A-FIELD, but customer.NSD does not)
+			// → field appears in outline, Detail is nil
+			name:        "VIEW_field_not_in_DDM_in_outline",
+			sourceFile:  "empview.NSP",
+			fieldName:   "NOT-A-FIELD",
+			description: "view field absent from DDM appears in outline with nil Detail",
+		},
+	}
+
+	// Build the workspace index from the view fixture (same setup as definition/hover tests)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "viewdef")
+
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(
+		context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("failed to build workspace index: %v", err)
+	}
+
+	// Resolve the workspace (required by provideDocumentSymbols)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Create a document store (required by provideDocumentSymbols)
+	store := document.New(fixtureRoot, nil, logger)
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: read the source file
+			sourceAbs := filepath.Join(fixtureRoot, tc.sourceFile)
+			_, readErr := os.ReadFile(sourceAbs)
+			if readErr != nil {
+				t.Fatalf("failed to read source file: %v", readErr)
+			}
+
+			// Build the handlerContext (simulating the server state with index + resolution)
+			hctx := &handlerContext{
+				idx:         idx,
+				res:         resSet,
+				posEncoding: enc,
+				root:        fixtureRoot,
+				cfg:         cfg,
+				logger:      logger,
+				az:          az,
+				store:       store,
+			}
+
+			// Act: call provideDocumentSymbols
+			params := protocol.DocumentSymbolParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(sourceAbs),
+				},
+			}
+
+			docSymbols, err := provideDocumentSymbols(hctx, params)
+
+			// Assert: no error
+			if err != nil {
+				t.Fatalf("provideDocumentSymbols failed: %v", err)
+			}
+
+			// Walk the symbol tree to find the field by name
+			var findField func([]protocol.DocumentSymbol, string) *protocol.DocumentSymbol
+			findField = func(symbols []protocol.DocumentSymbol, name string) *protocol.DocumentSymbol {
+				for i := range symbols {
+					if symbols[i].Name == name {
+						return &symbols[i]
+					}
+					if found := findField(symbols[i].Children, name); found != nil {
+						return found
+					}
+				}
+				return nil
+			}
+
+			foundField := findField(docSymbols, tc.fieldName)
+			if foundField == nil {
+				t.Errorf("%s: field %q not found in document symbols (field should appear in outline even with modeled gap)", tc.description, tc.fieldName)
+				return
+			}
+
+			// Assert: field appears in outline (name matches)
+			if foundField.Name != tc.fieldName {
+				t.Errorf("%s: expected field name %q, got %q", tc.description, tc.fieldName, foundField.Name)
+			}
+
+			// Assert: Detail is nil for modeled gap (no inherited type resolution, FR-17)
+			if foundField.Detail != nil {
+				t.Errorf("%s: expected nil Detail for modeled gap, got %q (field should not have inherited type from unresolved/SQL/absent DDM field)", tc.description, *foundField.Detail)
+			}
+		})
 	}
 }

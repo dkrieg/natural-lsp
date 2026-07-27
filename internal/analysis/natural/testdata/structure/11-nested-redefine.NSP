@@ -1,0 +1,14 @@
+* T8b fixture: REDEFINE nested inside a GROUP
+* Exercises: level-1 group containing level-2 field and level-2 REDEFINE of that field
+* Regression test for Feature 28 T8b: nested REDEFINE sub-fields are merged into target sibling
+
+DEFINE DATA
+LOCAL
+  1 CUSTOMER-REC
+    2 CUST-ID (A10)
+    2 REDEFINE CUST-ID
+      3 REGION (A2)
+      3 SEQUENCE (N8)
+END DEFINE
+
+END

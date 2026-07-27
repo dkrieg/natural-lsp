@@ -100,6 +100,118 @@ func ResolveDDMPath(ddmName string, idx *Index, referencingPath string, cfg *con
 	return ""
 }
 
+// ResolveDDMFieldLocation resolves a field within a DDM and returns both the field's
+// NameRange and the workspace-relative path of the .NSD object that the steplib chain
+// selected. This is the DDM-field analog of ResolveDataAreaFieldLocation.
+//
+// It resolves the DDM name via the steplib chain, looks up the field within the resolved
+// DDM's Definitions, and returns the field's NameRange and the DDM's path. Both values
+// come from the same steplib-chain-selected DDM, ensuring consistency.
+//
+// If the DDM cannot be resolved (outside the steplib chain), the field is not found,
+// or the DDM is a TYPE: SQL DDM (no parsed fields), it returns a zero Range and an
+// empty DDMPath (FR-17, FR-43).
+func ResolveDDMFieldLocation(
+	fieldName string,
+	ddmName string,
+	idx *Index,
+	referencingPath string,
+	cfg *config.Config,
+) (fieldRange model.Range, ddmPath string) {
+	// Resolve the DDM name to its .NSD path via the steplib chain
+	ddmPath = ResolveDDMPath(ddmName, idx, referencingPath, cfg)
+	if ddmPath == "" {
+		return model.Range{}, ""
+	}
+
+	// Fetch the DDM file's FileAnalysis
+	ddmFA, ok := idx.Get(ddmPath)
+	if !ok {
+		return model.Range{}, ""
+	}
+
+	// Find the field within the DDM's definitions
+	fieldRange = findFieldInDefinitions(fieldName, ddmFA.Definitions)
+	if fieldRange == (model.Range{}) {
+		// Field not found in the DDM (or TYPE: SQL DDM with no parsed Definitions)
+		return model.Range{}, ""
+	}
+
+	return fieldRange, ddmPath
+}
+
+// ResolveDDMFieldType resolves a field's TYPE from a DDM. It locates the DDM via the
+// steplib chain and returns the field's Type string if found, else an empty string.
+// Returns "" when the DDM cannot be resolved, the field is absent, or the DDM is TYPE: SQL.
+func ResolveDDMFieldType(
+	fieldName string,
+	ddmName string,
+	idx *Index,
+	referencingPath string,
+	cfg *config.Config,
+) string {
+	// Resolve the DDM name to its .NSD path via the steplib chain
+	ddmPath := ResolveDDMPath(ddmName, idx, referencingPath, cfg)
+	if ddmPath == "" {
+		return ""
+	}
+
+	// Fetch the DDM file's FileAnalysis
+	ddmFA, ok := idx.Get(ddmPath)
+	if !ok {
+		return ""
+	}
+
+	// Find the field and extract its type
+	def := findDefinitionByNameInDefs(fieldName, ddmFA.Definitions)
+	if def == nil {
+		return ""
+	}
+
+	return def.Type
+}
+
+// findDefinitionByNameInDefs recursively searches for a definition by name in a list
+// of DataDefinitions, handling group-qualified names. Returns nil if not found.
+// Helper for ResolveDDMFieldType.
+func findDefinitionByNameInDefs(variableName string, defs []model.DataDefinition) *model.DataDefinition {
+	upperName := strings.ToUpper(variableName)
+
+	// Handle group-qualified names like #GROUP.FIELD
+	if idx := strings.LastIndex(upperName, "."); idx != -1 {
+		groupName := upperName[:idx]
+		fieldName := upperName[idx+1:]
+
+		// Find the group at level 1
+		for i := range defs {
+			if defs[i].Level == 1 && strings.ToUpper(defs[i].Name) == groupName && len(defs[i].Children) > 0 {
+				// Search within the group's children
+				return findDefinitionByNameInDefs(fieldName, defs[i].Children)
+			}
+		}
+		// Group not found
+		return nil
+	}
+
+	// Bare name lookup: search recursively for the first matching name
+	for i := range defs {
+		if strings.ToUpper(defs[i].Name) == upperName && defs[i].Name != "" {
+			return &defs[i]
+		}
+	}
+
+	// If not found at this level, recurse into children
+	for i := range defs {
+		if len(defs[i].Children) > 0 {
+			if def := findDefinitionByNameInDefs(variableName, defs[i].Children); def != nil {
+				return def
+			}
+		}
+	}
+
+	return nil
+}
+
 // resolveCandidateViaChain selects the reachable candidate from candidates using
 // the steplib chain when a library map is configured, or the first candidate
 // (flat namespace) otherwise. Returns nil when candidates is empty or nothing in
