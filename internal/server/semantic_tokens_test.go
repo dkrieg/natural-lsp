@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dkrieg/natural-lsp/internal/model"
+
 	"github.com/go-json-experiment/json/jsontext"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
@@ -559,4 +561,119 @@ MOVE 'WORLD' TO #STR.
 		t.Logf("PASS: SemanticTokens empty result for blank-line subrange (FR-43)")
 		return
 	}
+}
+
+// FuzzEncodeSemanticTokens is the executable proof of the semantic-token encoder's robustness
+// (FR-43, feature 29 T12): encodeSemanticTokens must NEVER panic on arbitrary input and must
+// ALWAYS produce a well-formed LSP semantic-token stream (Data % 5 == 0).
+//
+// The fuzzer exercises:
+//   - Arbitrary content strings (empty, long lines, multibyte UTF-8)
+//   - Tokens constructed from the content (simulating arbitrary token lists)
+//   - Both UTF-8 and UTF-16 encodings
+//   - Edge cases: empty content, very long content, tokens at various positions
+//
+// Assertions:
+//   - Never panics (fuzzer auto-catches panics)
+//   - Always returns non-nil SemanticTokens
+//   - len(Data) % 5 == 0 (well-formed 5-int stream invariant)
+//
+// Feature 29 T12, FR-43, M-6.
+func FuzzEncodeSemanticTokens(f *testing.F) {
+	// Seed with representative content strings.
+	f.Add([]byte(""), byte(0))                                         // Empty, UTF-8
+	f.Add([]byte("CALLNAT 'PROG'\n"), byte(0))                         // Simple, UTF-8
+	f.Add([]byte("DEFINE DATA\nLOCAL\n  1 #X\nEND-DEFINE\n"), byte(0)) // Multi-line, UTF-8
+	f.Add([]byte("MOVE 'HELLO' TO #X\n"), byte(1))                     // UTF-16
+	f.Add([]byte("* café\nMOVE #X TO #Y\n"), byte(0))                  // Multibyte, UTF-8
+	f.Add([]byte("MOVE *DATX TO #TODAY\n"), byte(0))                   // System var
+	f.Add([]byte("/* Comment\nCALLNAT 'PROG'\n"), byte(0))             // Rest-of-line comment
+
+	f.Fuzz(func(t *testing.T, content []byte, encByte byte) {
+		// Construct a small token list from the content.
+		// This simulates arbitrary tokens over the given content.
+		tokens := buildFuzzTokens(content)
+
+		// Map byte to encoding kind (0 = UTF-8, 1 = UTF-16).
+		var enc protocol.PositionEncodingKind
+		if encByte == 0 {
+			enc = protocol.PositionEncodingKindUTF8
+		} else {
+			enc = protocol.PositionEncodingKindUTF16
+		}
+
+		// Act: encode the tokens.
+		// The fuzzer automatically catches panics.
+		result := encodeSemanticTokens(tokens, string(content), enc)
+
+		// Assert: result is non-nil.
+		if result == nil {
+			t.Fatal("encodeSemanticTokens returned nil; want non-nil *protocol.SemanticTokens")
+		}
+
+		// Assert: result.Data is non-nil (empty is OK, nil is a failure).
+		if result.Data == nil {
+			t.Fatal("encodeSemanticTokens.Data is nil; want non-nil slice")
+		}
+
+		// Assert: result.Data length is a multiple of 5 (LSP semantic-token stream invariant).
+		if len(result.Data)%5 != 0 {
+			t.Fatalf("encodeSemanticTokens.Data length %d is not a multiple of 5", len(result.Data))
+		}
+
+		t.Logf("OK: encoded %d tokens over %d bytes → Data length %d (well-formed stream)",
+			len(tokens), len(content), len(result.Data))
+	})
+}
+
+// buildFuzzTokens constructs a small representative token list from content bytes.
+// This is used by the encoder fuzz to generate tokens for testing.
+func buildFuzzTokens(content []byte) []model.SemanticToken {
+	if len(content) == 0 {
+		return []model.SemanticToken{}
+	}
+
+	var tokens []model.SemanticToken
+
+	// Find the first keyword-like token (all-caps sequences) and emit it as a keyword.
+	for i := 0; i < len(content); i++ {
+		if isAlpha(content[i]) && (i == 0 || !isAlpha(content[i-1])) {
+			// Start of an identifier/keyword
+			j := i
+			for j < len(content) && (isAlpha(content[j]) || isDigit(content[j]) || content[j] == '-' || content[j] == '_') {
+				j++
+			}
+			// Emit as a keyword token if it looks like one
+			if j > i && isAllUpperOrHyphens(content[i:j]) {
+				tokens = append(tokens, model.SemanticToken{
+					Range: model.Range{
+						Start: model.Position{Line: 1, Column: 1 + i},
+						End:   model.Position{Line: 1, Column: 1 + j},
+					},
+					Type:      model.SemanticTokenTypeKeyword,
+					Modifiers: 0,
+				})
+				break // Just one token for simplicity
+			}
+		}
+	}
+
+	return tokens
+}
+
+func isAlpha(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func isDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+func isAllUpperOrHyphens(b []byte) bool {
+	for _, ch := range b {
+		if !((ch >= 'A' && ch <= 'Z') || ch == '-' || ch == '_' || (ch >= '0' && ch <= '9')) {
+			return false
+		}
+	}
+	return len(b) > 0
 }

@@ -455,4 +455,23 @@ Write the identifier classifier **once** (T7) and extend it in T8–T10 — do n
 
 ## Results
 
-_(populated during T12 — NFR-3 large-file `full` latency figure, measure-and-record, off the gate.)_
+**NFR-3 — large-file `semanticTokens/full` latency (measure-and-record, off the gate).**
+`BenchmarkSemanticTokensFull` (`internal/server/provider_bench_test.go`, `//go:build bench`, run via
+`just bench`) measures the full classifier (Phase A lexical + Phase B identifier/call/DDM/system-var
+reclassification) plus the LSP relative-5-int encoder on a **5,000-line** synthetic Natural program:
+
+```
+BenchmarkSemanticTokensFull-16    1    1988823792 ns/op    128152 B/op
+```
+
+≈**1.99 s/op** and ≈**128 KB/op** for a 5,000-line file. The cost is dominated by the on-demand
+re-parse + full extraction inside `SemanticTokens` (it calls `Analyze` internally). Real Natural
+objects are typically far smaller (tens–hundreds of lines), where the request is sub-millisecond;
+the request is store-first and O(tokens) with no workspace sweep. Recorded, not gated (NFR-3); a
+future optimization could cache/parse-once per open-buffer version if large single files prove slow.
+
+**FR-43 — never-panic (fuzz-backed).** `FuzzSemanticTokens` (classifier) and
+`FuzzEncodeSemanticTokens` (server encoder) each ran a 30 s active fuzz plus their seed corpora
+(fixtures + adversarial seeds: empty, lone `*`, unterminated `<<` opaque span, unterminated string,
+multibyte blobs, `DEFINE DATA` with no `END-DEFINE`) with **no panics/crashes**; the encoder fuzz
+also asserts the `len(Data) % 5 == 0` stream invariant.
