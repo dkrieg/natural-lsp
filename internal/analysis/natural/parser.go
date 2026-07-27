@@ -326,13 +326,18 @@ func (p *Parser) parseDataField() *DataField {
 	// token depending on the lexer's classification. On malformed input (no DDM
 	// name token after VIEW [OF]), viewOfDDM stays "" and the field is still
 	// created — graceful degradation per FR-43.
+	// The DDM name operand must be on the same line as the VIEW keyword to be
+	// consumed — guards against cross-line operand consumption (mirrors the
+	// FILLER nX logic and other operand-parsing patterns in this file).
 	viewOfDDM := ""
 	if !isRedefine && p.matchesLiteral("VIEW") {
-		p.advance() // consume VIEW
+		viewLine := p.current.Line // capture the line of the VIEW token
+		p.advance()                // consume VIEW
 		if p.matchesLiteral("OF") {
 			p.advance() // consume optional OF
 		}
-		if p.matches(TokenIdentifier) || p.matches(TokenKeyword) {
+		// Only consume the DDM name if it is on the same line as VIEW (or VIEW OF).
+		if (p.matches(TokenIdentifier) || p.matches(TokenKeyword)) && p.current.Line == viewLine {
 			viewOfDDM = p.current.Literal
 			p.advance()
 		}

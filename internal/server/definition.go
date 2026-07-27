@@ -103,11 +103,18 @@ func provideDefinition(hctx *handlerContext, params protocol.DefinitionParams) (
 	// Handle VIEW OF field navigation FIRST (feature 28, T8b, priority before use-sites).
 	// If the cursor is on a data-field declaration inside a VIEW OF, resolve per the view binding.
 	if declTarget := findDeclarationTarget(sourceFA, cursorPos); declTarget != nil {
-		if locations, err := provideDefinitionForViewField(hctx, declTarget, absPath, relPath); locations != nil {
-			// VIEW field navigation succeeded; return the location
-			return locations, err
+		// Check if this is a VIEW field (within a view context)
+		if declTarget.OwningView != nil && declTarget.OwningView.ViewOfDDM != "" {
+			// This is a VIEW field; resolve it via provideDefinitionForViewField
+			if locations, err := provideDefinitionForViewField(hctx, declTarget, absPath, relPath); locations != nil {
+				// VIEW field navigation succeeded; return the location
+				return locations, err
+			}
+			// VIEW field resolution failed (modeled gap: unresolved DDM, SQL DDM, or absent field)
+			// Return empty per FR-17, never fall through to variable-declaration path
+			return nil, nil
 		}
-		// Not a VIEW field, or VIEW resolution failed; continue to other handlers below
+		// Not a VIEW field; continue to other handlers below
 	}
 
 	// Find the edge (data-access, or variable ref) at the cursor position

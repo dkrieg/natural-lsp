@@ -381,10 +381,11 @@ func TestExtractDDMDefinitions_Customer(t *testing.T) {
 	}
 }
 
-// TestExtractDDMDefinitions_NameRange verifies that DDM field definitions now have
-// their NameRange populated (feature 28, T8b). The NameRange spans the field name token
-// in the source line, and is necessary for go-to-definition on VIEW OF fields to work.
-// Previously NameRange was zero; it must now be non-zero and span the field name.
+// TestExtractDDMDefinitions_NameRange verifies that DDM field definitions have
+// their NameRange populated with the exact span of the field name (feature 28, T8b).
+// The range must be inclusive of both start and end (matching tokenRange convention).
+// For CUSTOMER-ID (11 chars, 0-based byte offset 7-17): 1-based model coordinates
+// Start.Column=8, End.Column=18 (inclusive), Width=11.
 func TestExtractDDMDefinitions_NameRange(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("testdata", "ddm", "customer.NSD"))
 	if err != nil {
@@ -397,7 +398,7 @@ func TestExtractDDMDefinitions_NameRange(t *testing.T) {
 		t.Fatalf("Analyze error = %v", err)
 	}
 
-	// Find CUSTOMER-ID field and verify its NameRange
+	// Find CUSTOMER-ID field and verify its NameRange with exact column spans
 	var custID *model.DataDefinition
 	for i := range result.Definitions {
 		if result.Definitions[i].Name == "CUSTOMER-ID" {
@@ -409,19 +410,27 @@ func TestExtractDDMDefinitions_NameRange(t *testing.T) {
 		t.Fatal("CUSTOMER-ID not found")
 	}
 
-	// NameRange must be non-zero (populated)
-	if custID.NameRange.Start.Line == 0 && custID.NameRange.End.Line == 0 {
-		t.Error("CUSTOMER-ID.NameRange is zero; expected non-zero (feature 28, T8b)")
-	}
-
-	// NameRange should span the name token "CUSTOMER-ID"
+	// NameRange must be on a single line
 	if custID.NameRange.Start.Line != custID.NameRange.End.Line {
 		t.Errorf("CUSTOMER-ID.NameRange spans multiple lines: %v to %v", custID.NameRange.Start, custID.NameRange.End)
 	}
 
-	// Verify the range is within the full line range
-	if custID.NameRange.Start.Line < custID.Range.Start.Line || custID.NameRange.Start.Line > custID.Range.End.Line {
-		t.Errorf("CUSTOMER-ID.NameRange.Start.Line = %d, not within full Range %v to %v",
-			custID.NameRange.Start.Line, custID.Range.Start.Line, custID.Range.End.Line)
+	// CUSTOMER-ID is at 0-based byte offset 7-17 in the DDM line, 11 characters long.
+	// In 1-based model coordinates: Start.Column = 8 (first byte), End.Column = 18 (last byte, inclusive).
+	// Per the tokenRange convention (inclusive end), the span width is End - Start + 1 = 11.
+	if custID.NameRange.Start.Column != 8 {
+		t.Errorf("CUSTOMER-ID.NameRange.Start.Column = %d, want 8 (1-based byte offset of 'C')",
+			custID.NameRange.Start.Column)
+	}
+	if custID.NameRange.End.Column != 18 {
+		t.Errorf("CUSTOMER-ID.NameRange.End.Column = %d, want 18 (1-based byte offset of 'D', inclusive)",
+			custID.NameRange.End.Column)
+	}
+
+	// Verify the span width matches the name length
+	spanWidth := custID.NameRange.End.Column - custID.NameRange.Start.Column + 1
+	expectedWidth := len("CUSTOMER-ID")
+	if spanWidth != expectedWidth {
+		t.Errorf("CUSTOMER-ID span width = %d, want %d (name length)", spanWidth, expectedWidth)
 	}
 }

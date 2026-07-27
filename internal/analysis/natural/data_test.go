@@ -2645,3 +2645,230 @@ func TestExtractDefinitions_RedefineRelationship(t *testing.T) {
 		t.Run(tc.name, tc.verify)
 	}
 }
+
+// TestExtractDefinitions_NestedRedefine tests REDEFINE nested inside a GROUP.
+// Regression test for Feature 28 T8b: ensures that a REDEFINE at level 2+ inside a
+// level-1 GROUP is handled correctly — the REDEFINE sub-fields are merged into the
+// target sibling (just as top-level REDEFINE), and no empty-Name placeholder is emitted.
+func TestExtractDefinitions_NestedRedefine(t *testing.T) {
+	// Read fixture: a GROUP containing a field and a REDEFINE of that field
+	fixturePath := filepath.Join("testdata", "structure", "11-nested-redefine.NSP")
+	content, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("Failed to read fixture: %v", err)
+	}
+
+	// Parse and extract definitions
+	lexer := NewLexer(string(content))
+	parser := NewParser(lexer)
+	prog, _ := parser.Parse()
+
+	if prog == nil {
+		t.Fatal("Parser returned nil AST")
+	}
+
+	defs := extractDefinitions(prog)
+	diags := prog.Diagnostics
+
+	// Test table-driven assertions
+	tests := []struct {
+		name   string
+		verify func(t *testing.T)
+	}{
+		{
+			name: "group_field_present",
+			verify: func(t *testing.T) {
+				// Find the level-1 CUSTOMER-REC group
+				var customerRec *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "CUSTOMER-REC" && defs[i].Level == 1 {
+						customerRec = &defs[i]
+						break
+					}
+				}
+				if customerRec == nil {
+					t.Fatal("Could not find CUSTOMER-REC group in definitions")
+				}
+				// The group should have children
+				if len(customerRec.Children) == 0 {
+					t.Fatal("CUSTOMER-REC has no children")
+				}
+			},
+		},
+		{
+			name: "target_field_present_in_group",
+			verify: func(t *testing.T) {
+				// Find CUSTOMER-REC and then find CUST-ID within it
+				var customerRec *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "CUSTOMER-REC" && defs[i].Level == 1 {
+						customerRec = &defs[i]
+						break
+					}
+				}
+				if customerRec == nil {
+					t.Fatal("Could not find CUSTOMER-REC group")
+				}
+
+				// Look for CUST-ID (level 2) as a direct child of CUSTOMER-REC
+				var custID *model.DataDefinition
+				for i := range customerRec.Children {
+					if customerRec.Children[i].Name == "CUST-ID" && customerRec.Children[i].Level == 2 {
+						custID = &customerRec.Children[i]
+						break
+					}
+				}
+				if custID == nil {
+					t.Fatalf("Could not find CUST-ID field in CUSTOMER-REC; found children: %+v",
+						customerRec.Children)
+				}
+				// CUST-ID should have type and be non-redefine
+				if custID.Type != "A10" {
+					t.Errorf("CUST-ID.Type = %q, want A10", custID.Type)
+				}
+				if custID.Redefines != "" {
+					t.Errorf("CUST-ID.Redefines = %q, want \"\" (non-redefine)", custID.Redefines)
+				}
+			},
+		},
+		{
+			name: "redefine_subfields_merged_into_target",
+			verify: func(t *testing.T) {
+				// Find CUSTOMER-REC → CUST-ID and verify REDEFINE sub-fields are Children
+				var customerRec *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "CUSTOMER-REC" && defs[i].Level == 1 {
+						customerRec = &defs[i]
+						break
+					}
+				}
+				if customerRec == nil {
+					t.Fatal("Could not find CUSTOMER-REC group")
+				}
+
+				var custID *model.DataDefinition
+				for i := range customerRec.Children {
+					if customerRec.Children[i].Name == "CUST-ID" {
+						custID = &customerRec.Children[i]
+						break
+					}
+				}
+				if custID == nil {
+					t.Fatal("Could not find CUST-ID field")
+				}
+
+				// CUST-ID should have children from the REDEFINE block
+				if len(custID.Children) == 0 {
+					t.Fatal("CUST-ID has no children (REDEFINE sub-fields not merged)")
+				}
+
+				// Check REGION (level 3, first redefine sub-field)
+				if len(custID.Children) > 0 {
+					region := &custID.Children[0]
+					if region.Name != "REGION" {
+						t.Errorf("Child[0].Name = %q, want REGION", region.Name)
+					}
+					if region.Redefines != "CUST-ID" {
+						t.Errorf("Child[0].Redefines = %q, want CUST-ID", region.Redefines)
+					}
+					if region.Type != "A2" {
+						t.Errorf("Child[0].Type = %q, want A2", region.Type)
+					}
+					if region.Level != 3 {
+						t.Errorf("Child[0].Level = %d, want 3", region.Level)
+					}
+				}
+
+				// Check SEQUENCE (level 3, second redefine sub-field)
+				if len(custID.Children) > 1 {
+					sequence := &custID.Children[1]
+					if sequence.Name != "SEQUENCE" {
+						t.Errorf("Child[1].Name = %q, want SEQUENCE", sequence.Name)
+					}
+					if sequence.Redefines != "CUST-ID" {
+						t.Errorf("Child[1].Redefines = %q, want CUST-ID", sequence.Redefines)
+					}
+					if sequence.Type != "N8" {
+						t.Errorf("Child[1].Type = %q, want N8", sequence.Type)
+					}
+					if sequence.Level != 3 {
+						t.Errorf("Child[1].Level = %d, want 3", sequence.Level)
+					}
+				}
+
+				// Verify no extra children (exactly 2 redefine sub-fields, no placeholder)
+				if len(custID.Children) != 2 {
+					t.Errorf("CUST-ID.Children len = %d, want 2 (no placeholder node)", len(custID.Children))
+				}
+			},
+		},
+		{
+			name: "no_empty_name_placeholder",
+			verify: func(t *testing.T) {
+				// Find CUSTOMER-REC and verify it has no empty-Name children
+				var customerRec *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "CUSTOMER-REC" && defs[i].Level == 1 {
+						customerRec = &defs[i]
+						break
+					}
+				}
+				if customerRec == nil {
+					return
+				}
+
+				// Check direct children of CUSTOMER-REC for empty-Name nodes
+				for _, child := range customerRec.Children {
+					if child.Name == "" {
+						t.Errorf("Found empty-Name placeholder child in CUSTOMER-REC, want no empty-Name nodes")
+					}
+				}
+			},
+		},
+		{
+			name: "group_has_only_cust_id_as_sibling",
+			verify: func(t *testing.T) {
+				// Find CUSTOMER-REC and verify it has exactly one level-2 child (CUST-ID)
+				var customerRec *model.DataDefinition
+				for i := range defs {
+					if defs[i].Name == "CUSTOMER-REC" && defs[i].Level == 1 {
+						customerRec = &defs[i]
+						break
+					}
+				}
+				if customerRec == nil {
+					t.Fatal("Could not find CUSTOMER-REC group")
+				}
+
+				// Count level-2 children (should be just CUST-ID, REDEFINE block is merged)
+				var level2Children []*model.DataDefinition
+				for i := range customerRec.Children {
+					if customerRec.Children[i].Level == 2 {
+						level2Children = append(level2Children, &customerRec.Children[i])
+					}
+				}
+
+				if len(level2Children) != 1 {
+					t.Errorf("CUSTOMER-REC has %d level-2 children, want 1 (CUST-ID only; REDEFINE block is merged)",
+						len(level2Children))
+				}
+				if len(level2Children) > 0 && level2Children[0].Name != "CUST-ID" {
+					t.Errorf("Level-2 child is %q, want CUST-ID", level2Children[0].Name)
+				}
+			},
+		},
+		{
+			name: "no_diagnostics_for_legal_nested_redefine",
+			verify: func(t *testing.T) {
+				// Per FR-17: no diagnostic emitted for legal nested REDEFINE
+				if len(diags) > 0 {
+					t.Errorf("Expected 0 diagnostics, got %d: %v", len(diags), diags)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, tc.verify)
+	}
+}

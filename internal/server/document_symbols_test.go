@@ -1757,3 +1757,142 @@ func TestProvideDocumentSymbols_ViewFieldInheritedType(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideDocumentSymbols_ViewFieldModeledGaps tests that document outline for view fields
+// with modeled gaps (unresolved DDM, SQL-type DDM, absent field) shows the field in the outline
+// but with no inherited-type Detail, and no diagnostics (feature 28, T8b Story 4 AC3, FR-17, FR-43).
+//
+// The three modeled-gap outcomes are:
+// 1. View's DDM is not found (outside chain or nonexistent) → field in outline, nil Detail
+// 2. View's DDM is TYPE: SQL (unparseable fields) → field in outline, nil Detail
+// 3. View field name is absent from the DDM → field in outline, nil Detail
+//
+// Each case verifies that the field appears in the outline (not dropped) but has no inherited type,
+// confirming that modeled gaps stay off the error/diagnostic channel (FR-17).
+func TestProvideDocumentSymbols_ViewFieldModeledGaps(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	tt := []struct {
+		name        string
+		sourceFile  string
+		fieldName   string
+		description string
+	}{
+		{
+			// Gap 1: View's DDM not found in workspace (NONEXISTENT-DDM)
+			// → field appears in outline, Detail is nil (no inherited type)
+			name:        "VIEW_missing_DDM_in_outline",
+			sourceFile:  "view-missing-ddm.NSP",
+			fieldName:   "SOME-FIELD",
+			description: "view field over missing DDM appears in outline with nil Detail",
+		},
+		{
+			// Gap 2: View's DDM is TYPE: SQL (no parseable fields)
+			// → field appears in outline, Detail is nil
+			name:        "VIEW_SQL_DDM_in_outline",
+			sourceFile:  "view-sql-ddm.NSP",
+			fieldName:   "TABLE-COL",
+			description: "view field over TYPE:SQL DDM appears in outline with nil Detail",
+		},
+		{
+			// Gap 3: View field name is absent from the DDM
+			// (empview.NSP has NOT-A-FIELD, but customer.NSD does not)
+			// → field appears in outline, Detail is nil
+			name:        "VIEW_field_not_in_DDM_in_outline",
+			sourceFile:  "empview.NSP",
+			fieldName:   "NOT-A-FIELD",
+			description: "view field absent from DDM appears in outline with nil Detail",
+		},
+	}
+
+	// Build the workspace index from the view fixture (same setup as definition/hover tests)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "viewdef")
+
+	cfg := config.Defaults()
+	idx, _, _, err := workspace.BuildWithCache(
+		context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("failed to build workspace index: %v", err)
+	}
+
+	// Resolve the workspace (required by provideDocumentSymbols)
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Create a document store (required by provideDocumentSymbols)
+	store := document.New(fixtureRoot, nil, logger)
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: read the source file
+			sourceAbs := filepath.Join(fixtureRoot, tc.sourceFile)
+			_, readErr := os.ReadFile(sourceAbs)
+			if readErr != nil {
+				t.Fatalf("failed to read source file: %v", readErr)
+			}
+
+			// Build the handlerContext (simulating the server state with index + resolution)
+			hctx := &handlerContext{
+				idx:         idx,
+				res:         resSet,
+				posEncoding: enc,
+				root:        fixtureRoot,
+				cfg:         cfg,
+				logger:      logger,
+				az:          az,
+				store:       store,
+			}
+
+			// Act: call provideDocumentSymbols
+			params := protocol.DocumentSymbolParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(sourceAbs),
+				},
+			}
+
+			docSymbols, err := provideDocumentSymbols(hctx, params)
+
+			// Assert: no error
+			if err != nil {
+				t.Fatalf("provideDocumentSymbols failed: %v", err)
+			}
+
+			// Walk the symbol tree to find the field by name
+			var findField func([]protocol.DocumentSymbol, string) *protocol.DocumentSymbol
+			findField = func(symbols []protocol.DocumentSymbol, name string) *protocol.DocumentSymbol {
+				for i := range symbols {
+					if symbols[i].Name == name {
+						return &symbols[i]
+					}
+					if found := findField(symbols[i].Children, name); found != nil {
+						return found
+					}
+				}
+				return nil
+			}
+
+			foundField := findField(docSymbols, tc.fieldName)
+			if foundField == nil {
+				t.Errorf("%s: field %q not found in document symbols (field should appear in outline even with modeled gap)", tc.description, tc.fieldName)
+				return
+			}
+
+			// Assert: field appears in outline (name matches)
+			if foundField.Name != tc.fieldName {
+				t.Errorf("%s: expected field name %q, got %q", tc.description, tc.fieldName, foundField.Name)
+			}
+
+			// Assert: Detail is nil for modeled gap (no inherited type resolution, FR-17)
+			if foundField.Detail != nil {
+				t.Errorf("%s: expected nil Detail for modeled gap, got %q (field should not have inherited type from unresolved/SQL/absent DDM field)", tc.description, *foundField.Detail)
+			}
+		})
+	}
+}

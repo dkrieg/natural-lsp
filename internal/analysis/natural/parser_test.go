@@ -2402,6 +2402,34 @@ END`,
 			ddmName:        "",
 			expectChildren: 0,
 		},
+		{
+			// TEST 7: Malformed VIEW with no DDM name on same line (VIEW alone at EOL)
+			// Bug regression: the parser should NOT consume END-DEFINE as the DDM name.
+			// ViewOfDDM should be "" and END-DEFINE must still terminate the block.
+			name: "malformed VIEW at EOL (no DDM name)",
+			input: `DEFINE DATA LOCAL
+1 EMP-VIEW VIEW
+END-DEFINE
+END`,
+			expectViewOf:   false,
+			viewName:       "EMP-VIEW",
+			ddmName:        "",
+			expectChildren: 0,
+		},
+		{
+			// TEST 8: Malformed VIEW OF with no DDM name on same line
+			// Bug regression: the parser should NOT consume END-DEFINE as the DDM name.
+			// ViewOfDDM should be "" and END-DEFINE must still terminate the block.
+			name: "malformed VIEW OF (no DDM name)",
+			input: `DEFINE DATA LOCAL
+1 EMP-VIEW VIEW OF
+END-DEFINE
+END`,
+			expectViewOf:   false,
+			viewName:       "EMP-VIEW",
+			ddmName:        "",
+			expectChildren: 0,
+		},
 	}
 
 	for _, tt := range tests {

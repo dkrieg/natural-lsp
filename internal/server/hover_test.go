@@ -1676,3 +1676,126 @@ func TestProvideHover_ViewFieldInheritedType(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideHover_ViewFieldModeledGaps tests that hover on view fields with modeled gaps
+// (unresolved DDM, SQL-type DDM, absent field) returns nil (no hover) without errors
+// (feature 28, T8b Story 4 AC3, FR-17, FR-43).
+//
+// The three modeled-gap outcomes are:
+// 1. View's DDM is not found (outside chain or nonexistent) → nil hover
+// 2. View's DDM is TYPE: SQL (unparseable fields) → nil hover
+// 3. View field name is absent from the DDM → nil hover
+//
+// Each case verifies that provideHover returns nil and never panics,
+// confirming that modeled gaps stay off the error/diagnostic channel.
+func TestProvideHover_ViewFieldModeledGaps(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	tt := []struct {
+		name         string
+		sourceFile   string
+		cursorLine   int
+		cursorColumn int
+		description  string
+	}{
+		{
+			// Gap 1: View's DDM not found in workspace (NONEXISTENT-DDM)
+			// → hover returns nil, no error
+			name:         "VIEW_missing_DDM_no_hover",
+			sourceFile:   "view-missing-ddm.NSP",
+			cursorLine:   6, // 2 SOME-FIELD (line 6, 1-based)
+			cursorColumn: 8, // Within SOME-FIELD token
+			description:  "hover on view field over missing DDM → returns nil (DDM not found)",
+		},
+		{
+			// Gap 2: View's DDM is TYPE: SQL (no parseable fields)
+			// → hover returns nil, no error
+			name:         "VIEW_SQL_DDM_no_hover",
+			sourceFile:   "view-sql-ddm.NSP",
+			cursorLine:   6, // 2 TABLE-COL (line 6, 1-based)
+			cursorColumn: 8, // Within TABLE-COL token
+			description:  "hover on view field over TYPE:SQL DDM → returns nil (SQL fields unparseable)",
+		},
+		{
+			// Gap 3: View field name is absent from the DDM
+			// (empview.NSP has NOT-A-FIELD, but customer.NSD does not)
+			// → hover returns nil, no error
+			name:         "VIEW_field_not_in_DDM_no_hover",
+			sourceFile:   "empview.NSP",
+			cursorLine:   12, // 2 NOT-A-FIELD
+			cursorColumn: 8,  // Within NOT-A-FIELD token
+			description:  "hover on view field absent from DDM → returns nil (field not in DDM)",
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: build the workspace index from the view fixture
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("failed to get working directory: %v", err)
+			}
+			fixtureRoot := filepath.Join(wd, "testdata", "viewdef")
+
+			cfg := config.Defaults()
+			idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+			if err != nil {
+				t.Fatalf("failed to build index: %v", err)
+			}
+
+			// Resolve the workspace edges
+			resSet := workspace.Resolve(idx, &cfg)
+
+			// Create a document store (provideHover checks store first for live edits)
+			store := document.New(fixtureRoot, nil, logger)
+
+			// Read the source file content
+			sourceAbs := filepath.Join(fixtureRoot, tc.sourceFile)
+			sourceContent, readErr := os.ReadFile(sourceAbs)
+			if readErr != nil {
+				t.Fatalf("failed to read source file: %v", readErr)
+			}
+			_ = sourceContent // Mark as used for position conversion
+
+			// Build the handlerContext (simulating the server state)
+			hctx := &handlerContext{
+				idx:         idx,
+				res:         resSet,
+				posEncoding: enc,
+				root:        fixtureRoot,
+				cfg:         cfg,
+				logger:      logger,
+				az:          az,
+				store:       store,
+			}
+
+			// Act: call provideHover with the cursor position on the view field
+			params := protocol.HoverParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(sourceAbs),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.cursorLine - 1), // Convert from 1-based to 0-based
+						Character: uint32(tc.cursorColumn - 1),
+					},
+				},
+			}
+
+			hover, err := provideHover(hctx, params)
+
+			// Assert: no error
+			if err != nil {
+				t.Fatalf("provideHover failed: %v", err)
+			}
+
+			// Assert: hover result is nil for modeled gap (FR-17, FR-43)
+			if hover != nil {
+				t.Errorf("%s: expected nil hover for modeled gap, got %v", tc.description, hover)
+			}
+		})
+	}
+}

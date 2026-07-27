@@ -319,10 +319,11 @@ func computeNameRange(line string, lineNo int) model.Range {
 	}
 
 	// Compute byte offsets in the original line (0-based)
-	nameStart := ddmOffsetName + first  // Start of the name (0-based)
-	nameEnd := ddmOffsetName + last + 1 // End of the name (exclusive, 0-based)
+	nameStart := ddmOffsetName + first // Start of the name (0-based)
+	nameEnd := ddmOffsetName + last    // End of the name (inclusive, 0-based)
 
-	// Convert to model coordinates (1-based line, 1-based column)
+	// Convert to model coordinates (1-based line, 1-based column, inclusive end)
+	// Matching the tokenRange convention: End.Column = nameEnd + 1 (1-based inclusive last byte)
 	return model.Range{
 		Start: model.Position{Line: lineNo + 1, Column: nameStart + 1},
 		End:   model.Position{Line: lineNo + 1, Column: nameEnd + 1},
