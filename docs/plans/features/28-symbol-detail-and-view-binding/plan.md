@@ -179,3 +179,39 @@ that** a flat record decodes into typed logical fields.
   existing `customer.NSD` DDM fixture (from feature 12), proving a bare field resolves its DDM type and
   go-to-definition reaches the `.NSD` field; place under a new `testdata/view/` (or `dataaccess/`).
   Fuzz the `VIEW OF` parser path (never panic — FR-43).
+
+## Results (as-built)
+
+**Status: SHIPPED.** All ten task slices (T1–T10, with T8 split into T8a/T8b) landed; `just verify`
+green (`-race` + integration). Review verdict **PASS** after one remediation round (seam/robustness PASS
+first round; acceptance/extraction/LSP-protocol PASS on re-review). No new LSP capability — the locked
+`TestInitialize` allow-list is byte-identical.
+
+**Delivered**
+- **Phase A — typed outline.** `model.Symbol` gained additive `Type`/`Level`/`Dimensions`/`Redefines`/
+  `ViewOfDDM`; `DocumentSymbol.Detail` is composed **server-side** (OQ-1) in `symbolDetail`
+  (`internal/server/document_symbols.go`), sharing the array-dimension formatter (`formatDimensions`) with
+  hover's `renderParamType`. Detail renders verbatim type + index ranges (`A10 (1:10)`, `(1:*)`, never
+  "OCCURS"), a redefine sub-field as `"<type> REDEFINE <target>"`, and a `FILLER nX` gap; a group header
+  shows no type. REDEFINE is surfaced via additive `model.DataDefinition.Redefines` with a
+  **flatten-with-stamp** merge (OQ-A) that now also handles a REDEFINE **nested inside a group**.
+- **Phase B — `VIEW OF`.** Net-new parser branch for `level view-name VIEW [OF] ddm-name` (OQ: `OF`
+  optional, `matchesLiteral`, no lexer/keyword change) with a **same-line guard** so a malformed view
+  degrades to `ViewOfDDM == ""` without fabricating a binding or swallowing the block terminator
+  (FR-17/FR-43). View→DDM binding persisted (`DataField`/`DataDefinition`/`Symbol.ViewOfDDM`), rendered as
+  a `VIEW OF <ddm>` outline node. View-field **go-to-definition** and **DDM-inherited type** compose
+  feature 27's steplib DDM-object resolution with new intra-object field resolvers
+  `workspace.ResolveDDMFieldLocation`/`ResolveDDMFieldType`; cursor→declaration targeting is an additive
+  companion `findDeclarationTarget` (OQ-B, use-site-first — `findCursorTarget` unchanged); inherited type
+  is resolved **per request** from the index (OQ-C, F7-snapshot). `ddm.go` now populates DDM-field
+  `NameRange` (inclusive-last-byte, ADR-008) so navigation lands on the field name.
+- **Cache-format bump `0.8.0` → `0.9.0`** (T9) — persists the new `Symbol`/`DataDefinition` fields and the
+  DDM-field `NameRange`; a stale `0.8.0` cache forces one cold rebuild.
+
+**Recorded limits / deferrals (as planned)**
+- **`TYPE: SQL` (DB2-backed) DDMs** are not parsed by `ddm.go`, so view fields over a DB2 DDM list in the
+  outline but do not type-resolve or navigate to the DDM — a modeled gap (field lists, navigation/type
+  empty, no error), not a defect. Clean follow-up: extend `ddm.go`.
+- **Byte-offset / physical-position computation** for REDEFINE overlays (exact sub-field byte ranges) is a
+  later refinement — the outline shows the redefine structure and types, not physical offsets.
+- Workspace-wide **find-references of a DDM field via views** stays with feature 27's usage indexing.

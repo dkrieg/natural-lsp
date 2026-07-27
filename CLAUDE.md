@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-**Features 00–27 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). The cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain) shipped in **feature 27** (see the feature-27 note below), which folds that binding together with variable/host-var go-to-definition/references and adds `textDocument/documentHighlight`. **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy).
+**Features 00–28 shipped, plus embedded-SQL parsing and extraction** — the parser foundation (feature 00: lexer + recursive-descent parser + AST), workspace indexing/persistent cache, call/dependency extraction (feature 06), call/dependency resolution (feature 07), Adabas data-access extraction (feature 08), and program-structure extraction (feature 09: a per-object hierarchical symbol tree) are implemented, as is embedded-SQL **parsing** (feature `00-parser-embedded-sql`: native Natural SQL + `PROCESS SQL` opaque-span into the AST, parse-only) and embedded-SQL **extraction** (feature `08b-embedded-sql-extraction`: DDM read/write edges, `CALLDBPROC` call edges, and host-var references — see the `sql.go` note below). **The LSP provider layer now spans navigation, document outline, hover, code lens, diagnostics, completion, signature help, and call hierarchy**: `textDocument/definition` (FR-24), `textDocument/references` (FR-25), and `workspace/symbol` (FR-26) shipped in feature 10, `textDocument/documentSymbol` (FR-27) shipped in feature 11, `textDocument/hover` (FR-28) shipped in feature 12, `textDocument/codeLens` (FR-29) shipped in feature 13, `textDocument/publishDiagnostics` (FR-30/FR-31) shipped in feature 14, `textDocument/completion` (FR-47) shipped in feature 16, `textDocument/signatureHelp` (FR-48) shipped in feature 17, and the three call-hierarchy methods (`textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls`, FR-49) shipped in feature 18 — all wired and advertised; the running server builds and holds a `workspace.Index` + `ResolutionSet` and updates them incrementally (see the server note below). Feature 12 also added a `.NSD` **DDM field parser** (`internal/analysis/natural/ddm.go`) that populates `FileAnalysis.Definitions` for DDM files (see the ddm.go note below). **Feature 15 (editor clients & distribution)** ships the server in real editors — a first-party VS Code extension, a JetBrains path, documented configs for other LSP editors, and cross-platform binaries — with **no Go/`internal/model`/cache change** (see the feature-15 note below). The cross-file **resolution** of the SQL-sourced DDM/host-var references (binding them to definitions across the steplib chain) shipped in **feature 27** (see the feature-27 note below), which folds that binding together with variable/host-var go-to-definition/references and adds `textDocument/documentHighlight`. **All planned LSP providers are now wired** (navigation, outline, hover, code lens, diagnostics, completion, signature help, call hierarchy). **Feature 28 (rich symbol detail & `VIEW OF` binding)** then enriched the existing providers — a typed document outline (field type/level/array/REDEFINE detail), `VIEW OF` parsing + view→DDM binding, and view-field go-to-definition/hover that decode a view into its DDM's logical fields (see the feature-28 note below).
 
 **Assessment (2026-07-14) — known defects and remediation plan.** An independent full-project
 assessment (`docs/assessment-2026-07-14.md`: live wire probes, four specialist reviews, LSP-spec
@@ -49,9 +49,9 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 + scoped integration, `-race` omitted with rationale) was added so platform bugs can't reach a release
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
 **(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
-(lsp-tracing-and-logging), and 27 (variable & reference navigation) are shipped** (see their notes
-below). The remaining follow-ups are **planned** (features **28–34**): the higher-value ones with full
-notes below — **28 (rich symbol detail & `VIEW OF` binding)** and **29 (semantic tokens)** — plus a set of
+(lsp-tracing-and-logging), 27 (variable & reference navigation), and 28 (rich symbol detail & `VIEW OF`
+binding) are shipped** (see their notes below). The remaining follow-ups are **planned** (features
+**29–34**): the higher-value one with a full note below — **29 (semantic tokens)** — plus a set of
 smaller **P2 LSP-capability** plans, **30 (pull diagnostics)**, **31 (declaration & type-definition
 navigation)**, **32 (document links)**, **33 (execute-command / server commands)**, and **34 (moniker —
 documented non-goal, deferred)** (see their `docs/plans/features/` dirs; summarized after the feature-29
@@ -111,20 +111,39 @@ name→`DataDefinition` lookup. Closed the live `references.go` DDM-`targetPath`
 existing providers. ADR-028 (chain-based server object-location) / ADR-029 (source-reconstructed group
 qualification). See `docs/plans/features/27-variable-navigation/`.
 
-**Feature 28 (rich symbol detail & `VIEW OF` binding)** — enriches the document-outline
-(`textDocument/documentSymbol`) export. **Phase A (typed outline):** `DEFINE DATA` field **type**
-(`A26`/`P9,2`/`(A) DYNAMIC`), **level**, **array** index ranges (`(1:10)`, not "OCCURS"), and **REDEFINE**
-overlays (incl. `FILLER nX` gaps) are today **extracted but dropped** — they live on `model.DataDefinition`
-but `model.Symbol` carries only name+ranges and `document_symbols.go` leaves `DocumentSymbol.Detail` nil;
-Phase A carries the metadata into `model.Symbol` and renders `Detail` (a pure enrichment; also sharpens
-hover). **Phase B (`VIEW OF` binding):** `VIEW OF <ddm>` is currently unparsed — net-new parser/AST/model
-work to recognize `level view-name VIEW [OF] ddm-name`, show the view→DDM binding in the outline, and
-**decode view fields into typed logical fields**: a bare view field inherits its type from the DDM and
-go-to-definition on it reaches the `.NSD` field declaration, reusing feature 27's DDM-object steplib
-resolution + intra-object field lookup (the binding target is always the `.NSD`, which may map to Adabas or
-DB2; `TYPE: SQL` DDM parsing in `ddm.go` is a recorded limit). Adds persisted model fields (Symbol detail +
-`DataDefinition.ViewOfDDM`/REDEFINE marker) → a cache-format bump **coordinated with feature 27** by merge
-order; no new LSP capability/method. See `docs/plans/features/28-symbol-detail-and-view-binding/`.
+Feature 28 (rich symbol detail & `VIEW OF` binding) enriches the existing providers — no new LSP
+capability/method (extends `documentSymbol`, `definition`, and `hover`; the locked `TestInitialize`
+allow-list is unchanged). **Phase A (typed outline, T1–T4):** `DEFINE DATA` field **type**
+(`A26`/`P9,2`/`(A) DYNAMIC`), **level**, **array** index ranges (`(1:10)`/`(1:5,1:10)`/`(1:*)`, never
+"OCCURS"), and **REDEFINE** overlays (incl. `FILLER nX` gaps) were **extracted but dropped** — they lived on
+`model.DataDefinition` while `model.Symbol` carried only name+ranges and `document_symbols.go` left
+`DocumentSymbol.Detail` nil. Phase A carries the metadata onto `model.Symbol` (additive
+`Type`/`Level`/`Dimensions`/`Redefines`/`ViewOfDDM`) and composes the `Detail` **string in `internal/server`**
+(OQ-1 — presentation stays on the LSP side, via `symbolDetail`; the array-dimension formatter
+`formatDimensions` is now shared with hover's `renderParamType` so the two agree). A redefine sub-field
+renders `"<type> REDEFINE <target>"`; a group header shows no type (nil detail). Surfacing REDEFINE required
+an additive `model.DataDefinition.Redefines` and a **flatten-with-stamp** merge (OQ-A) in `data.go`
+(`fieldToDefinition` stamps `Redefines` on each merged sub-field, now recursively so a REDEFINE **nested
+inside a group** merges into its target sibling too); `FILLER nX` is captured as a `DataDefinition` with
+`Type == "nX"`. **Phase B (`VIEW OF` binding, T5–T8b):** net-new parser recognition of `level view-name VIEW
+[OF] ddm-name` (`matchesLiteral`, **OF optional, no lexer/keyword change**), with a **same-line guard** so a
+malformed `VIEW`/`VIEW OF` with no ddm-name degrades to `ViewOfDDM == ""` without fabricating a binding or
+swallowing the terminator (FR-17/FR-43). The view surfaces as an outline node whose detail is `VIEW OF
+<ddm>`. View fields **decode into typed logical fields**: a bare view field inherits its type from the DDM
+and **go-to-definition** on it reaches the `.NSD` field declaration, reusing feature 27's DDM-object steplib
+resolution + a new intra-object field lookup — exposed as `workspace.ResolveDDMFieldLocation` /
+`ResolveDDMFieldType` (the binding target is always the `.NSD`, which may map to Adabas or DB2; **`TYPE: SQL`
+DDM parsing in `ddm.go` remains a recorded limit**). Cursor→declaration targeting is a new additive
+companion `findDeclarationTarget` (`cursor.go`, use-site-first — `findCursorTarget` is unchanged); view name
+→ its own `VIEW OF` line, a view-local REDEFINE sub-field → the view's own line (same-file, not the DDM). The
+bare-view-field inherited type is resolved **per request** from the index in `documentSymbol`/`hover` (OQ-C,
+F7-snapshot, store-first). Modeled gaps stay off the error/diagnostic channel (FR-17): a DDM outside the
+chain, a `TYPE: SQL` DDM, or a view field absent from the DDM → the field still lists, navigation/inherited
+type is empty, no error. Feature 28 also **populates `DataDefinition.NameRange` for DDM fields in `ddm.go`**
+(inclusive-last-byte convention, ADR-008) so go-to-definition can land on the DDM field's name. **Cache-format
+bump `0.8.0` → `0.9.0`** (persists `Symbol.{Type,Level,Dimensions,Redefines,ViewOfDDM}`,
+`DataDefinition.{Redefines,ViewOfDDM}`, and the DDM-field `NameRange`) — a single one-time rebuild. See
+`docs/plans/features/28-symbol-detail-and-view-binding/`.
 
 **Feature 29 (semantic tokens)** — adds a **`semanticTokensProvider`** for server-driven, AST-aware
 highlighting (the biggest visible upgrade over the VS Code extension's basic TextMate grammar; JetBrains/
