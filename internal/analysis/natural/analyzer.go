@@ -153,7 +153,8 @@ func (a *Analyzer) ExtractVariableRefs(content string) []model.VariableRef {
 // This is an on-demand, non-persisted operation that returns classified token spans
 // for display in the editor. Path is used for object-type classification (by extension).
 // The returned slice is always non-nil but may be empty (FR-43).
-// This method is used by the LSP provider for semantic-tokens (feature 29, T2).
+// This method is used by the LSP provider for semantic-tokens (feature 29, T2+).
+// Currently implements Phase A (lexical) + Phase B (variable/parameter identifiers, T7).
 func (a *Analyzer) SemanticTokens(path string, content []byte) []model.SemanticToken {
-	return semanticTokensPhaseA(path, string(content))
+	return semanticTokensPhaseB(path, string(content))
 }
