@@ -114,7 +114,17 @@ func computeTokenRange(contentBytes []byte, tok Token) (model.Position, model.Po
 	// Now bytePos is at the token's starting byte.
 	tokenStart := bytePos
 
-	// Find the token's end byte by scanning forward based on token type.
+	// Find the token's end byte.
+	//
+	// For NON-string, NON-comment tokens (keyword/identifier/number/operator/punctuation)
+	// the lexer does NOT quote-strip and these tokens are ASCII, so len(tok.Literal) is the
+	// true source byte width — using it is exact and avoids the greedy character-class rescan
+	// that previously over-extended a numeric literal (e.g. "5-3": the "5" token wrongly spanned
+	// "5-3" because the numeric branch consumed '-'/'+'/'e'/'E'/'.'). See FINDING C.
+	//
+	// A source-scan is retained ONLY for strings (Literal has reconstructed quotes / is
+	// quote-stripped) and comments (Literal differs from the verbatim source span), where
+	// len(tok.Literal) is genuinely not the source width.
 	tokenEnd := tokenStart
 	switch tok.Type {
 	case TokenComment:
@@ -147,77 +157,20 @@ func computeTokenRange(contentBytes []byte, tok Token) (model.Position, model.Po
 		// tokenEnd now points to the closing quote (or past EOF if unterminated).
 		// The inclusive-end position is the closing quote itself (or last byte if unterminated).
 
-	case TokenLiteralNumeric:
-		// Numeric literals can include digits, optional '.', and scientific notation.
-		// Scan while we see digit characters, '.', '+', '-', 'E', 'e'.
-		for tokenEnd < len(contentBytes) {
-			ch := contentBytes[tokenEnd]
-			if (ch >= '0' && ch <= '9') || ch == '.' || ch == '+' || ch == '-' || ch == 'e' || ch == 'E' {
-				tokenEnd++
-			} else {
-				break
-			}
-		}
-		// tokenEnd now points past the last digit/operator. Back up.
-		if tokenEnd > tokenStart {
-			tokenEnd--
-		}
-
-	case TokenOperator:
-		// Operators are 1 or 2 bytes: =, +, -, *, /, <>, <=, >=, :=, etc.
-		// Scan to consume the operator.
-		if tokenEnd < len(contentBytes) {
-			ch := contentBytes[tokenEnd]
-			tokenEnd++
-			// Check for two-character operators.
-			if tokenEnd < len(contentBytes) {
-				next := contentBytes[tokenEnd]
-				if (ch == '<' && (next == '>' || next == '=')) ||
-					(ch == '>' && next == '=') ||
-					(ch == ':' && next == '=') ||
-					(ch == '*' && next == '*') { // ** might exist, though unlikely in operators
-					tokenEnd++
-				}
-			}
-		}
-		// tokenEnd now points past the operator. Back up to the last byte.
-		if tokenEnd > tokenStart {
-			tokenEnd--
-		}
-
-	case TokenKeyword, TokenIdentifier:
-		// Keywords and identifiers are continuous alphanumeric sequences.
-		// Natural identifiers may start with #, &, @ and continue with letters, digits, _, -.
-		// Scan while we see letters, digits, underscores, hyphens, and sigils.
-		for tokenEnd < len(contentBytes) {
-			ch := contentBytes[tokenEnd]
-			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
-				ch == '_' || ch == '#' || ch == '&' || ch == '@' {
-				tokenEnd++
-			} else if ch == '-' && tokenEnd+1 < len(contentBytes) {
-				// Check if hyphen is followed by an identifier body character.
-				next := contentBytes[tokenEnd+1]
-				if (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9') {
-					tokenEnd++
-				} else {
-					break
-				}
-			} else {
-				break
-			}
-		}
-		// tokenEnd now points past the last character. Back up.
-		if tokenEnd > tokenStart {
-			tokenEnd--
-		}
-
 	default:
-		// For other token types (Punctuation, SQLOpaque, Error), assume single byte.
-		if tokenEnd < len(contentBytes) {
-			tokenEnd++
+		// Keyword/identifier/number/operator/punctuation (and any other verbatim token):
+		// the source width equals len(tok.Literal) exactly. tokenEnd is the last source byte
+		// (inclusive), clamped to the buffer. A zero-length literal collapses to tokenStart.
+		width := len(tok.Literal)
+		if width <= 0 {
+			width = 1
 		}
-		if tokenEnd > tokenStart {
-			tokenEnd--
+		tokenEnd = tokenStart + width - 1
+		if tokenEnd >= len(contentBytes) {
+			tokenEnd = len(contentBytes) - 1
+		}
+		if tokenEnd < tokenStart {
+			tokenEnd = tokenStart
 		}
 	}
 
@@ -250,6 +203,43 @@ func computeTokenRange(contentBytes []byte, tok Token) (model.Position, model.Po
 		model.Position{Line: endLine, Column: endCol}
 }
 
+// buildVarLookup builds a name → *DataDefinition lookup over a definition slice, recursing into
+// each definition's Children so grouped and REDEFINE sub-fields (level ≥ 2, which extractDefinitions
+// nests under Children) are classified consistently with top-level fields (FINDING B).
+//
+// data.go stamps SectionKind only on top-level fields, leaving it empty on children; this helper
+// propagates the effective SectionKind down so a grouped field in a PARAMETER section is still
+// classified `parameter`, not `variable`. Each stored entry is a copy with the effective
+// SectionKind stamped (the original NameRange is preserved for declaration-site detection).
+//
+// On a duplicate name (an unqualified field declared in more than one group) the first occurrence
+// in document order wins — a bounded, deterministic choice; qualified resolution is out of scope
+// for lexical-stream classification.
+func buildVarLookup(defs []model.DataDefinition) map[string]*model.DataDefinition {
+	lookup := make(map[string]*model.DataDefinition)
+	var walk func(items []model.DataDefinition, inherited string)
+	walk = func(items []model.DataDefinition, inherited string) {
+		for i := range items {
+			effective := items[i].SectionKind
+			if effective == "" {
+				effective = inherited
+			}
+			if items[i].Name != "" {
+				if _, exists := lookup[items[i].Name]; !exists {
+					entry := items[i]
+					entry.SectionKind = effective
+					lookup[items[i].Name] = &entry
+				}
+			}
+			if len(items[i].Children) > 0 {
+				walk(items[i].Children, effective)
+			}
+		}
+	}
+	walk(defs, "")
+	return lookup
+}
+
 // semanticTokensPhaseBIdentifiers classifies variable and parameter identifiers.
 // It builds a lookup of declared variable names and their SectionKind, then walks
 // the token stream to classify matched identifiers as variable or parameter.
@@ -277,17 +267,11 @@ func semanticTokensPhaseBIdentifiers(path string, content string) []model.Semant
 	}
 
 	// Build a lookup: map variable name → definition info (SectionKind, NameRange for declaration site).
-	// Names are already upper-cased in definitions.
-	varLookup := make(map[string]*model.DataDefinition)
-	for i := range definitions {
-		name := definitions[i].Name
-		// Strip sigils (#, &, @, +) for lookup key, but keep them in the name.
-		lookupKey := name
-		if len(name) > 0 && (name[0] == '#' || name[0] == '&' || name[0] == '@' || name[0] == '+') {
-			// Keep sigil in the key; exact match is needed.
-		}
-		varLookup[lookupKey] = &definitions[i]
-	}
+	// Names are already upper-cased in definitions. Grouped/REDEFINE sub-fields live in
+	// DataDefinition.Children (level ≥ 2) and MUST be included so nested fields are classified at
+	// both declaration and use sites (FINDING B) — with the parent's SectionKind propagated down
+	// (data.go does not repeat SectionKind on children).
+	varLookup := buildVarLookup(definitions)
 
 	// Walk the token stream and emit variable/parameter tokens.
 	var tokens []model.SemanticToken
@@ -595,13 +579,9 @@ func semanticTokensPhaseBSystemVarsAndWrites(path string, content string) []mode
 	definitions := extractDefinitions(ast)
 
 	// Build a lookup: map variable name → definition info (for write-target detection).
-	varLookup := make(map[string]*model.DataDefinition)
-	for i := range definitions {
-		name := definitions[i].Name
-		varLookup[name] = &definitions[i]
-	}
-
-	_ = varLookup // Use the variable
+	// Recurse into Children so grouped/REDEFINE sub-fields are recognized as write targets too
+	// (FINDING B); SectionKind is propagated from the parent.
+	varLookup := buildVarLookup(definitions)
 
 	var tokens []model.SemanticToken
 
@@ -792,8 +772,15 @@ func semanticTokensPhaseB(path string, content string) []model.SemanticToken {
 			if precedence[tok.Type] > precedence[existing.Type] {
 				// tok has higher precedence; replace.
 				tokenMap[key] = tok
-			} else if precedence[tok.Type] == precedence[existing.Type] && tok.Type == existing.Type {
-				// Same precedence and same type: merge the modifiers.
+			} else if precedence[tok.Type] == precedence[existing.Type] {
+				// Same precedence (same span). Merge modifiers, keeping the existing (already-
+				// chosen) Type. This is what fixes a PARAMETER write target (FINDING A): T7 emits
+				// the span as `parameter`+0 while the write-detector emits it as `variable`+
+				// modification — same span, same precedence, differing only because the detector
+				// defaults to `variable`. The write-detector's role is solely to CONTRIBUTE the
+				// `modification` bit, so OR its modifiers onto the existing token regardless of the
+				// parameter-vs-variable type mismatch, and never let its default `variable` type
+				// override the more-specific `parameter` classification.
 				merged := existing
 				merged.Modifiers |= tok.Modifiers
 				tokenMap[key] = merged

@@ -438,6 +438,190 @@ func TestSemanticTokens_PhaseB_DDMView(t *testing.T) {
 	}
 }
 
+// TestSemanticTokens_PhaseB_GroupedFields is the FINDING B regression (feature 29 review).
+// A data field nested inside a group (level ≥ 2) must be classified at BOTH its declaration
+// site (variable/parameter + declaration modifier) and every use site — including as a write
+// target (+modification). Before the fix the variable lookup was built by iterating only the
+// top-level definitions slice, so grouped/nested sub-fields (which live in DataDefinition.Children)
+// were silently dropped and never classified.
+//
+// A grouped field in a PARAMETER section must be classified `parameter` (its parent's SectionKind),
+// NOT `variable` — SectionKind is a top-level property that data.go does not repeat on children,
+// so the recursive lookup builder must propagate it.
+func TestSemanticTokens_PhaseB_GroupedFields(t *testing.T) {
+	content := readTestData(t, "grouped.NSP")
+
+	az := New(nil)
+	got := az.SemanticTokens("grouped.NSP", content)
+
+	findToken := func(startLine, startCol int) *model.SemanticToken {
+		for i := range got {
+			if got[i].Range.Start.Line == startLine && got[i].Range.Start.Column == startCol {
+				return &got[i]
+			}
+		}
+		return nil
+	}
+
+	// Fixture layout (grouped.NSP):
+	// Line 1: DEFINE DATA
+	// Line 2: LOCAL
+	// Line 3:   1 #GRP                (group header, LOCAL)
+	// Line 4:     2 #FLD (A10)        (#FLD cols 7-10, LOCAL sub-field)
+	// Line 5: PARAMETER
+	// Line 6:   1 #PGRP               (group header, PARAMETER)
+	// Line 7:     2 #PFLD (A10)       (#PFLD cols 7-11, PARAMETER sub-field)
+	// Line 8: END-DEFINE
+	// Line 9: (blank)
+	// Line 10: MOVE #PFLD TO #FLD     (#PFLD cols 6-10 [use], #FLD cols 15-18 [write target])
+
+	// (1) Declaration of the LOCAL grouped sub-field #FLD → variable + declaration.
+	declFld := findToken(4, 7)
+	if declFld == nil {
+		t.Fatalf("FINDING B: grouped sub-field #FLD declaration (line 4, col 7) not classified — nested fields dropped")
+	}
+	if declFld.Type != model.SemanticTokenTypeVariable {
+		t.Errorf("line 4, col 7 (#FLD decl): Type = %q, want %q", declFld.Type, model.SemanticTokenTypeVariable)
+	}
+	if declFld.Modifiers&model.SemanticTokenModifierDeclaration == 0 {
+		t.Errorf("line 4, col 7 (#FLD decl): missing declaration modifier (got %d)", declFld.Modifiers)
+	}
+
+	// (2) Declaration of the PARAMETER grouped sub-field #PFLD → parameter (inherits parent SectionKind) + declaration.
+	declPfld := findToken(7, 7)
+	if declPfld == nil {
+		t.Fatalf("FINDING B: grouped PARAMETER sub-field #PFLD declaration (line 7, col 7) not classified — nested fields dropped")
+	}
+	if declPfld.Type != model.SemanticTokenTypeParameter {
+		t.Errorf("line 7, col 7 (#PFLD decl): Type = %q, want %q (PARAMETER section must propagate to children)", declPfld.Type, model.SemanticTokenTypeParameter)
+	}
+	if declPfld.Modifiers&model.SemanticTokenModifierDeclaration == 0 {
+		t.Errorf("line 7, col 7 (#PFLD decl): missing declaration modifier (got %d)", declPfld.Modifiers)
+	}
+
+	// (3) Use of #PFLD in "MOVE #PFLD TO #FLD" → parameter, read (no modification).
+	usePfld := findToken(10, 6)
+	if usePfld == nil {
+		t.Fatalf("FINDING B: grouped PARAMETER sub-field #PFLD use (line 10, col 6) not classified")
+	}
+	if usePfld.Type != model.SemanticTokenTypeParameter {
+		t.Errorf("line 10, col 6 (#PFLD use): Type = %q, want %q", usePfld.Type, model.SemanticTokenTypeParameter)
+	}
+	if usePfld.Modifiers&model.SemanticTokenModifierModification != 0 {
+		t.Errorf("line 10, col 6 (#PFLD use, read): should NOT have modification modifier (got %d)", usePfld.Modifiers)
+	}
+
+	// (4) Write use of #FLD (the MOVE … TO target) → variable + modification.
+	writeFld := findToken(10, 15)
+	if writeFld == nil {
+		t.Fatalf("FINDING B: grouped sub-field #FLD write use (line 10, col 15) not classified")
+	}
+	if writeFld.Type != model.SemanticTokenTypeVariable {
+		t.Errorf("line 10, col 15 (#FLD write): Type = %q, want %q", writeFld.Type, model.SemanticTokenTypeVariable)
+	}
+	if writeFld.Modifiers&model.SemanticTokenModifierModification == 0 {
+		t.Errorf("line 10, col 15 (#FLD write target): missing modification modifier (got %d)", writeFld.Modifiers)
+	}
+}
+
+// TestSemanticTokens_PhaseB_ParameterWriteTarget is the FINDING A regression (feature 29 review).
+// A PARAMETER-section variable used as a write target (MOVE … TO #P) must keep BOTH its
+// `parameter` type AND the `modification` modifier. Before the fix, the write detector emitted
+// the target as `variable`+modification while T7 emitted it as `parameter`+0; the merge only
+// OR-ed modifiers when the two tokens shared the same Type, so parameter (from T7) vs variable
+// (from the write detector) — same span, same precedence — kept the first and DROPPED the
+// modification bit. The correct result is `parameter` with modification.
+func TestSemanticTokens_PhaseB_ParameterWriteTarget(t *testing.T) {
+	content := readTestData(t, "paramwrite.NSP")
+
+	az := New(nil)
+	got := az.SemanticTokens("paramwrite.NSP", content)
+
+	findToken := func(startLine, startCol int) *model.SemanticToken {
+		for i := range got {
+			if got[i].Range.Start.Line == startLine && got[i].Range.Start.Column == startCol {
+				return &got[i]
+			}
+		}
+		return nil
+	}
+
+	// Fixture layout (paramwrite.NSP):
+	// Line 5:   1 #P (N5)             (#P cols 5-6, PARAMETER decl)
+	// Line 8: MOVE #X TO #P           (#X cols 6-7 [read], #P cols 12-13 [write target])
+
+	writeP := findToken(8, 12)
+	if writeP == nil {
+		t.Fatalf("FINDING A: PARAMETER write target #P (line 8, col 12) not classified")
+	}
+	if writeP.Type != model.SemanticTokenTypeParameter {
+		t.Errorf("line 8, col 12 (#P write target): Type = %q, want %q (a PARAMETER write target must stay parameter, not be overridden to variable)", writeP.Type, model.SemanticTokenTypeParameter)
+	}
+	if writeP.Modifiers&model.SemanticTokenModifierModification == 0 {
+		t.Errorf("line 8, col 12 (#P write target): missing modification modifier (got %d) — the write bit must be OR-ed onto the parameter token", writeP.Modifiers)
+	}
+}
+
+// TestSemanticTokens_PhaseA_NumericRange is the FINDING C regression (feature 29 review).
+// A numeric literal's range must cover ONLY the literal. Before the fix, computeTokenRange's
+// numeric branch greedily consumed '-'/'+'/'e'/'E'/'.', so for "5-3" (lexer emits three tokens:
+// 5, -, 3) the number token for "5" produced a range covering "5-3", overlapping the operator
+// and the second number. The correct result: "5" and "3" each span exactly one column, with
+// "-" a separate operator token — no overlap.
+func TestSemanticTokens_PhaseA_NumericRange(t *testing.T) {
+	// "COMPUTE #A = 5-3": COMPUTE cols1-7, #A cols9-10, = col12, 5 col14, - col15, 3 col16.
+	content := []byte("COMPUTE #A = 5-3\n")
+
+	az := New(nil)
+	got := az.SemanticTokens("numrange.NSP", content)
+
+	findToken := func(startLine, startCol int) *model.SemanticToken {
+		for i := range got {
+			if got[i].Range.Start.Line == startLine && got[i].Range.Start.Column == startCol {
+				return &got[i]
+			}
+		}
+		return nil
+	}
+
+	// The "5" number token must span exactly col 14 (inclusive-end), NOT col 14-16.
+	tok5 := findToken(1, 14)
+	if tok5 == nil {
+		t.Fatalf("FINDING C: number token '5' (line 1, col 14) not found")
+	}
+	if tok5.Type != model.SemanticTokenTypeNumber {
+		t.Errorf("line 1, col 14: Type = %q, want %q", tok5.Type, model.SemanticTokenTypeNumber)
+	}
+	if tok5.Range.End.Line != 1 || tok5.Range.End.Column != 14 {
+		t.Errorf("line 1, col 14 ('5'): End = (%d, %d), want (1, 14) — numeric range must not over-extend across '-'/'3'",
+			tok5.Range.End.Line, tok5.Range.End.Column)
+	}
+
+	// The "-" operator token must be present as a separate token at col 15.
+	tokMinus := findToken(1, 15)
+	if tokMinus == nil {
+		t.Fatalf("FINDING C: operator token '-' (line 1, col 15) not found — the numeric span swallowed it")
+	}
+	if tokMinus.Type != model.SemanticTokenTypeOperator {
+		t.Errorf("line 1, col 15: Type = %q, want %q", tokMinus.Type, model.SemanticTokenTypeOperator)
+	}
+	if tokMinus.Range.End.Column != 15 {
+		t.Errorf("line 1, col 15 ('-'): End.Column = %d, want 15", tokMinus.Range.End.Column)
+	}
+
+	// The "3" number token must span exactly col 16.
+	tok3 := findToken(1, 16)
+	if tok3 == nil {
+		t.Fatalf("FINDING C: number token '3' (line 1, col 16) not found")
+	}
+	if tok3.Type != model.SemanticTokenTypeNumber {
+		t.Errorf("line 1, col 16: Type = %q, want %q", tok3.Type, model.SemanticTokenTypeNumber)
+	}
+	if tok3.Range.End.Column != 16 {
+		t.Errorf("line 1, col 16 ('3'): End.Column = %d, want 16 — numeric range must cover only the literal", tok3.Range.End.Column)
+	}
+}
+
 // readTestData loads a fixture file from testdata/semantictokens/<name>.
 // It simplifies test setup for fixtures that don't fit neatly inline.
 func readTestData(t *testing.T, name string) []byte {
