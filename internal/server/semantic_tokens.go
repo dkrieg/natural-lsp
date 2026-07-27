@@ -276,3 +276,79 @@ func provideSemanticTokensFull(hctx *handlerContext, params protocol.SemanticTok
 	// Return the encoded result (never nil, but may have empty Data).
 	return result, nil
 }
+
+// provideSemanticTokensRange handles the textDocument/semanticTokens/range request (feature 29, T11).
+//
+// Behavior: Snapshots posEncoding under the idxResMu RLock and releases before I/O (F7).
+// Reads the document store-first (open buffer takes precedence), falling back to disk if not open.
+// Out-of-root/missing/unreadable → return an empty tokens result (FR-43).
+// Gets the full token list from the analyzer seam, filters to tokens intersecting the
+// requested range (whole-token rule: include any token that partially overlaps),
+// encodes the filtered list, and marshals via marshalResult (json/v2 path).
+func provideSemanticTokensRange(hctx *handlerContext, params protocol.SemanticTokensRangeParams) (*protocol.SemanticTokens, error) {
+	// F7: snapshot posEncoding under RLock and release before I/O.
+	hctx.idxResMu.RLock()
+	posEncoding := hctx.posEncoding
+	hctx.idxResMu.RUnlock()
+
+	// Store-first: try the open-document store first.
+	var content []byte
+	if hctx.store != nil {
+		if doc, ok := hctx.store.Get(params.TextDocument.URI); ok && doc != nil {
+			content = doc.Content
+		}
+	}
+
+	// Resolve the URI to an absolute path.
+	absPath, _, err := uriToRelPath(hctx.root, params.TextDocument.URI)
+	if err != nil {
+		// Out-of-root URI → return empty result (FR-43).
+		return &protocol.SemanticTokens{Data: []uint32{}}, nil
+	}
+
+	// Fallback to disk if not in the store.
+	if len(content) == 0 {
+		b, err := os.ReadFile(absPath)
+		if err != nil {
+			// Missing/unreadable → return empty result (FR-43).
+			return &protocol.SemanticTokens{Data: []uint32{}}, nil
+		}
+		content = b
+	}
+
+	// Call the analyzer seam to classify tokens.
+	allTokens := hctx.az.SemanticTokens(absPath, content)
+
+	// Convert the requested protocol range to model coordinates.
+	// Convert start and end positions separately.
+	startPos := fromProtocolPosition(params.Range.Start, string(content), posEncoding)
+	endPos := fromProtocolPosition(params.Range.End, string(content), posEncoding)
+	requestedRange := model.Range{Start: startPos, End: endPos}
+
+	// Filter tokens: include any token whose span intersects the requested range.
+	// Whole-token rule: a token intersects if it's not entirely before the range start
+	// and not entirely after the range end.
+	var filtered []model.SemanticToken
+	for _, tok := range allTokens {
+		// Token is entirely before the range if its end is before the range start.
+		if tok.Range.End.Line < requestedRange.Start.Line ||
+			(tok.Range.End.Line == requestedRange.Start.Line &&
+				tok.Range.End.Column < requestedRange.Start.Column) {
+			continue
+		}
+		// Token is entirely after the range if its start is after the range end.
+		if tok.Range.Start.Line > requestedRange.End.Line ||
+			(tok.Range.Start.Line == requestedRange.End.Line &&
+				tok.Range.Start.Column > requestedRange.End.Column) {
+			continue
+		}
+		// Token intersects the range.
+		filtered = append(filtered, tok)
+	}
+
+	// Encode the filtered tokens to the LSP 5-int stream format.
+	result := encodeSemanticTokens(filtered, string(content), posEncoding)
+
+	// Return the encoded result (never nil, but may have empty Data).
+	return result, nil
+}

@@ -1417,6 +1417,38 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 					}
 				}
 
+			case "textDocument/semanticTokens/range":
+				// Feature 29, T11: semantic tokens range handler.
+				// Gate on stateInitialized; decode SemanticTokensRangeParams; call provideSemanticTokensRange.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.SemanticTokensRangeParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid semantic tokens range params: %v", err))
+					return
+				}
+				// Call the provider function.
+				tokens, err := provideSemanticTokensRange(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: tokens is never nil, but Data may be empty.
+				// Important: return {"data":[]} for empty, never null (SemanticTokens.Data is always an array).
+				if tokens == nil {
+					respResult = []byte(`{"data":[]}`)
+				} else {
+					var marshalErr error
+					respResult, marshalErr = marshalResult(tokens)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal semantic tokens: %v", marshalErr))
+						return
+					}
+				}
+
 			default:
 				// Unknown method — send MethodNotFound per JSON-RPC 2.0 §5.1 and LSP §3.1.
 				// MethodNotFound is the spec-correct response and prevents silently swallowing
