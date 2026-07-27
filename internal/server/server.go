@@ -215,6 +215,7 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 	// Feature 16, T3: advertise completionProvider with space-trigger and no resolve handler.
 	// Feature 17, T1: advertise signatureHelpProvider with space trigger and retrigger characters.
 	// Feature 18, T1: advertise callHierarchyProvider.
+	// Feature 29, T4: advertise semanticTokensProvider with legend.
 	falseVal := false
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
@@ -236,6 +237,14 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 			},
 			CallHierarchyProvider:     protocol.Boolean(true),
 			DocumentHighlightProvider: protocol.Boolean(true),
+			SemanticTokensProvider: &protocol.SemanticTokensOptions{
+				Legend: protocol.SemanticTokensLegend{
+					TokenTypes:     semanticTokenTypesLegend,
+					TokenModifiers: semanticTokenModifiersLegend,
+				},
+				Full:  protocol.Boolean(true),
+				Range: protocol.Boolean(true),
+			},
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",
@@ -1372,6 +1381,38 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 					respResult, marshalErr = marshalResult(calls)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal outgoing calls: %v", marshalErr))
+						return
+					}
+				}
+
+			case "textDocument/semanticTokens/full":
+				// Feature 29, T6: semantic tokens full handler.
+				// Gate on stateInitialized; decode SemanticTokensParams; call provideSemanticTokensFull.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.SemanticTokensParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid semantic tokens params: %v", err))
+					return
+				}
+				// Call the provider function.
+				tokens, err := provideSemanticTokensFull(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: tokens is never nil, but Data may be empty.
+				// Important: return {"data":[]} for empty, never null (SemanticTokens.Data is always an array).
+				if tokens == nil {
+					respResult = []byte(`{"data":[]}`)
+				} else {
+					var marshalErr error
+					respResult, marshalErr = marshalResult(tokens)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal semantic tokens: %v", marshalErr))
 						return
 					}
 				}

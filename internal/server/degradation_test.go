@@ -31,6 +31,10 @@ func (pa *panicAnalyzer) ExtractVariableRefs(content string) []model.VariableRef
 	return []model.VariableRef{}
 }
 
+func (pa *panicAnalyzer) SemanticTokens(path string, content []byte) []model.SemanticToken {
+	return []model.SemanticToken{}
+}
+
 // TestProcessFiles tests per-file graceful degradation (FR-43):
 // - Skip files exceeding max_file_size with SkipTooLarge
 // - Skip files matching excluded paths with SkipExcluded

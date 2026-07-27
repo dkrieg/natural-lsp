@@ -1,0 +1,10 @@
+* Full-line comment
+DEFINE DATA LOCAL
+  1 #COUNT (N5)
+END-DEFINE.
+
+/* Rest-of-line comment
+CALLNAT 'HELLO'
+MOVE 42 TO #COUNT.
+MOVE 'WORLD' TO #STR.
+#X := #Y + 1.

@@ -55,6 +55,10 @@ func (a *gatedDiskAnalyzer) ExtractVariableRefs(content string) []model.Variable
 	return a.inner.ExtractVariableRefs(content)
 }
 
+func (a *gatedDiskAnalyzer) SemanticTokens(path string, content []byte) []model.SemanticToken {
+	return a.inner.SemanticTokens(path, content)
+}
+
 // TestReplayDirtyBufferAfterPublish (Feature 21, T13 / OQ-B.1) proves that an
 // edit which arrives via didOpen/didChange WHILE the background index build is
 // in flight (idx still nil) is reflected by an INDEX-BACKED provider after the
