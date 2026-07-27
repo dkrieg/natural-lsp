@@ -185,12 +185,14 @@ func computeTokenRange(contentBytes []byte, tok Token) (model.Position, model.Po
 			tokenEnd--
 		}
 
-	case TokenKeyword:
-		// Keywords are continuous alphanumeric sequences (no hyphens in mid-token for keywords).
-		// Scan while we see letters, digits, underscores, and hyphens (if followed by letter).
+	case TokenKeyword, TokenIdentifier:
+		// Keywords and identifiers are continuous alphanumeric sequences.
+		// Natural identifiers may start with #, &, @ and continue with letters, digits, _, -.
+		// Scan while we see letters, digits, underscores, hyphens, and sigils.
 		for tokenEnd < len(contentBytes) {
 			ch := contentBytes[tokenEnd]
-			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+				ch == '_' || ch == '#' || ch == '&' || ch == '@' {
 				tokenEnd++
 			} else if ch == '-' && tokenEnd+1 < len(contentBytes) {
 				// Check if hyphen is followed by an identifier body character.
@@ -210,7 +212,7 @@ func computeTokenRange(contentBytes []byte, tok Token) (model.Position, model.Po
 		}
 
 	default:
-		// For other token types, assume single byte (should not reach here in Phase A).
+		// For other token types (Punctuation, SQLOpaque, Error), assume single byte.
 		if tokenEnd < len(contentBytes) {
 			tokenEnd++
 		}
@@ -341,20 +343,413 @@ func semanticTokensPhaseBIdentifiers(path string, content string) []model.Semant
 	return tokens
 }
 
+// semanticTokensPhaseBDDMView classifies DDM/view names and fields as `type`/`property`.
+// It processes:
+// - VIEW definition names: a DataDefinition with ViewOfDDM set → the name is `type`
+// - DDM names from VIEW OF clause: extract from the view's ViewOfDDM field → `type`
+// - DDM/view operands in data-access statements: DataAccess entries → `type` + `modification` on writes
+// - Fields of views: child DataDefinitions of a view → `property`
+//
+// The precedence rule: a view name that was classified as `variable` by T7 is overridden to `type`.
+// Write targets (EdgeWrites) receive the `modification` modifier.
+func semanticTokensPhaseBDDMView(path string, content string) []model.SemanticToken {
+	contentBytes := []byte(content)
+
+	// Parse to get the AST and extract data.
+	lexer := NewLexer(content)
+	parser := NewParser(lexer)
+	ast, _ := parser.Parse()
+
+	if ast == nil {
+		return []model.SemanticToken{}
+	}
+
+	definitions := extractDefinitions(ast)
+	dataAccess := extractDataAccess(ast)
+
+	var tokens []model.SemanticToken
+
+	// 1. Classify VIEW definition names and their DDM targets.
+	// A VIEW is a DataDefinition with ViewOfDDM != "".
+	for _, def := range definitions {
+		if def.ViewOfDDM == "" {
+			continue // not a view
+		}
+
+		// Emit the view name as `type`.
+		if def.NameRange.Start.Line > 0 {
+			tokens = append(tokens, model.SemanticToken{
+				Range:     def.NameRange,
+				Type:      model.SemanticTokenTypeType,
+				Modifiers: 0,
+			})
+		}
+
+		// Emit the DDM name from "VIEW OF <ddm-name>".
+		// The DDM name appears on the same line as the view definition.
+		// We need to find the position of the DDM name in the source.
+		// The line contains: "1 SOME-VIEW VIEW OF SOME-DDM"
+		// We'll locate the occurrence of ViewOfDDM after the view name.
+		ddmNameRange := extractViewOfDDMRange(contentBytes, def.NameRange, def.ViewOfDDM)
+		if ddmNameRange.Start.Line > 0 {
+			tokens = append(tokens, model.SemanticToken{
+				Range:     ddmNameRange,
+				Type:      model.SemanticTokenTypeType,
+				Modifiers: 0,
+			})
+		}
+	}
+
+	// 2. Classify data-access view/DDM operands.
+	// Build a map of view/DDM names to their edges so we can check if a write access.
+	writeTargets := make(map[string]bool)
+	for _, da := range dataAccess {
+		if da.Kind == model.EdgeWrites && da.Name != "" {
+			writeTargets[da.Name] = true
+		}
+	}
+
+	// Emit tokens for each data-access entry.
+	for _, da := range dataAccess {
+		if da.Name == "" {
+			continue // skip empty-name record-form writes (no view name token)
+		}
+
+		// Determine if this is a write access (to add modification modifier).
+		isWrite := da.Kind == model.EdgeWrites
+		var modifiers model.SemanticTokenModifier
+		if isWrite {
+			modifiers = model.SemanticTokenModifierModification
+		}
+
+		tokens = append(tokens, model.SemanticToken{
+			Range:     da.NameRange,
+			Type:      model.SemanticTokenTypeType,
+			Modifiers: modifiers,
+		})
+	}
+
+	// 3. Classify DDM/view field declarations as `property`.
+	// Walk all definitions and emit child fields of views as `property`.
+	classifyViewFieldsRecursive(definitions, tokens, func(def *model.DataDefinition) {
+		tokens = append(tokens, model.SemanticToken{
+			Range:     def.NameRange,
+			Type:      model.SemanticTokenTypeProperty,
+			Modifiers: 0,
+		})
+	})
+
+	return tokens
+}
+
+// classifyViewFieldsRecursive emits `property` tokens for fields of views.
+// A view is identified by having ViewOfDDM set.
+func classifyViewFieldsRecursive(defs []model.DataDefinition, tokens []model.SemanticToken, emit func(*model.DataDefinition)) {
+	for i := range defs {
+		def := &defs[i]
+		if def.ViewOfDDM != "" && len(def.Children) > 0 {
+			// This is a view; emit its children as properties.
+			for j := range def.Children {
+				child := &def.Children[j]
+				if child.NameRange.Start.Line > 0 {
+					emit(child)
+				}
+			}
+		}
+		// Recurse into children to find nested views.
+		classifyViewFieldsRecursive(def.Children, tokens, emit)
+	}
+}
+
+// extractViewOfDDMRange locates the DDM name token in the "VIEW OF <ddm>" clause.
+// viewNameRange is the range of the view name (e.g., "SOME-VIEW" at line 3, col 5-13).
+// viewOfDDM is the extracted DDM name (e.g., "SOME-DDM").
+// We scan the source line to find where viewOfDDM appears after the view name.
+func extractViewOfDDMRange(contentBytes []byte, viewNameRange model.Range, viewOfDDM string) model.Range {
+	if viewOfDDM == "" {
+		return model.Range{}
+	}
+
+	// Find the line in the source using the same line-scanning logic as computeTokenRange.
+	line := viewNameRange.Start.Line
+	currentLine := 1
+	bytePos := 0
+
+	// Scan to the start of the target line.
+	for bytePos < len(contentBytes) && currentLine < line {
+		if contentBytes[bytePos] == '\r' {
+			currentLine++
+			bytePos++
+			// Skip \n of CRLF.
+			if bytePos < len(contentBytes) && contentBytes[bytePos] == '\n' {
+				bytePos++
+			}
+		} else if contentBytes[bytePos] == '\n' {
+			currentLine++
+			bytePos++
+		} else {
+			bytePos++
+		}
+	}
+
+	// Now bytePos is at the start of the target line.
+	lineStart := bytePos
+
+	// Find the end of the line.
+	lineEnd := lineStart
+	for lineEnd < len(contentBytes) {
+		if contentBytes[lineEnd] == '\n' || contentBytes[lineEnd] == '\r' {
+			break
+		}
+		lineEnd++
+	}
+
+	// Extract the line text.
+	lineText := string(contentBytes[lineStart:lineEnd])
+
+	// Find the DDM name in the line. It appears after "VIEW [OF]" and after the view name.
+	// We'll search for the DDM name substring after the view name's end column.
+	// Columns are 1-based; convert to 0-based index.
+	searchFromCol := viewNameRange.End.Column // 1-based column where we should start searching
+	searchFrom := searchFromCol - 1           // Convert to 0-based index
+
+	ddmPos := -1
+
+	// Search for the DDM name substring.
+	for i := searchFrom; i <= len(lineText)-len(viewOfDDM); i++ {
+		if i < 0 {
+			continue
+		}
+		// Check if we have a match at position i.
+		if i+len(viewOfDDM) <= len(lineText) {
+			candidate := lineText[i : i+len(viewOfDDM)]
+			if candidate == viewOfDDM {
+				// Verify it's a whole word (not part of a larger identifier).
+				// Check boundaries: the char before and after should not be alphanumeric/hyphen.
+				okBefore := i == 0 || !isIdentifierChar(rune(lineText[i-1]))
+				okAfter := i+len(viewOfDDM) >= len(lineText) || !isIdentifierChar(rune(lineText[i+len(viewOfDDM)]))
+				if okBefore && okAfter {
+					ddmPos = i
+					break
+				}
+			}
+		}
+	}
+
+	if ddmPos < 0 {
+		// Not found; return empty range.
+		return model.Range{}
+	}
+
+	// Compute the 1-based column for the start of the DDM name.
+	// lineText[i] (0-based) corresponds to column i+1 (1-based).
+	startCol := ddmPos + 1
+	endCol := ddmPos + len(viewOfDDM)
+
+	return model.Range{
+		Start: model.Position{Line: line, Column: startCol},
+		End:   model.Position{Line: line, Column: endCol},
+	}
+}
+
+// isIdentifierChar checks if a rune is a valid identifier character (letter, digit, hyphen, underscore, sigil).
+func isIdentifierChar(ch rune) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ||
+		ch == '#' || ch == '&' || ch == '@' || ch == '+'
+}
+
+// semanticTokensPhaseBSystemVarsAndWrites classifies system variables (*DATX, *TIME, etc.)
+// and variable write targets with the `modification` modifier.
+//
+// (a) System variables: A `*` operator token immediately followed by an identifier token
+// on the same line (no intervening space) indicates a system variable. The classifier
+// emits a SINGLE token spanning the full `*IDENTIFIER` span with Type `variable` and
+// Modifiers `readonly | defaultLibrary`. The lexer splits `*DATX` into two tokens
+// (`*` operator at col N, `DATX` identifier at col N+1), but the semantic token must
+// span both (col N to col N+4 for 5-byte `*DATX`).
+//
+// Distinction: A `*` at line start is a full-line comment (TokenComment), not a system var.
+// The adjacency check (next token is an identifier) naturally filters this out.
+//
+// (b) Variable write targets: Detect from statement context in the token stream:
+// - Assignment `#X := …`: the identifier immediately before `:=` → write target
+// - `MOVE … TO #X`: the identifier immediately after `TO` → write target
+// - `COMPUTE #X = …`: the identifier after `COMPUTE` and before `=` → write target
+// Add the `modification` modifier to variable/parameter tokens that are write targets.
+// Read operands (RHS of `:=`, MOVE source, COMPUTE RHS) get NO modification.
+//
+// OQ-E: DataDefinition has NO const flag, so `readonly` is applied only to system vars.
+func semanticTokensPhaseBSystemVarsAndWrites(path string, content string) []model.SemanticToken {
+	contentBytes := []byte(content)
+
+	// Parse to get the AST and extract definitions.
+	lexer := NewLexer(content)
+	parser := NewParser(lexer)
+	ast, _ := parser.Parse()
+
+	if ast == nil {
+		return []model.SemanticToken{}
+	}
+
+	definitions := extractDefinitions(ast)
+
+	// Build a lookup: map variable name → definition info (for write-target detection).
+	varLookup := make(map[string]*model.DataDefinition)
+	for i := range definitions {
+		name := definitions[i].Name
+		varLookup[name] = &definitions[i]
+	}
+
+	_ = varLookup // Use the variable
+
+	var tokens []model.SemanticToken
+
+	// Walk the token stream to detect system variables and write targets.
+	// First pass: collect all tokens so we can do lookahead/lookbehind.
+	lexer = NewLexer(content)
+	var allLexerTokens []Token
+
+	for {
+		tok := lexer.NextToken()
+		if tok.Type == TokenEOF {
+			break
+		}
+		allLexerTokens = append(allLexerTokens, tok)
+	}
+
+	// Detect system variables: a TokenOperator "*" immediately followed by a TokenIdentifier
+	// on the same line.
+	systemVarSpans := make(map[struct{ line, startCol, endCol int }]bool)
+
+	for i := 0; i < len(allLexerTokens)-1; i++ {
+		curTok := allLexerTokens[i]
+		nextTok := allLexerTokens[i+1]
+
+		// Check if current is `*` operator and next is identifier on the same line, adjacent.
+		if curTok.Type == TokenOperator && curTok.Literal == "*" &&
+			nextTok.Type == TokenIdentifier &&
+			curTok.Line == nextTok.Line &&
+			nextTok.Column == curTok.Column+1 {
+			// System variable detected: emit a token spanning both tokens.
+			// curTok is the `*` at (Line, Column).
+			// nextTok is the identifier at (Line, Column+1).
+			// The identifier's end is Column + len(Literal) - 1.
+
+			startPos := model.Position{Line: curTok.Line, Column: curTok.Column}
+			endPos := model.Position{Line: nextTok.Line, Column: nextTok.Column + len(nextTok.Literal) - 1}
+
+			tokens = append(tokens, model.SemanticToken{
+				Range:     model.Range{Start: startPos, End: endPos},
+				Type:      model.SemanticTokenTypeVariable,
+				Modifiers: model.SemanticTokenModifierReadonly | model.SemanticTokenModifierDefaultLibrary,
+			})
+
+			// Mark this span so we can suppress the operator token later.
+			systemVarSpans[struct{ line, startCol, endCol int }{curTok.Line, curTok.Column, endPos.Column}] = true
+		}
+	}
+
+	// Detect variable write targets from statement context.
+	// Now scan for write-target patterns.
+	for i := 0; i < len(allLexerTokens); i++ {
+		tok := allLexerTokens[i]
+
+		// Skip non-identifiers (write targets must be identifiers or data vars).
+		if tok.Type != TokenIdentifier {
+			continue
+		}
+
+		// Skip system variables (already classified above).
+		if i > 0 && allLexerTokens[i-1].Type == TokenOperator && allLexerTokens[i-1].Literal == "*" &&
+			tok.Line == allLexerTokens[i-1].Line && tok.Column == allLexerTokens[i-1].Column+1 {
+			continue // Already handled as system var.
+		}
+
+		// Skip if not a declared variable.
+		_, exists := varLookup[tok.Literal]
+		if !exists {
+			continue
+		}
+
+		// Pattern 1: Assignment `#X := …`
+		// Check if the next non-whitespace token is `:=`.
+		if i+1 < len(allLexerTokens) && allLexerTokens[i+1].Type == TokenOperator && allLexerTokens[i+1].Literal == ":=" {
+			// This identifier is the LHS of an assignment → write target.
+			startRange, endRange := computeTokenRange(contentBytes, tok)
+			tokens = append(tokens, model.SemanticToken{
+				Range:     model.Range{Start: startRange, End: endRange},
+				Type:      model.SemanticTokenTypeVariable,
+				Modifiers: model.SemanticTokenModifierModification,
+			})
+			continue
+		}
+
+		// Pattern 2: `MOVE … TO #X`
+		// Check if the previous non-whitespace token is `TO` keyword.
+		if i > 0 && allLexerTokens[i-1].Type == TokenKeyword && allLexerTokens[i-1].Literal == "TO" {
+			// This identifier is after TO → write target.
+			startRange, endRange := computeTokenRange(contentBytes, tok)
+			tokens = append(tokens, model.SemanticToken{
+				Range:     model.Range{Start: startRange, End: endRange},
+				Type:      model.SemanticTokenTypeVariable,
+				Modifiers: model.SemanticTokenModifierModification,
+			})
+			continue
+		}
+
+		// Pattern 3: `COMPUTE #X = …`
+		// Check if the next non-whitespace token is `=` operator (not `:=`).
+		if i+1 < len(allLexerTokens) && allLexerTokens[i+1].Type == TokenOperator &&
+			allLexerTokens[i+1].Literal == "=" && len(allLexerTokens[i+1].Literal) == 1 {
+			// Need to verify we're in a COMPUTE statement.
+			// Scan backward to see if there's a COMPUTE keyword on the same line.
+			foundCompute := false
+			for j := i - 1; j >= 0 && allLexerTokens[j].Line == tok.Line; j-- {
+				if allLexerTokens[j].Type == TokenKeyword && allLexerTokens[j].Literal == "COMPUTE" {
+					foundCompute = true
+					break
+				}
+			}
+			if foundCompute {
+				// This identifier is the LHS of a COMPUTE statement → write target.
+				startRange, endRange := computeTokenRange(contentBytes, tok)
+				tokens = append(tokens, model.SemanticToken{
+					Range:     model.Range{Start: startRange, End: endRange},
+					Type:      model.SemanticTokenTypeVariable,
+					Modifiers: model.SemanticTokenModifierModification,
+				})
+				continue
+			}
+		}
+	}
+
+	return tokens
+}
+
 // semanticTokensPhaseB merges Phase A lexical tokens with Phase B identifier classification.
 // It returns a single document-ordered slice with no duplicates.
 // Phase B includes:
 // - T7: variable/parameter reclassification from identifiers
 // - T8: call targets (CALLNAT/FETCH/RUN/PERFORM -> function)
 // - T9+: other semantic classifications (DDM, system vars, etc.)
+//
+// Precedence (when multiple classifications exist for the same span):
+// function (T8) > type (T9 DDM/view) > property (T9 field) > parameter/variable (T7) > Phase-A lexical
 func semanticTokensPhaseB(path string, content string) []model.SemanticToken {
 	phaseATokens := semanticTokensPhaseA(path, content)
 	phaseBTokens := semanticTokensPhaseBIdentifiers(path, content)
 	phaseBCallTokens := semanticTokensPhaseBCalls(path, content)
+	phaseBDDMTokens := semanticTokensPhaseBDDMView(path, content)
+	phaseBSysVarTokens := semanticTokensPhaseBSystemVarsAndWrites(path, content)
 
-	// Merge all slices. Phase B tokens (identifiers, calls) override Phase A tokens at the same span.
+	_ = phaseBSysVarTokens // Ensure it's used; will be merged below
+
+	// Merge all slices. Precedence: system-var > calls > DDM > identifiers > Phase A.
 	allTokens := append(phaseATokens, phaseBTokens...)
 	allTokens = append(allTokens, phaseBCallTokens...)
+	allTokens = append(allTokens, phaseBDDMTokens...)
+	allTokens = append(allTokens, phaseBSysVarTokens...)
 
 	// Sort by start position, then by type/modifiers for stability.
 	sort.SliceStable(allTokens, func(i, j int) bool {
@@ -364,22 +759,87 @@ func semanticTokensPhaseB(path string, content string) []model.SemanticToken {
 		return allTokens[i].Range.Start.Column < allTokens[j].Range.Start.Column
 	})
 
-	// Deduplicate: if two tokens have the same start position, keep the LAST (Phase B wins over Phase A).
-	seen := make(map[struct{ line, col int }]bool)
-	var dedupedTokens []model.SemanticToken
-	// Build a map of the last token at each position
-	tokenMap := make(map[struct{ line, col int }]model.SemanticToken)
-	for _, tok := range allTokens {
-		key := struct{ line, col int }{tok.Range.Start.Line, tok.Range.Start.Column}
-		tokenMap[key] = tok
+	// Deduplicate: if two tokens have the same start position, apply precedence rules.
+	// Precedence: function > type > property > parameter > variable > Phase-A lexical
+	// Special case: system-var tokens (variable+readonly+defaultLibrary) must suppress
+	// overlapping Phase-A operator tokens (the `*` in `*DATX`).
+	precedence := map[model.SemanticTokenType]int{
+		model.SemanticTokenTypeFunction:  5,
+		model.SemanticTokenTypeType:      4,
+		model.SemanticTokenTypeProperty:  3,
+		model.SemanticTokenTypeParameter: 2,
+		model.SemanticTokenTypeVariable:  2,
+		model.SemanticTokenTypeKeyword:   1,
+		model.SemanticTokenTypeComment:   1,
+		model.SemanticTokenTypeString:    1,
+		model.SemanticTokenTypeNumber:    1,
+		model.SemanticTokenTypeOperator:  1,
 	}
-	// Reconstruct in sorted order
-	seen = make(map[struct{ line, col int }]bool)
+
+	// Build a map of the highest-precedence token at each position.
+	// When multiple tokens share the same start position, keep the highest-precedence one
+	// and merge modifiers if they are the same type.
+	tokenMap := make(map[struct{ line, col int }]model.SemanticToken)
+
 	for _, tok := range allTokens {
 		key := struct{ line, col int }{tok.Range.Start.Line, tok.Range.Start.Column}
-		if !seen[key] {
-			dedupedTokens = append(dedupedTokens, tokenMap[key])
-			seen[key] = true
+
+		existing, hasExisting := tokenMap[key]
+		if !hasExisting {
+			tokenMap[key] = tok
+		} else {
+			// Same start position: choose by precedence or merge modifiers if same type.
+			if precedence[tok.Type] > precedence[existing.Type] {
+				// tok has higher precedence; replace.
+				tokenMap[key] = tok
+			} else if precedence[tok.Type] == precedence[existing.Type] && tok.Type == existing.Type {
+				// Same precedence and same type: merge the modifiers.
+				merged := existing
+				merged.Modifiers |= tok.Modifiers
+				tokenMap[key] = merged
+			}
+			// Otherwise, keep the existing token (stable).
+		}
+	}
+
+	// Reconstruct in sorted order from the tokenMap (which has already deduplicated by precedence).
+	// We need to iterate in sorted order of (line, col).
+	var dedupedTokens []model.SemanticToken
+	for _, tok := range allTokens {
+		key := struct{ line, col int }{tok.Range.Start.Line, tok.Range.Start.Column}
+		selectedTok, exists := tokenMap[key]
+		if exists {
+			// Check if we've already added this key to the result.
+			alreadyAdded := false
+			for _, added := range dedupedTokens {
+				if added.Range.Start.Line == selectedTok.Range.Start.Line &&
+					added.Range.Start.Column == selectedTok.Range.Start.Column {
+					alreadyAdded = true
+					break
+				}
+			}
+			if alreadyAdded {
+				continue // Skip; already added.
+			}
+
+			// Filter out operator tokens that are immediately before system-var tokens.
+			if selectedTok.Type == model.SemanticTokenTypeOperator {
+				isSuppressed := false
+				for _, other := range allTokens {
+					if other.Range.Start.Line == selectedTok.Range.Start.Line &&
+						other.Range.Start.Column == selectedTok.Range.End.Column+1 &&
+						other.Type == model.SemanticTokenTypeVariable &&
+						(other.Modifiers&model.SemanticTokenModifierReadonly) != 0 {
+						isSuppressed = true
+						break
+					}
+				}
+				if isSuppressed {
+					continue // Skip this operator token.
+				}
+			}
+
+			dedupedTokens = append(dedupedTokens, selectedTok)
 		}
 	}
 
