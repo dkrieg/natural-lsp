@@ -410,23 +410,24 @@ MOVE 'WORLD' TO #STR.
 			t.Fatalf("SemanticTokens.Data length %d is not a multiple of 5", len(result.Data))
 		}
 
-		// Assert: the range request returned FEWER tokens than the full-document request
-		// (since we filtered to a subrange). A full-document request on this fixture
-		// should have more tokens than just lines 2–3.
+		// Assert (positive filter): the requested subrange is non-empty AND every
+		// returned token lies within the requested line range [2,3] (0-based). Lines
+		// 2–3 hold "  1 #COUNT (N5)" and "END-DEFINE." — the fixture has many more
+		// tokens on lines 0–1 and 6–9, so a filter that regressed to returning the
+		// whole document would surface a token outside [2,3] and fail here.
 		//
-		// For this test, we assert that the first token (if present) has a line number >= 2
-		// (the requested range start line), confirming the filter worked.
-		if len(result.Data) > 0 {
-			// First token is at Data[0..4]; Data[0] is deltaLine (absolute for first).
-			firstDeltaLine := result.Data[0]
-			if firstDeltaLine < 2 {
-				t.Logf("WARNING: First token's line %d is below requested range start (line 2); filter may not be working", firstDeltaLine)
-			} else {
-				t.Logf("OK: First token line %d is within requested range [2..3]", firstDeltaLine)
+		// Walk the relative 5-int stream to reconstruct each token's absolute line
+		// (Data[i] is deltaLine, absolute for the first token, relative thereafter).
+		if len(result.Data) == 0 {
+			t.Fatal("range request returned no tokens; expected tokens on lines 2–3 (the '1 #COUNT (N5)' / 'END-DEFINE' lines)")
+		}
+		curLine := uint32(0)
+		for i := 0; i+5 <= len(result.Data); i += 5 {
+			curLine += result.Data[i] // deltaLine
+			if curLine < 2 || curLine > 3 {
+				t.Errorf("token %d is on line %d, outside the requested range [2,3]; the range filter leaked out-of-range tokens", i/5, curLine)
 			}
 		}
-
-		t.Logf("PASS: SemanticTokens range result: %d entries (%d uint32s)", len(result.Data)/5, len(result.Data))
 		return
 	}
 }
@@ -676,4 +677,149 @@ func isAllUpperOrHyphens(b []byte) bool {
 		}
 	}
 	return len(b) > 0
+}
+
+// TestEncodeSemanticTokens is the value-level unit test for the pure encoder
+// (feature 29, T5 — restored during review remediation). It asserts the EXACT
+// relative 5-int stream [deltaLine, deltaStartChar, length, tokenTypeIndex,
+// tokenModifiersBitset] for representative inputs, including both negotiated
+// encodings on a multibyte line (Story-1 AC2, byte-exact) and the multi-line
+// split path. All expected values are hand-computed in the case comments.
+//
+// Model ranges are 1-based with byte columns and inclusive end; the encoder
+// converts to 0-based, end-exclusive, code-unit positions via position.go.
+func TestEncodeSemanticTokens(t *testing.T) {
+	// Legend indices used below: keyword=0, comment=1, variable=5.
+	// Modifier bits: declaration=1, readonly=4.
+	cases := []struct {
+		name     string
+		content  string
+		tokens   []model.SemanticToken
+		encoding protocol.PositionEncodingKind
+		want     []uint32
+	}{
+		{
+			// Single keyword "MOVE" on line 1, cols 1–4.
+			// startChar=0, length=4, type=0, mods=0. First token → deltas absolute.
+			name:    "single token line 1",
+			content: "MOVE",
+			tokens: []model.SemanticToken{
+				{Range: rng(1, 1, 1, 4), Type: model.SemanticTokenTypeKeyword},
+			},
+			encoding: protocol.PositionEncodingKindUTF8,
+			want:     []uint32{0, 0, 4, 0, 0},
+		},
+		{
+			// "AB CD" on line 1 (AB cols 1–2, CD cols 4–5), "GH" on line 2 cols 3–4.
+			// t1: [0,0,2,0,0]; t2 same line: deltaStartChar=3-0=3 → [0,3,2,0,0];
+			// t3 new line: deltaLine=1, deltaStartChar is ABSOLUTE=2 (NOT 2-3) → [1,2,2,0,0].
+			// The nonzero prev startChar (3) makes this distinguish absolute-vs-relative reset.
+			name:    "delta reset across lines",
+			content: "AB CD\n  GH",
+			tokens: []model.SemanticToken{
+				{Range: rng(1, 1, 1, 2), Type: model.SemanticTokenTypeKeyword},
+				{Range: rng(1, 4, 1, 5), Type: model.SemanticTokenTypeKeyword},
+				{Range: rng(2, 3, 2, 4), Type: model.SemanticTokenTypeKeyword},
+			},
+			encoding: protocol.PositionEncodingKindUTF8,
+			want:     []uint32{0, 0, 2, 0, 0, 0, 3, 2, 0, 0, 1, 2, 2, 0, 0},
+		},
+		{
+			// "é MOVE": é = bytes 1–2 (0xC3 0xA9), space byte 3, MOVE bytes 4–7.
+			// Token MOVE: Start.Column=4 (byteOffset 3), End.Column=7.
+			// UTF-8: startChar = 3 bytes; length = 7-3 = 4 bytes. → [0,3,4,0,0].
+			name:    "multibyte prefix UTF-8",
+			content: "é MOVE",
+			tokens: []model.SemanticToken{
+				{Range: rng(1, 4, 1, 7), Type: model.SemanticTokenTypeKeyword},
+			},
+			encoding: protocol.PositionEncodingKindUTF8,
+			want:     []uint32{0, 3, 4, 0, 0},
+		},
+		{
+			// Same content/token as above under UTF-16.
+			// UTF-16: prefix "é " = é(1 unit) + space(1) = 2 units → startChar=2;
+			// span "MOVE" = 4 units → length=4. → [0,2,4,0,0].
+			// Proves the startChar differs by encoding (3 vs 2) — byte-exact.
+			name:    "multibyte prefix UTF-16",
+			content: "é MOVE",
+			tokens: []model.SemanticToken{
+				{Range: rng(1, 4, 1, 7), Type: model.SemanticTokenTypeKeyword},
+			},
+			encoding: protocol.PositionEncodingKindUTF16,
+			want:     []uint32{0, 2, 4, 0, 0},
+		},
+		{
+			// A single comment token whose Range genuinely spans two lines:
+			// "/*" on line 1 (cols 1–2) through "xy" on line 2 (End.Column=2).
+			// The encoder SPLITS it: line1 [0,0,2,1,0] then line2 [1,0,2,1,0].
+			name:    "multi-line token split",
+			content: "/*\nxy",
+			tokens: []model.SemanticToken{
+				{Range: rng(1, 1, 2, 2), Type: model.SemanticTokenTypeComment},
+			},
+			encoding: protocol.PositionEncodingKindUTF8,
+			want:     []uint32{0, 0, 2, 1, 0, 1, 0, 2, 1, 0},
+		},
+		{
+			// A variable "#X" with declaration|readonly = 1|4 = 5.
+			name:    "token with modifiers",
+			content: "#X",
+			tokens: []model.SemanticToken{
+				{
+					Range:     rng(1, 1, 1, 2),
+					Type:      model.SemanticTokenTypeVariable,
+					Modifiers: model.SemanticTokenModifierDeclaration | model.SemanticTokenModifierReadonly,
+				},
+			},
+			encoding: protocol.PositionEncodingKindUTF8,
+			want:     []uint32{0, 0, 2, 5, 5},
+		},
+		{
+			// Empty input → non-nil, empty Data (never nil-panic).
+			name:     "empty input",
+			content:  "",
+			tokens:   nil,
+			encoding: protocol.PositionEncodingKindUTF8,
+			want:     []uint32{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := encodeSemanticTokens(tc.tokens, tc.content, tc.encoding)
+			if got == nil {
+				t.Fatal("encodeSemanticTokens returned nil; want non-nil *SemanticTokens")
+			}
+			if got.Data == nil {
+				t.Fatal("encodeSemanticTokens returned nil Data; want non-nil (possibly empty) slice")
+			}
+			if len(got.Data)%5 != 0 {
+				t.Fatalf("Data length %d is not a multiple of 5", len(got.Data))
+			}
+			if !equalUint32(got.Data, tc.want) {
+				t.Errorf("Data mismatch\n got: %v\nwant: %v", got.Data, tc.want)
+			}
+		})
+	}
+}
+
+// rng builds a 1-based, inclusive-end model.Range for encoder tests.
+func rng(startLine, startCol, endLine, endCol int) model.Range {
+	return model.Range{
+		Start: model.Position{Line: startLine, Column: startCol},
+		End:   model.Position{Line: endLine, Column: endCol},
+	}
+}
+
+func equalUint32(a, b []uint32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

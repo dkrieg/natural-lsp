@@ -417,24 +417,18 @@ func TestSemanticTokens_PhaseB_DDMView(t *testing.T) {
 			tokenStoreView.Modifiers)
 	}
 
-	// Test 5: Line 4, Col 7-13: "FIELD-A" in the view's field definition
+	// Test 5: Line 4, Col 7-13: "FIELD-A" in the view's field definition.
 	// This is a data field declaration within the view, at level 2.
-	// Expected: Type = property (DDM/view field)
-	// Note: if the classifier doesn't yet support view-field classification in same-file
-	// DEFINE DATA (without cross-file DDM resolution), this may not emit. In that case,
-	// the test documents the limitation and asserts only what IS available.
+	// Expected: Type = property (DDM/view field). Hard-asserted: a same-file view
+	// field IS classified from the DEFINE DATA structure (no cross-file DDM resolution
+	// needed for the declaration), so a missing token is a regression, not a limitation.
 	tokenFieldDecl := findToken(4, 7)
-	if tokenFieldDecl != nil {
-		// If it was classified, it should be a property (field).
-		if tokenFieldDecl.Type != model.SemanticTokenTypeProperty {
-			t.Errorf("line 4, col 7 (view field FIELD-A declaration): Type = %q, want %q",
-				tokenFieldDecl.Type, model.SemanticTokenTypeProperty)
-		}
-	} else {
-		// Document: view-field classification in local DEFINE DATA may require cross-file DDM
-		// resolution; same-file fixture may not exercise this. No test failure; optional.
-		t.Logf("INFO: line 4, col 7 (view field FIELD-A) not classified in same-file fixture " +
-			"(may require cross-file DDM resolution; limitation noted)")
+	if tokenFieldDecl == nil {
+		t.Fatalf("line 4, col 7 (view field FIELD-A declaration): no token emitted; expected a property token")
+	}
+	if tokenFieldDecl.Type != model.SemanticTokenTypeProperty {
+		t.Errorf("line 4, col 7 (view field FIELD-A declaration): Type = %q, want %q",
+			tokenFieldDecl.Type, model.SemanticTokenTypeProperty)
 	}
 }
 
@@ -754,5 +748,45 @@ func TestSemanticTokens_PhaseB_SysVarAndWrites(t *testing.T) {
 	// The comment should NOT be a variable (and thus NOT have defaultLibrary/readonly).
 	if tokenComment.Type == model.SemanticTokenTypeVariable {
 		t.Errorf("line 9, col 1 (full-line comment): misclassified as variable (should be comment)")
+	}
+}
+
+// TestSemanticTokens_PhaseA_UnparseableFallback pins Story-1 AC3 (FR-43): a file that
+// fails to parse still returns lexical tokens for the parts that lexed. Phase A is
+// lexer-only and never requires a valid parse, so keyword/number/string tokens survive
+// even when the surrounding input does not form a valid Natural program.
+func TestSemanticTokens_PhaseA_UnparseableFallback(t *testing.T) {
+	// Deliberately malformed input: stray punctuation and a dangling opaque-span marker
+	// that do not form valid statements, but line 2 still contains a lexable keyword
+	// (MOVE), number (42), and string ('HELLO').
+	content := []byte("%%% @@@ !!!\nMOVE 42 'HELLO' ###junk\n<< dangling")
+
+	az := New(nil)
+	got := az.SemanticTokens("broken.NSP", content)
+
+	if got == nil {
+		t.Fatal("SemanticTokens returned nil on unparseable input; want non-nil slice (FR-43)")
+	}
+
+	var hasKeyword, hasNumber, hasString bool
+	for _, tok := range got {
+		switch tok.Type {
+		case model.SemanticTokenTypeKeyword:
+			hasKeyword = true
+		case model.SemanticTokenTypeNumber:
+			hasNumber = true
+		case model.SemanticTokenTypeString:
+			hasString = true
+		}
+	}
+
+	if !hasKeyword {
+		t.Errorf("unparseable input: no keyword token emitted; expected MOVE to still lex (lexical fallback)")
+	}
+	if !hasNumber {
+		t.Errorf("unparseable input: no number token emitted; expected 42 to still lex (lexical fallback)")
+	}
+	if !hasString {
+		t.Errorf("unparseable input: no string token emitted; expected 'HELLO' to still lex (lexical fallback)")
 	}
 }
