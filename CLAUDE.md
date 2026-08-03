@@ -50,11 +50,12 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
 **(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
 (lsp-tracing-and-logging), 27 (variable & reference navigation), 28 (rich symbol detail & `VIEW OF`
-binding), 29 (semantic tokens), and 30 (pull diagnostics) are shipped** (see their notes below). The
-remaining follow-ups are **planned** (features **31–34**): a set of smaller **P2 LSP-capability** plans,
-**31 (declaration & type-definition navigation)**, **32 (document links)**, **33 (execute-command /
+binding), 29 (semantic tokens), 30 (pull diagnostics), and 31 (declaration & type-definition
+navigation) are shipped** (see their notes below). The
+remaining follow-ups are **planned** (features **32–34**): a set of smaller **P2 LSP-capability** plans,
+**32 (document links)**, **33 (execute-command /
 server commands)**, and **34 (moniker — documented non-goal, deferred)** (see their
-`docs/plans/features/` dirs; summarized after the feature-30 note).
+`docs/plans/features/` dirs; summarized after the feature-31 note).
 
 Feature 26 (lsp-tracing-and-logging) makes the server a well-behaved LSP logging/tracing citizen — its
 only observability channel was previously stderr `slog` (plus feature 20's one-shot `window/showMessage`),
@@ -206,17 +207,39 @@ the locked `TestInitialize` allow-list gains one entry. `FuzzProvideDocumentDiag
 `FuzzProvideWorkspaceDiagnostic` guard the never-panic / non-nil-report invariants (FR-43). FR-57,
 NFR-11. See `docs/plans/features/30-pull-diagnostics/`.
 
-**Features 31–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
+Feature 31 (declaration & type-definition navigation) wires the two sibling navigation methods
+**`textDocument/declaration`** and **`textDocument/typeDefinition`** as thin providers over features
+10/27/28 resolution — **server-layer only: no `internal/model` change, no cache-format bump (stays
+`0.9.0`)**. **Declaration** is a **full delegation** to `provideDefinition` (approved OQ-1): Natural has no
+header/impl split, so a symbol's declaration is its definition — `internal/server/declaration.go` maps
+`protocol.DeclarationParams` → `DefinitionParams` (both embed `TextDocumentPositionParams`) and returns the
+identical `[]protocol.Location` for call/transfer/subroutine targets, a variable use → its `DEFINE DATA`
+line (feature 27), and view-field/DDM references — inheriting every FR-17 modeled gap
+(dynamic/`*`-system/unresolved → `null`) for free. **Type definition**
+(`internal/server/type_definition.go`) maps the cursor via feature 28's `findDeclarationTarget`; when the
+target is a field inside a `VIEW OF` (`OwningView.ViewOfDDM != ""`) it resolves the DDM field via
+`workspace.ResolveDDMFieldLocation` and returns a Location at the `.NSD` field's `NameRange` through the
+steplib chain (a **restated** view field with an explicit scalar format still type-defines to the DDM
+field — approved OQ-3). Every no-DDM-type-object case — a scalar-only variable (non-view early-return), a
+view field absent from the DDM, a DDM outside the chain, a `TYPE: SQL` DDM, or no target at the cursor —
+returns **`nil` (JSON `null`)**, never an error, never on the diagnostic channel (FR-17/FR-43). Both
+providers mirror `provideDefinition`'s F7 `idxResMu` RLock snapshot + store-first buffer read +
+encoding-aware positions (ADR-008), marshal via the feature-19 `marshalResult` (`gojson`) path with the
+definition-family **`null`** empty sentinel (never `[]`), and are dispatched exactly like
+`textDocument/definition`. **Adds two new server capabilities** (`declarationProvider`,
+`typeDefinitionProvider`, both `Boolean(true)`) — so the locked `TestInitialize` allow-list gains exactly
+two entries. `FuzzProvideDeclaration` + `FuzzProvideTypeDefinition` guard the never-panic invariant
+(FR-43). FR-58 (refines FR-24). See `docs/plans/features/31-declaration-and-type-definition/`.
+
+**Features 32–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
 server-layer only, **no `internal/model`/cache change** (all reuse existing extraction/resolution), and each
-adds one new capability (so `TestInitialize` grows by one) except 34: **31 (declaration & type-definition)** are thin providers over features
-10/27/28 resolution (`declaration` mirrors `definition` + variable-use→`DEFINE DATA`; `typeDefinition`
-jumps a field to its DDM) — sequence after 27/28; **32 (document links)** renders resolved CALLNAT/INCLUDE/
+adds one new capability (so `TestInitialize` grows by one) except 34: **32 (document links)** renders resolved CALLNAT/INCLUDE/
 FETCH/RUN targets as clickable links (largely redundant with go-to-definition — value is discoverability,
 build on demand); **33 (execute-command)** is a command-dispatch substrate shipped with a first concrete
 command (reindex workspace, reusing feature 21's background build) — the enabler for future code actions;
 **34 (moniker)** is a **documented non-goal / deferral record** — no use case in a filesystem-scoped
 single-workspace product, revisit only alongside an LSIF/SCIP export. See their
-`docs/plans/features/31..34-*` dirs. (Capabilities still absent and NOT planned: incremental
+`docs/plans/features/32..34-*` dirs. (Capabilities still absent and NOT planned: incremental
 `textDocumentSync` — a deliberate Full-sync choice; `implementation`, formatting, `inlineValue`,
 `typeHierarchy`, `linkedEditingRange`, color — niche/N-A for Natural.)
 
