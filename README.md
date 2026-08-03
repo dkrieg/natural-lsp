@@ -1,8 +1,8 @@
 # natural-lsp
 
 A Language Server Protocol implementation for [Software AG Natural](https://www.softwareag.com/en_corporate/platform/adabas-natural.html) —
-a Go-based LSP server with a hand-written parser delivering navigation, completion, references, hover, and call hierarchy
-for Natural codebases on any LSP-capable editor.
+a Go-based LSP server with a hand-written parser delivering navigation, completion, references, hover, call hierarchy,
+and semantic highlighting for Natural codebases on any LSP-capable editor.
 
 Natural is a 4GL language widely deployed on IBM z/OS mainframes, typically alongside COBOL, Adabas, and IMS.
 [natls](https://github.com/MarkusAmshove/natls) (Java, MIT) is the existing parser-based LSP server for Natural.
@@ -61,8 +61,13 @@ exported to files before it can be indexed.
 > a typed record layout (field type/level/array/REDEFINE detail), and `VIEW OF` declarations are parsed,
 > shown with their DDM, and their fields decode to the DDM's logical fields — a bare view field shows the
 > inherited type and go-to-definition reaches the `.NSD` field. Extends `documentSymbol`/`definition`/`hover`
-> with no new capability. There are no published binaries yet; build from source or via the
-> VS Code extension.
+> with no new capability.
+> **Semantic tokens are now implemented** (feature 29): a `semanticTokensProvider` (`full` + `range`)
+> drives AST-aware highlighting — keyword/comment/string/number/operator lexically, plus
+> variable/parameter/call-target/DDM-view-and-field/system-variable classification with
+> declaration/definition/readonly/modification/defaultLibrary modifiers — computed on demand behind the
+> Analyzer seam with no cache-format change (`full/delta` deferred). There are no published binaries yet;
+> build from source or via the VS Code extension.
 >
 > **A full independent assessment (2026-07-14) — [`docs/assessment-2026-07-14.md`](docs/assessment-2026-07-14.md) —
 > confirmed the core is solid but identified five known issues, re-planned as features 19–23.**
@@ -146,6 +151,11 @@ The capabilities below define the **target** feature set for the first stable re
   the `DEFINE DATA` declaration, same-file and cross-file via `USING` data areas / SQL DDM names through the
   steplib chain) — **shipped** ([feature 27](docs/plans/features/27-variable-navigation/plan.md))
 - `textDocument/documentHighlight` (highlight a symbol's occurrences in the file) — **shipped** (feature 27)
+- `textDocument/semanticTokens` (`full` + `range`; server-driven, AST-aware highlighting — keywords,
+  comments, strings, numbers, operators lexically, plus variables/parameters/call targets/DDM views &
+  fields/system variables semantically, with declaration/definition/readonly/modification/defaultLibrary
+  modifiers) — **shipped** ([feature 29](docs/plans/features/29-semantic-tokens/plan.md);
+  `full/delta` deferred)
 
 ---
 
