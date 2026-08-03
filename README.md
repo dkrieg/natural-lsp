@@ -66,7 +66,12 @@ exported to files before it can be indexed.
 > drives AST-aware highlighting — keyword/comment/string/number/operator lexically, plus
 > variable/parameter/call-target/DDM-view-and-field/system-variable classification with
 > declaration/definition/readonly/modification/defaultLibrary modifiers — computed on demand behind the
-> Analyzer seam with no cache-format change (`full/delta` deferred). There are no published binaries yet;
+> Analyzer seam with no cache-format change (`full/delta` deferred).
+> **Pull diagnostics are now implemented** (feature 30): the LSP 3.17 pull model
+> (`textDocument/diagnostic` + `workspace/diagnostic`, `diagnosticProvider` capability) serves the same
+> content as the feature-14 push path (byte-identical); push is suppressed for pull-capable clients and a
+> `workspace/diagnostic/refresh` prompts re-pull of cross-file diagnostics, so nothing double-reports
+> (FR-57, server-layer only, no cache-format change). There are no published binaries yet;
 > build from source or via the VS Code extension.
 >
 > **A full independent assessment (2026-07-14) — [`docs/assessment-2026-07-14.md`](docs/assessment-2026-07-14.md) —
@@ -119,6 +124,10 @@ The capabilities below define the **target** feature set for the first stable re
 - Diagnostics track edits and config (open-document `didChange` and external watched-file changes),
   clearing when the cause is fixed — **shipped**; modeled outcomes (dynamic/unresolved references) are
   **never** diagnostics — **shipped** (FR-17)
+- Both delivery models: **push** (`textDocument/publishDiagnostics`, feature 14) and the **LSP 3.17 pull**
+  model (`textDocument/diagnostic` + `workspace/diagnostic`, feature 30) — **shipped** (FR-57); pull
+  content is byte-identical to push, and push is suppressed for pull-capable clients (with
+  `workspace/diagnostic/refresh` prompting re-pull of cross-file diagnostics) so nothing double-reports
 
 **Workspace indexing** *(full implementation shipped)*
 
@@ -142,6 +151,9 @@ The capabilities below define the **target** feature set for the first stable re
 - `textDocument/documentSymbol` — **shipped** (feature 11)
 - `textDocument/codeLens` (call counts, table write summaries) — **shipped** (feature 13)
 - `textDocument/publishDiagnostics` (parse errors, ambiguous resolution) — **shipped** (feature 14)
+- `textDocument/diagnostic` + `workspace/diagnostic` (LSP 3.17 pull model over the same content;
+  `diagnosticProvider` capability, push suppressed for pull clients, `workspace/diagnostic/refresh` on
+  republish) — **shipped** ([feature 30](docs/plans/features/30-pull-diagnostics/plan.md))
 - `window/workDoneProgress` (indexing progress on first run) — **shipped** (FR-32,
   [feature 21](docs/plans/features/21-async-indexing-and-progress/plan.md); gated on the client's
   `window.workDoneProgress` capability)

@@ -59,6 +59,29 @@ func toProtocolDiagnostic(d model.Diagnostic, content string, enc protocol.Posit
 	}
 }
 
+// toProtocolDiagnosticFromConverter converts a model.Diagnostic to a protocol.Diagnostic
+// using a disk-free RangeConverter (feature 22 T8) instead of file content.
+// It produces a byte-identical result to toProtocolDiagnostic while avoiding I/O.
+//
+// This is a pure function that never panics (FR-43).
+func toProtocolDiagnosticFromConverter(d model.Diagnostic, toRange rangeConverter, enc protocol.PositionEncodingKind) protocol.Diagnostic {
+	var code protocol.ProgressToken
+	if d.Code != "" {
+		code = protocol.String(string(d.Code))
+	}
+
+	// Build range using the converter (disk-free via in-memory line-width table)
+	protocolRange := protocolRangeVia(toRange, d.Range, enc)
+
+	return protocol.Diagnostic{
+		Range:    protocolRange,
+		Severity: severityToProtocol(d.Severity),
+		Code:     code,
+		Message:  protocol.String(d.Message),
+		Source:   protocol.NewOptional(diagnosticSource),
+	}
+}
+
 // aggregateDiagnostics merges diagnostics from two producer channels:
 // - fa.Diagnostics: parser/syntax diagnostics from the analyzer (feature 00/01)
 // - resDiags: flat-namespace ambiguity diagnostics from resolution (feature 07)
@@ -107,6 +130,19 @@ func aggregateDiagnostics(fa model.FileAnalysis, resDiags []model.Diagnostic) []
 	}
 
 	return result
+}
+
+// convertDiagnostics maps an aggregated model.Diagnostic slice to protocol.Diagnostic,
+// applying encoding-aware range conversion (toProtocolDiagnostic) against content.
+// The result is always a non-nil slice (empty when agg is empty), matching the
+// "diagnostics: []" wire convention shared by both the push (publishDiagnostics)
+// and pull (textDocument/diagnostic) paths.
+func convertDiagnostics(agg []model.Diagnostic, content string, enc protocol.PositionEncodingKind) []protocol.Diagnostic {
+	protoDiags := make([]protocol.Diagnostic, 0, len(agg))
+	for _, d := range agg {
+		protoDiags = append(protoDiags, toProtocolDiagnostic(d, content, enc))
+	}
+	return protoDiags
 }
 
 // diagnosticKey is the deduplication key for exact diagnostic matches.
@@ -219,10 +255,7 @@ func (hctx *handlerContext) publishFileDiagnostics(ctx context.Context, stream j
 			resDiags := res.DiagnosticsFor(relPath) // nil-safe (resolution.go)
 			agg := aggregateDiagnostics(doc.Analysis, resDiags)
 
-			protoDiags := make([]protocol.Diagnostic, 0, len(agg))
-			for _, d := range agg {
-				protoDiags = append(protoDiags, toProtocolDiagnostic(d, string(doc.Content), posEncoding))
-			}
+			protoDiags := convertDiagnostics(agg, string(doc.Content), posEncoding)
 			return hctx.publish(ctx, stream, uriStr, protoDiags, &version)
 		}
 	}
@@ -249,10 +282,7 @@ func (hctx *handlerContext) publishFileDiagnostics(ctx context.Context, stream j
 	resDiags := res.DiagnosticsFor(relPath) // nil-safe (resolution.go)
 	agg := aggregateDiagnostics(fa, resDiags)
 
-	protoDiags := make([]protocol.Diagnostic, 0, len(agg))
-	for _, d := range agg {
-		protoDiags = append(protoDiags, toProtocolDiagnostic(d, string(content), posEncoding))
-	}
+	protoDiags := convertDiagnostics(agg, string(content), posEncoding)
 	// No version for on-disk files (LSP convention).
 	return hctx.publish(ctx, stream, uriStr, protoDiags, nil)
 }
