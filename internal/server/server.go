@@ -240,6 +240,7 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 	// Feature 18, T1: advertise callHierarchyProvider.
 	// Feature 29, T4: advertise semanticTokensProvider with legend.
 	// Feature 30, T1: advertise diagnosticProvider with inter-file dependencies and workspace diagnostics support.
+	// Feature 31, T1: advertise declarationProvider and typeDefinitionProvider.
 	falseVal := false
 	diagnosticID := "natural-lsp"
 	initResult := protocol.InitializeResult{
@@ -247,6 +248,8 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 			TextDocumentSync:        protocol.TextDocumentSyncKindFull,
 			PositionEncoding:        posEncoding,
 			DefinitionProvider:      protocol.Boolean(true),
+			DeclarationProvider:     protocol.Boolean(true),
+			TypeDefinitionProvider:  protocol.Boolean(true),
 			ReferencesProvider:      protocol.Boolean(true),
 			WorkspaceSymbolProvider: protocol.Boolean(true),
 			DocumentSymbolProvider:  protocol.Boolean(true),
@@ -1116,6 +1119,68 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 					return
 				}
 				// Marshal the result: locations may be nil (empty) for a no-edge case.
+				if locations == nil {
+					respResult = []byte(`null`)
+				} else {
+					var marshalErr error
+					respResult, marshalErr = marshalResult(locations)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal locations: %v", marshalErr))
+						return
+					}
+				}
+
+			case "textDocument/declaration":
+				// Feature 31, T1: go-to-declaration handler.
+				// Gate on stateInitialized; decode DeclarationParams; call provideDeclaration.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.DeclarationParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid declaration params: %v", err))
+					return
+				}
+				// Call the provider function (delegates to provideDefinition).
+				locations, err := provideDeclaration(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: locations may be nil (empty) for a no-edge case.
+				if locations == nil {
+					respResult = []byte(`null`)
+				} else {
+					var marshalErr error
+					respResult, marshalErr = marshalResult(locations)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal locations: %v", marshalErr))
+						return
+					}
+				}
+
+			case "textDocument/typeDefinition":
+				// Feature 31, T3: type-definition handler.
+				// Gate on stateInitialized; decode TypeDefinitionParams; call provideTypeDefinition.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.TypeDefinitionParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid typeDefinition params: %v", err))
+					return
+				}
+				// Call the provider function (resolves VIEW field to DDM field).
+				locations, err := provideTypeDefinition(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: locations may be nil (empty) for non-VIEW or scalar cases.
 				if locations == nil {
 					respResult = []byte(`null`)
 				} else {

@@ -618,11 +618,13 @@ func TestInitialize(t *testing.T) {
 					t.Errorf("positionEncoding = %v, want %q", caps["positionEncoding"], tc.expectedEncoding)
 				}
 
-				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5; feature 29, T4; feature 30, T1).
+				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5; feature 29, T4; feature 30, T1; feature 31, T1).
 				// These are intentional additions per the locked allow-list convention:
 				// when features add providers, TestInitialize is extended to assert them explicitly.
 				requiredProviders := []string{
 					"definitionProvider",
+					"declarationProvider",
+					"typeDefinitionProvider",
 					"referencesProvider",
 					"workspaceSymbolProvider",
 					"documentSymbolProvider",
