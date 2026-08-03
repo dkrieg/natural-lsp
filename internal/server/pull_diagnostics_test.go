@@ -551,12 +551,19 @@ func TestTextDocumentDiagnostic_DispatchAndMarshal(t *testing.T) {
 			// 2) initialized notification
 			initializedNotif := jsonrpc2.NewNotification("initialized", jsonrpc2.RawMessage(`{}`))
 
-			// 3) textDocument/diagnostic request
-			docURI := "file://" + diskPath
+			// 3) textDocument/diagnostic request.
+			// Build the URI via uri.File so it is a proper file:/// URI (forward
+			// slashes even on Windows, where diskPath is C:\...), and JSON-encode
+			// the string so the embedded value is always valid JSON — a raw Windows
+			// path would inject an invalid escape (e.g. "\U") into the params.
+			uriJSON, err := json.Marshal(string(uri.File(diskPath)))
+			if err != nil {
+				t.Fatalf("marshal uri: %v", err)
+			}
 			diagCall := jsonrpc2.NewCall(
 				jsonrpc2.NewNumberID(2),
 				"textDocument/diagnostic",
-				jsonrpc2.RawMessage(`{"textDocument":{"uri":"`+docURI+`"}}`),
+				jsonrpc2.RawMessage(`{"textDocument":{"uri":`+string(uriJSON)+`}}`),
 			)
 
 			// 4) shutdown + exit
