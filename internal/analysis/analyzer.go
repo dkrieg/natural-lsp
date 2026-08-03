@@ -21,4 +21,11 @@ type Analyzer interface {
 	// This method is used by navigation providers to enable variable go-to-definition
 	// and find-references (feature 27).
 	ExtractVariableRefs(content string) []model.VariableRef
+
+	// SemanticTokens classifies tokens in source content for syntax/semantic highlighting.
+	// This is an on-demand, non-persisted operation that returns classified token spans
+	// for display in the editor. Path is used for object-type classification (by extension).
+	// The returned slice is always non-nil but may be empty.
+	// This method is used by the LSP provider for semantic-tokens (feature 29).
+	SemanticTokens(path string, content []byte) []model.SemanticToken
 }

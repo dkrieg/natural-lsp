@@ -1,0 +1,3 @@
+* Full-line comment
+MOVE 42 TO #X /* rest-of-line comment
+COMPUTE #Y := 'HELLO'

@@ -75,6 +75,10 @@ func (a *channelGatedAnalyzer) ExtractVariableRefs(content string) []model.Varia
 	return []model.VariableRef{}
 }
 
+func (a *channelGatedAnalyzer) SemanticTokens(path string, content []byte) []model.SemanticToken {
+	return []model.SemanticToken{}
+}
+
 // setIndexReadyHook installs a test index-ready hook that closes fired and
 // records the index; it restores the previous hook via t.Cleanup.
 func setIndexReadyHook(t *testing.T) (fired chan struct{}, captured *[]*workspace.Index) {

@@ -22,6 +22,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -229,4 +230,91 @@ func referenceParamsForProgram(hctx *handlerContext, idx *workspace.Index) (prot
 		},
 		Context: protocol.ReferenceContext{IncludeDeclaration: true},
 	}, true
+}
+
+// BenchmarkSemanticTokensFull measures the latency and throughput of the
+// semantic-token classifier + encoder on large synthetic files (feature 29, T12).
+//
+// The benchmark classifies all tokens (lexical + semantic) in a buffer and encodes
+// to the wire format. It tests:
+//   - Classification latency (Phase A lexical + Phase B identifier/call/DDM reclassification)
+//   - Encoding latency (LSP relative 5-int stream generation)
+//   - End-to-end throughput on large programs
+//
+// Run via `just bench` (off `just verify`).
+//
+// Feature 29 T12, NFR-3 (interactive latency), measure-and-record.
+func BenchmarkSemanticTokensFull(b *testing.B) {
+	// Create a large synthetic Natural program with many token types.
+	// This simulates a real medium-to-large program.
+	content := generateLargeSyntheticProgram(5000)
+
+	az := natural.New(nil)
+
+	// Benchmark semantic token classification + encoding.
+	// This measures the full pipeline: lexical + semantic classification, encoding.
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tokens := az.SemanticTokens("benchmark.NSP", []byte(content))
+		_ = encodeSemanticTokens(tokens, content, protocol.PositionEncodingKindUTF8)
+	}
+	b.StopTimer()
+
+	// Report metrics
+	b.ReportMetric(float64(len(content)), "bytes")
+}
+
+// generateLargeSyntheticProgram creates a large Natural program for benchmarking.
+// It includes various constructs: DEFINE DATA, variables, CALLNAT, PERFORM, etc.
+func generateLargeSyntheticProgram(lines int) string {
+	var sb strings.Builder
+
+	// Header: DEFINE DATA section with many variables
+	sb.WriteString("DEFINE DATA\n")
+	sb.WriteString("LOCAL\n")
+	for i := 0; i < 50; i++ {
+		sb.WriteString(fmt.Sprintf("  1 #VAR%-4d (A10)\n", i))
+	}
+	sb.WriteString("PARAMETER\n")
+	for i := 0; i < 30; i++ {
+		sb.WriteString(fmt.Sprintf("  1 #PARM%-4d (N5)\n", i))
+	}
+	sb.WriteString("END-DEFINE.\n\n")
+
+	// Main body: various statements
+	for i := 0; i < lines; i++ {
+		switch i % 10 {
+		case 0:
+			sb.WriteString(fmt.Sprintf("CALLNAT 'PROG%-4d' #VAR1 #VAR2.\n", i%100))
+		case 1:
+			sb.WriteString(fmt.Sprintf("PERFORM SUBR-%d.\n", i%50))
+		case 2:
+			sb.WriteString(fmt.Sprintf("MOVE 'STRING-%d' TO #VAR0.\n", i))
+		case 3:
+			sb.WriteString(fmt.Sprintf("MOVE %d TO #VAR1.\n", i))
+		case 4:
+			sb.WriteString(fmt.Sprintf("/* Comment on line %d\n", i))
+		case 5:
+			sb.WriteString(fmt.Sprintf("* Full-line comment %d\n", i))
+		case 6:
+			sb.WriteString(fmt.Sprintf("READ #DDM-%d.\n", i%20))
+		case 7:
+			sb.WriteString(fmt.Sprintf("STORE #DDM-%d.\n", i%20))
+		case 8:
+			sb.WriteString(fmt.Sprintf("#VAR%-4d := #VAR%-4d + 1.\n", (i+1)%50, i%50))
+		case 9:
+			sb.WriteString(fmt.Sprintf("IF #VAR0 = %d THEN\n  MOVE 'YES' TO #VAR1.\nEND-IF.\n", i))
+		}
+	}
+
+	// Subroutines
+	for i := 0; i < 10; i++ {
+		sb.WriteString(fmt.Sprintf("\nDEFINE SUBROUTINE SUBR-%d.\n", i))
+		sb.WriteString(fmt.Sprintf("  MOVE *DATX TO #VAR0.\n"))
+		sb.WriteString(fmt.Sprintf("  EXIT.\n"))
+		sb.WriteString(fmt.Sprintf("END-SUBROUTINE.\n"))
+	}
+
+	sb.WriteString("\nEND.\n")
+	return sb.String()
 }

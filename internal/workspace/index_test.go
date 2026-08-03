@@ -44,6 +44,10 @@ func (a *cancellingAnalyzer) ExtractVariableRefs(content string) []model.Variabl
 	return []model.VariableRef{}
 }
 
+func (a *cancellingAnalyzer) SemanticTokens(path string, content []byte) []model.SemanticToken {
+	return []model.SemanticToken{}
+}
+
 func (a *cancellingAnalyzer) analyzed() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()

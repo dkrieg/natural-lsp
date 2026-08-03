@@ -1,0 +1,9 @@
+DEFINE DATA LOCAL
+1 #TODAY (A8)
+1 #X (N5)
+1 #Y (N5)
+END-DEFINE
+
+MOVE *DATX TO #TODAY
+#X := #Y
+* This is a comment line

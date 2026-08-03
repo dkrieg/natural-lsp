@@ -260,6 +260,15 @@ func (l *Lexer) NextToken() Token {
 			return l.returnToken(Token{Type: TokenOperator, Literal: ">=", Line: l.line, Column: startCol})
 		}
 	}
+	if ch == ':' && l.pos+1 < len(l.input) {
+		next := l.input[l.pos+1]
+		if next == '=' {
+			startCol := l.col
+			l.pos += 2
+			l.col += 2
+			return l.returnToken(Token{Type: TokenOperator, Literal: ":=", Line: l.line, Column: startCol})
+		}
+	}
 
 	// Single-character operators.  Note: '&' was removed from this list because
 	// Natural uses & as an identifier-prefix character for ampersand variables.

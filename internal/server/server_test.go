@@ -25,7 +25,17 @@ import (
 )
 
 // stubAnalyzer is a test double implementing analysis.Analyzer with a no-op Analyze method.
-type stubAnalyzer struct{}
+type stubAnalyzer struct {
+	// realAnalyzer is used for SemanticTokens to support T6 testing
+	realAnalyzer *natural.Analyzer
+}
+
+// newStubAnalyzer creates a stubAnalyzer with a real analyzer for SemanticTokens delegation.
+func newStubAnalyzer() *stubAnalyzer {
+	return &stubAnalyzer{
+		realAnalyzer: natural.New(nil),
+	}
+}
 
 func (sa *stubAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis, error) {
 	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
@@ -33,6 +43,13 @@ func (sa *stubAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis
 
 func (sa *stubAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
 	return []model.VariableRef{}
+}
+
+func (sa *stubAnalyzer) SemanticTokens(path string, content []byte) []model.SemanticToken {
+	if sa.realAnalyzer != nil {
+		return sa.realAnalyzer.SemanticTokens(path, content)
+	}
+	return []model.SemanticToken{}
 }
 
 // dispatchResultBytes drives the full server lifecycle end-to-end (initialize →
@@ -596,7 +613,7 @@ func TestInitialize(t *testing.T) {
 					t.Errorf("positionEncoding = %v, want %q", caps["positionEncoding"], tc.expectedEncoding)
 				}
 
-				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5).
+				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5; feature 29, T4).
 				// These are intentional additions per the locked allow-list convention:
 				// when features add providers, TestInitialize is extended to assert them explicitly.
 				requiredProviders := []string{
@@ -609,6 +626,7 @@ func TestInitialize(t *testing.T) {
 					"signatureHelpProvider",
 					"callHierarchyProvider",
 					"documentHighlightProvider",
+					"semanticTokensProvider",
 				}
 				for _, providerFlag := range requiredProviders {
 					val, exists := caps[providerFlag]
@@ -705,6 +723,181 @@ func TestInitialize(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInitialize_SemanticTokensLegend pins the legend arrays and their ordering
+// for feature 29, T4. The legend defines the wire contract for token-type indices
+// and modifier bit positions. This test asserts that semanticTokensProvider is
+// advertised with the exact legend from OQ-1 and that Full/Range are both true.
+//
+// RED: The semanticTokensProvider capability is not yet advertised in handleInitialize,
+// so this test will FAIL with assertion errors on the missing capability and legend.
+// Feature 29, T4 fixes this by updating handleInitialize to advertise
+// SemanticTokensProvider with the correct legend.
+func TestInitialize_SemanticTokensLegend(t *testing.T) {
+	// Arrange: build an initialize request with standard params.
+	id := jsonrpc2.NewNumberID(1)
+	paramsJSON := `{
+		"processId": 1234,
+		"rootPath": "/workspace",
+		"capabilities": {}
+	}`
+	call := jsonrpc2.NewCall(id, "initialize", jsonrpc2.RawMessage(paramsJSON))
+
+	// Write the request as a Content-Length-framed message.
+	var reqBuf bytes.Buffer
+	if err := writeFramedMessage(&reqBuf, call); err != nil {
+		t.Fatalf("failed to write framed request: %v", err)
+	}
+
+	// Create an output buffer for the response.
+	var outBuf bytes.Buffer
+
+	// Create a logger.
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server.
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&reqBuf,
+		&outBuf,
+		"0.1.0-test",
+		"/workspace",
+		az,
+		logger,
+	)
+
+	// Assert: no error from Run.
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Extract the JSON body from the framed response.
+	output := outBuf.String()
+	lines := strings.Split(output, "\r\n")
+	if len(lines) < 3 {
+		t.Fatalf("response too short; expected at least 3 lines, got %d", len(lines))
+	}
+	// Body starts after: "Content-Length: N\r\n\r\n"
+	bodyStart := len(lines[0]) + 2 + 2
+	bodyBytes := output[bodyStart:]
+
+	// Decode the response from the body bytes.
+	respMsg, err := jsonrpc2.DecodeMessage([]byte(bodyBytes))
+	if err != nil {
+		t.Fatalf("failed to decode response: %v (output was: %q)", err, output)
+	}
+
+	resp, ok := respMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response, got %T", respMsg)
+	}
+
+	// Unmarshal the result into a map to check capabilities structure.
+	var result map[string]interface{}
+	if err := json.Unmarshal(resp.Result(), &result); err != nil {
+		t.Fatalf("failed to unmarshal initialize result: %v (result was: %q)", err, string(resp.Result()))
+	}
+
+	caps, ok := result["capabilities"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("capabilities missing or wrong type; want map[string]interface{}")
+	}
+
+	// RED: semanticTokensProvider is NOT yet advertised (feature 29, T4).
+	// This assertion will FAIL until handleInitialize is updated.
+	semanticTokensProviderVal, exists := caps["semanticTokensProvider"]
+	if !exists {
+		t.Fatalf("semanticTokensProvider not advertised; want present (feature 29, T4)")
+	}
+
+	semanticTokensProvider, ok := semanticTokensProviderVal.(map[string]interface{})
+	if !ok {
+		t.Fatalf("semanticTokensProvider type = %T; want map[string]interface{} (SemanticTokensOptions)", semanticTokensProviderVal)
+	}
+
+	// RED: legend is not yet present (feature 29, T4).
+	// This will fail until the legend is advertised with the correct arrays.
+
+	// Assert: legend.tokenTypes is an array with exact string values IN ORDER (wire contract — OQ-1).
+	expectedTokenTypes := []interface{}{
+		"keyword", "comment", "string", "number", "operator",
+		"variable", "parameter", "function", "type", "property",
+	}
+	legacyVal, hasLegend := semanticTokensProvider["legend"]
+	if !hasLegend {
+		t.Fatalf("legend missing; want SemanticTokensLegend (feature 29, T4)")
+	}
+	legend, ok := legacyVal.(map[string]interface{})
+	if !ok {
+		t.Fatalf("legend type = %T; want map[string]interface{} (SemanticTokensLegend)", legacyVal)
+	}
+
+	// Check tokenTypes
+	tokenTypesVal, hasTokenTypes := legend["tokenTypes"]
+	if !hasTokenTypes {
+		t.Fatalf("legend.tokenTypes missing; want array of strings")
+	}
+	tokenTypes, ok := tokenTypesVal.([]interface{})
+	if !ok {
+		t.Fatalf("legend.tokenTypes type = %T; want []interface{}", tokenTypesVal)
+	}
+	if len(tokenTypes) != len(expectedTokenTypes) {
+		t.Errorf("legend.tokenTypes length = %d; want %d", len(tokenTypes), len(expectedTokenTypes))
+	}
+	for i, expected := range expectedTokenTypes {
+		if i < len(tokenTypes) {
+			if tokenTypes[i] != expected {
+				t.Errorf("legend.tokenTypes[%d] = %v; want %v", i, tokenTypes[i], expected)
+			}
+		}
+	}
+
+	// Check tokenModifiers
+	expectedTokenModifiers := []interface{}{
+		"declaration", "definition", "readonly", "modification", "defaultLibrary",
+	}
+	tokenModifiersVal, hasTokenModifiers := legend["tokenModifiers"]
+	if !hasTokenModifiers {
+		t.Fatalf("legend.tokenModifiers missing; want array of strings")
+	}
+	tokenModifiers, ok := tokenModifiersVal.([]interface{})
+	if !ok {
+		t.Fatalf("legend.tokenModifiers type = %T; want []interface{}", tokenModifiersVal)
+	}
+	if len(tokenModifiers) != len(expectedTokenModifiers) {
+		t.Errorf("legend.tokenModifiers length = %d; want %d", len(tokenModifiers), len(expectedTokenModifiers))
+	}
+	for i, expected := range expectedTokenModifiers {
+		if i < len(tokenModifiers) {
+			if tokenModifiers[i] != expected {
+				t.Errorf("legend.tokenModifiers[%d] = %v; want %v", i, tokenModifiers[i], expected)
+			}
+		}
+	}
+
+	// Assert: full = true and range = true (both advertised)
+	fullVal, hasFull := semanticTokensProvider["full"]
+	if !hasFull {
+		t.Errorf("semanticTokensProvider.full missing; want true (feature 29, T4)")
+	} else if fullVal != true {
+		t.Errorf("semanticTokensProvider.full = %v; want true", fullVal)
+	}
+
+	rangeVal, hasRange := semanticTokensProvider["range"]
+	if !hasRange {
+		t.Errorf("semanticTokensProvider.range missing; want true (feature 29, T4)")
+	} else if rangeVal != true {
+		t.Errorf("semanticTokensProvider.range = %v; want true", rangeVal)
+	}
+
+	// Assert: delta is NOT advertised (deferred, OQ-D)
+	deltaVal, hasDelta := semanticTokensProvider["delta"]
+	if hasDelta && deltaVal != nil {
+		t.Errorf("semanticTokensProvider.delta = %v; want absent (delta deferred, OQ-D)", deltaVal)
 	}
 }
 
@@ -1681,6 +1874,10 @@ func (sa *spyAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis,
 
 func (sa *spyAnalyzer) ExtractVariableRefs(content string) []model.VariableRef {
 	return []model.VariableRef{}
+}
+
+func (sa *spyAnalyzer) SemanticTokens(path string, content []byte) []model.SemanticToken {
+	return []model.SemanticToken{}
 }
 
 // TestTextDocumentDidOpen pins the behavior of the textDocument/didOpen handler (FR-33, Task 5).

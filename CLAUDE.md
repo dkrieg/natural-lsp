@@ -49,13 +49,12 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 + scoped integration, `-race` omitted with rationale) was added so platform bugs can't reach a release
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
 **(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
-(lsp-tracing-and-logging), 27 (variable & reference navigation), and 28 (rich symbol detail & `VIEW OF`
-binding) are shipped** (see their notes below). The remaining follow-ups are **planned** (features
-**29–34**): the higher-value one with a full note below — **29 (semantic tokens)** — plus a set of
-smaller **P2 LSP-capability** plans, **30 (pull diagnostics)**, **31 (declaration & type-definition
-navigation)**, **32 (document links)**, **33 (execute-command / server commands)**, and **34 (moniker —
-documented non-goal, deferred)** (see their `docs/plans/features/` dirs; summarized after the feature-29
-note).
+(lsp-tracing-and-logging), 27 (variable & reference navigation), 28 (rich symbol detail & `VIEW OF`
+binding), and 29 (semantic tokens) are shipped** (see their notes below). The remaining follow-ups are
+**planned** (features **30–34**): a set of smaller **P2 LSP-capability** plans, **30 (pull
+diagnostics)**, **31 (declaration & type-definition navigation)**, **32 (document links)**, **33
+(execute-command / server commands)**, and **34 (moniker — documented non-goal, deferred)** (see their
+`docs/plans/features/` dirs; summarized after the feature-29 note).
 
 Feature 26 (lsp-tracing-and-logging) makes the server a well-behaved LSP logging/tracing citizen — its
 only observability channel was previously stderr `slog` (plus feature 20's one-shot `window/showMessage`),
@@ -145,20 +144,37 @@ bump `0.8.0` → `0.9.0`** (persists `Symbol.{Type,Level,Dimensions,Redefines,Vi
 `DataDefinition.{Redefines,ViewOfDDM}`, and the DDM-field `NameRange`) — a single one-time rebuild. See
 `docs/plans/features/28-symbol-detail-and-view-binding/`.
 
-**Feature 29 (semantic tokens)** — adds a **`semanticTokensProvider`** for server-driven, AST-aware
+Feature 29 (semantic tokens) ships a **`semanticTokensProvider`** for server-driven, AST-aware
 highlighting (the biggest visible upgrade over the VS Code extension's basic TextMate grammar; JetBrains/
-LSP4IJ has no Natural grammar today). Two tiers: **Phase A (lexical)** maps the lexer's typed tokens
-(keyword/comment/string/number/operator) directly — works on any file, even unparseable (FR-43); **Phase B
-(semantic)** reclassifies `TokenIdentifier` from the AST — data variable → `variable` (PARAMETER →
-`parameter`), CALLNAT/FETCH/RUN/PERFORM target → `function`, DDM/view → `type`, DDM/view field →
-`property`, `*`-system var → `defaultLibrary`, with `declaration`/`definition`/`readonly`/`modification`
-modifiers (write-modifier reuses feature 27). Computed **on demand from the open buffer** (semantic tokens
-are only needed for open files) → **no `internal/model` persisted field and no cache-format bump**; the
-classification is produced behind the Analyzer seam (a new on-demand analyzer entry returning classified
-spans, so `internal/server` imports no parser internals) and the server encodes the LSP relative 5-int
-stream (encoding-aware via `position.go`). This **adds a new server capability** (`semanticTokensProvider`
-+ legend) — the first capability addition since feature 18 — so the locked `TestInitialize` allow-list is
-extended. `full` (and likely `range`); `full/delta` deferred. See `docs/plans/features/29-semantic-tokens/`.
+LSP4IJ has no Natural grammar today). Delivered as a new on-demand Analyzer-seam method
+`Analyzer.SemanticTokens(path, content) []model.SemanticToken` (a **non-persisted** `model.SemanticToken{
+Range, Type, Modifiers}` contract value — **no `internal/model` persisted field and no cache-format bump**,
+cache stays `0.9.0`), classified in `internal/analysis/natural/semantictokens.go` and encoded to the LSP
+relative 5-int stream by `internal/server/semantic_tokens.go` (encoding-aware via `position.go`, ADR-008,
+both UTF-8/UTF-16 byte-exact; multi-line tokens split per line). Two tiers: **Phase A (lexical)** maps the
+lexer's typed tokens (keyword/comment/string/number/operator) directly — works on any file, even
+unparseable (FR-43); **Phase B (semantic)** reclassifies `TokenIdentifier` from the AST/extraction — data
+variable → `variable` (PARAMETER-section → `parameter`), CALLNAT/FETCH/RUN literal target + PERFORM
+subroutine → `function` (literal target overrides Phase-A `string`, OQ-C; `DEFINE SUBROUTINE` name gets
+`definition`), DDM/view name → `type`, DDM/view field → `property`, `*`-system var → `variable` +
+`readonly` + `defaultLibrary` (whole `*DATX` span, sigil-operator suppressed) — with `declaration` on
+`DEFINE DATA` names and `modification` on write targets: DDM/view `EdgeWrites` reuse feature 27, and a
+bounded statement-context detector (`:=` LHS / `MOVE … TO` dest / `COMPUTE … =` LHS) supplies the variable
+write case (OQ-B). A single shared classifier (`semanticTokensPhaseB`) merges the tiers with a fixed
+precedence (`function > type > property > parameter/variable > lexical`), recurses into grouped/nested
+`DEFINE DATA` fields (propagating `SectionKind`), and keeps modeled gaps off every channel (FR-17/FR-18):
+dynamic/`&`-placeholder targets and `INCLUDE` copycode are never `function`, a `*`-line-start comment is
+never a system var, and an undeclared identifier falls back to nothing. The lexer gained `:=` as a single
+operator token (no keyword change). Computed **on demand from the open buffer** (store-first, F7,
+O(tokens), no workspace sweep — a large-file bench is recorded, NFR-3); the classifier lives entirely
+behind the Analyzer seam so `internal/server` imports no parser internals. **Adds one new server
+capability** (`semanticTokensProvider` + a fixed-order legend — types `keyword, comment, string, number,
+operator, variable, parameter, function, type, property`; modifiers `declaration, definition, readonly,
+modification, defaultLibrary`) — the first capability addition since feature 18 — so the locked
+`TestInitialize` allow-list is extended and the legend pinned by a test. Serves **`textDocument/
+semanticTokens/full`** and **`textDocument/semanticTokens/range`** (whole-token filtering);
+**`full/delta`** is deferred (not advertised). `FuzzSemanticTokens` + `FuzzEncodeSemanticTokens` guard the
+never-panic / `len%5==0` invariants (FR-43). See `docs/plans/features/29-semantic-tokens/`.
 
 **Features 30–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
 server-layer only, **no `internal/model`/cache change** (all reuse existing extraction/resolution), and each

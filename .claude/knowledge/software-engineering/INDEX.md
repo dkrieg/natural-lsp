@@ -28,6 +28,29 @@ belief, confirm before relying on it · `unverified` = recorded but unconfirmed.
 
 ## Changelog
 
+- 2026-07-27 — (feature 29 review remediation, regression-first) Fixed three extraction-fidelity
+  findings in `internal/analysis/natural/semantictokens.go`, each pinned by a fixture-backed test.
+  **Finding B (grouped/nested fields dropped):** the Phase-B variable lookup was built by iterating
+  only the top-level `definitions` slice, but `extractDefinitions` nests level-≥2 fields in
+  `DataDefinition.Children` — so a `1 #GRP / 2 #FLD` sub-field was never classified. New shared
+  `buildVarLookup` recurses into `.Children` at both build sites and **propagates the parent's
+  SectionKind** (data.go deliberately leaves `SectionKind` empty on children — a top-level property),
+  so a grouped field in a PARAMETER section stays `parameter`; stores per-name copies with the
+  effective SectionKind stamped (NameRange preserved for declaration detection), first-occurrence
+  wins on duplicate unqualified names. **Finding A (PARAMETER write target lost `modification`):** the
+  same-position merge in `semanticTokensPhaseB` only OR-ed modifiers when the two tokens shared a
+  Type; a PARAMETER var written via `MOVE … TO #P` had T7's `parameter`+0 and the write-detector's
+  `variable`+modification collide (same span, same precedence 2, differing Type) so the modification
+  bit was dropped. Fix: at equal precedence, OR the incoming modifiers onto the *existing* token and
+  keep its (more-specific) Type — the write-detector's sole job is to contribute the modifier, never
+  to override `parameter` with its default `variable`. **Finding C (numeric range over-extended):**
+  `computeTokenRange`'s numeric branch greedily consumed `-`/`+`/`e`/`E`/`.`, so `5-3` (lexer emits
+  `5`,`-`,`3`) made the `5` token span `5-3`. Fix: for non-string, non-comment tokens (keyword/
+  identifier/number/operator/punctuation — verbatim, ASCII, not quote-stripped) derive width from
+  `len(Token.Literal)` (exact source width, no rescan); retain the source-scan only for strings
+  (reconstructed quotes) and comments (Literal ≠ source span). All behind the Analyzer seam, no
+  model/cache change; existing lexical assertions (`'HELLO'` incl. quotes, full-line/rest-of-line
+  comments) preserved. `FuzzSemanticTokens` (1.35M execs) + `-race` green.
 - 2026-07-26 — **architecture-decisions.md**: recorded **ADR-028** and **ADR-029** (feature 27
   SERVER-RESOLUTION address-findings cluster). ADR-028: server cross-file object-location (definition +
   references, data-area USING and SQL DDM) now routes through the steplib chain

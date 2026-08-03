@@ -39,6 +39,10 @@ func (c *countingAnalyzer) ExtractVariableRefs(content string) []model.VariableR
 	return c.delegate.ExtractVariableRefs(content)
 }
 
+func (c *countingAnalyzer) SemanticTokens(path string, content []byte) []model.SemanticToken {
+	return c.delegate.SemanticTokens(path, content)
+}
+
 // paths returns the sorted set of base filenames analyzed since the last reset.
 func (c *countingAnalyzer) paths() []string {
 	c.mu.Lock()
