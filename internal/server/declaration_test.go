@@ -277,12 +277,32 @@ func TestProvideDeclaration_VariableAndGaps(t *testing.T) {
 				return
 			}
 
-			// For non-empty results, perform additional assertions
+			// For non-empty results, pin the delegation exactly: declaration must
+			// return the identical Location(s) as definition for the same cursor,
+			// so we assert on the exact DEFINE DATA NameRange, not merely the file.
 			if tc.wantNonEmpty && len(locations) > 0 {
-				// Assert: location points to the same file
-				loc := locations[0]
-				if string(loc.URI) != string(uri.File(fixtureFile)) {
-					t.Errorf("%s: expected same file, got %q", tc.description, loc.URI.FsPath())
+				definitionParams := protocol.DefinitionParams{
+					TextDocumentPositionParams: params.TextDocumentPositionParams,
+				}
+				definitionLocs, defErr := provideDefinition(hctx, definitionParams)
+				if defErr != nil {
+					t.Fatalf("%s: provideDefinition failed: %v", tc.description, defErr)
+				}
+				if len(definitionLocs) != len(locations) {
+					t.Errorf("%s: declaration returned %d locations, definition returned %d",
+						tc.description, len(locations), len(definitionLocs))
+					return
+				}
+				for i, declLoc := range locations {
+					defLoc := definitionLocs[i]
+					if declLoc.URI != defLoc.URI {
+						t.Errorf("%s [loc %d]: URI mismatch: declaration=%q, definition=%q",
+							tc.description, i, declLoc.URI, defLoc.URI)
+					}
+					if declLoc.Range != defLoc.Range {
+						t.Errorf("%s [loc %d]: Range mismatch: declaration=%v, definition=%v",
+							tc.description, i, declLoc.Range, defLoc.Range)
+					}
 				}
 			}
 		})

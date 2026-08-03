@@ -95,6 +95,21 @@ func TestProvideTypeDefinition_ViewField(t *testing.T) {
 			wantLocationEnd:   14, // end-exclusive at byte 14
 			description:       "BALANCE bare view field → DDM field NameRange",
 		},
+		{
+			// RESTATED view field CUSTOMER-NAME (A50) at empview line 8 (0-based 7).
+			// Approved decision OQ-3: a view field with an explicit scalar format still
+			// type-defines to the DDM field. Should resolve to customer.NSD line 7
+			// (0-based 6), field name span (CUSTOMER-NAME, 13 bytes at Name@7 → 7..20).
+			name:              "VIEW_field_CUSTOMER_NAME_restated",
+			sourceFile:        "empview.NSP",
+			sourceLine:        7,  // line 8 (1-based) → 7 (0-based)
+			sourceCharacter:   10, // middle of "CUSTOMER-NAME" at 0-based bytes 6-18
+			wantDDMFile:       "customer.NSD",
+			wantLocationLine:  6,  // line 7 (1-based) → 6 (0-based)
+			wantLocationStart: 7,  // Name@7 (0-based)
+			wantLocationEnd:   20, // end-exclusive: 7 + len("CUSTOMER-NAME")=13 = 20
+			description:       "CUSTOMER-NAME restated view field with explicit A50 → DDM field NameRange (OQ-3)",
+		},
 	}
 
 	for _, tc := range tt {
@@ -156,7 +171,9 @@ func TestProvideTypeDefinition_ViewField(t *testing.T) {
 // TestProvideTypeDefinition_Gaps tests that typeDefinition returns nil (→ wire null)
 // for all FR-17 modeled gaps: scalar-only fields, view fields absent from DDM,
 // DDM outside the chain, TYPE: SQL DDMs, and no-target cursors (feature 31, T4).
-// These assert nil result + nil error and no diagnostic emission.
+// Each case asserts a nil result and a nil error. provideTypeDefinition is
+// structurally read-only and never touches the diagnostic channel, so keeping
+// modeled gaps off diagnostics (FR-17) is guaranteed by construction, not asserted here.
 // FR-58, FR-17 (modeled gaps), FR-43 (graceful degradation / never-panic).
 func TestProvideTypeDefinition_Gaps(t *testing.T) {
 	// Setup: get working directory
@@ -294,19 +311,80 @@ func TestProvideTypeDefinition_Gaps(t *testing.T) {
 	}
 }
 
-// TestInitialize_TypeDefinitionCapability verifies that the initialize response
-// advertises the typeDefinitionProvider capability (feature 31, T3).
-func TestInitialize_TypeDefinitionCapability(t *testing.T) {
-	// Use the dispatchResultBytes harness to test the real dispatch path
-	// This is the same pattern as the existing TestInitialize test
+// TestProvideTypeDefinition_StoreFirst tests that typeDefinition reads the live buffer
+// via the document store (type_definition.go store-first branch) rather than disk:
+// a VIEW OF field present only in an unsaved buffer still type-defines to its DDM field.
+// Feature 31, T3 (store-first path). FR-58, FR-43.
+func TestProvideTypeDefinition_StoreFirst(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	fixtureRoot := filepath.Join(wd, "testdata", "viewdef")
 
-	// The initialize response from an empty workspace should list typeDefinitionProvider
-	// We verify this indirectly by checking that TestInitialize's requiredProviders list
-	// includes "typeDefinitionProvider" and that the capability is present.
+	cfg := config.Defaults()
+	az := natural.New(nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// For now, this test just documents the requirement. The actual assertion is in
-	// the TestInitialize test when it's extended to include "typeDefinitionProvider"
-	// in the requiredProviders list.
+	// Build the index so customer.NSD is resolvable via the steplib chain.
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+	res := workspace.Resolve(idx, &cfg)
 
-	t.Logf("TestInitialize must be extended to verify 'typeDefinitionProvider' capability")
+	// Open a buffer that exists only in the store (no such file on disk) holding a
+	// VIEW OF CUSTOMER with a bare CUSTOMER-ID field on line 4.
+	store := NewTestStore(fixtureRoot, az)
+	bufferContent := []byte("IDENTIFY PROGRAM EMPBUF.\n" +
+		"DEFINE DATA LOCAL\n" +
+		"  1 EMP-VIEW VIEW OF CUSTOMER\n" +
+		"    2 CUSTOMER-ID\n" +
+		"END-DEFINE.\n" +
+		"WRITE 'Done'.\n" +
+		"STOP.\n")
+	bufURI := uri.File(filepath.Join(fixtureRoot, "empview-buffer.NSP"))
+	store.Open(bufURI, 1, bufferContent)
+
+	hctx := &handlerContext{
+		root:        fixtureRoot,
+		cfg:         cfg,
+		idx:         idx,
+		res:         res,
+		az:          az,
+		store:       store,
+		posEncoding: protocol.PositionEncodingKindUTF8,
+		logger:      logger,
+		idxResMu:    sync.RWMutex{},
+	}
+
+	// Cursor on CUSTOMER-ID in the buffer (line 4 → 0-based 3, mid-token).
+	params := protocol.TypeDefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: bufURI},
+			Position:     protocol.Position{Line: 3, Character: 10},
+		},
+	}
+
+	locations, err := provideTypeDefinition(hctx, params)
+	if err != nil {
+		t.Fatalf("provideTypeDefinition returned error: %v", err)
+	}
+	if len(locations) != 1 {
+		t.Fatalf("store-first: got %d Location(s); want 1", len(locations))
+	}
+
+	// It must resolve through the buffer to customer.NSD's CUSTOMER-ID NameRange
+	// (line 6 → 0-based 5, Name@7, 11 bytes → 7..18 end-exclusive).
+	wantURI := uri.File(filepath.Join(fixtureRoot, "customer.NSD"))
+	if locations[0].URI != wantURI {
+		t.Errorf("store-first: Location.URI = %q; want %q", locations[0].URI, wantURI)
+	}
+	wantRange := protocol.Range{
+		Start: protocol.Position{Line: 5, Character: 7},
+		End:   protocol.Position{Line: 5, Character: 18},
+	}
+	if locations[0].Range != wantRange {
+		t.Errorf("store-first: Location.Range = %v; want %v", locations[0].Range, wantRange)
+	}
 }

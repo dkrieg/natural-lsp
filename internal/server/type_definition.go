@@ -120,8 +120,10 @@ func provideTypeDefinition(hctx *handlerContext, params protocol.TypeDefinitionP
 		return nil, nil
 	}
 
-	// Read the DDM file content for range conversion
-	ddmAbsPath := filepath.Join(hctx.root, ddmPath)
+	// Read the DDM file content for range conversion.
+	// Use the same abs-normalized root local as uriToRelPath above for consistency
+	// (hctx.root is already absolute post-bootstrap, so behavior is unchanged).
+	ddmAbsPath := filepath.Join(root, ddmPath)
 	ddmContent, err := os.ReadFile(ddmAbsPath)
 	if err != nil {
 		// Can't read DDM file — graceful degradation
