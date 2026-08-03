@@ -38,6 +38,10 @@ func newStubAnalyzer() *stubAnalyzer {
 }
 
 func (sa *stubAnalyzer) Analyze(path string, content []byte) (model.FileAnalysis, error) {
+	// Delegate to real analyzer for actual analysis (needed for diagnostic tests).
+	if sa.realAnalyzer != nil {
+		return sa.realAnalyzer.Analyze(path, content)
+	}
 	return model.FileAnalysis{ObjectType: model.ObjectUnknown}, nil
 }
 
@@ -347,11 +351,12 @@ func parseFramedResponse(buf *bytes.Buffer) ([]byte, error) {
 		buf.Reset()
 		buf.WriteString(remaining)
 
-		// If it's a Response, return it
-		if msgType == "Response" {
+		// Return Responses and Calls ("Other"), skip Notifications
+		// This allows tests to find both server responses and server-initiated calls (like workspace/diagnostic/refresh)
+		if msgType == "Response" || msgType == "Other" {
 			return body, nil
 		}
-		// Otherwise it's a Notification; skip it and try the next message
+		// Skip Notifications and try the next message
 	}
 }
 
@@ -613,7 +618,7 @@ func TestInitialize(t *testing.T) {
 					t.Errorf("positionEncoding = %v, want %q", caps["positionEncoding"], tc.expectedEncoding)
 				}
 
-				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5; feature 29, T4).
+				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5; feature 29, T4; feature 30, T1).
 				// These are intentional additions per the locked allow-list convention:
 				// when features add providers, TestInitialize is extended to assert them explicitly.
 				requiredProviders := []string{
@@ -627,6 +632,7 @@ func TestInitialize(t *testing.T) {
 					"callHierarchyProvider",
 					"documentHighlightProvider",
 					"semanticTokensProvider",
+					"diagnosticProvider",
 				}
 				for _, providerFlag := range requiredProviders {
 					val, exists := caps[providerFlag]
@@ -898,6 +904,136 @@ func TestInitialize_SemanticTokensLegend(t *testing.T) {
 	deltaVal, hasDelta := semanticTokensProvider["delta"]
 	if hasDelta && deltaVal != nil {
 		t.Errorf("semanticTokensProvider.delta = %v; want absent (delta deferred, OQ-D)", deltaVal)
+	}
+}
+
+// TestInitialize_DiagnosticProvider pins the diagnostic provider advertisement
+// for feature 30, T1. The server must advertise a diagnosticProvider capability
+// with the correct shape: a JSON object (not a boolean) containing:
+//   - interFileDependencies: true
+//   - workspaceDiagnostics: true
+//   - identifier: "natural-lsp"
+//
+// RED: The diagnosticProvider capability is not yet advertised in handleInitialize,
+// so this test will FAIL with assertion errors on the missing capability and shape.
+// Feature 30, T1 fixes this by updating handleInitialize to advertise
+// DiagnosticProvider with the correct options.
+func TestInitialize_DiagnosticProvider(t *testing.T) {
+	// Arrange: build an initialize request with standard params.
+	id := jsonrpc2.NewNumberID(1)
+	paramsJSON := `{
+		"processId": 1234,
+		"rootPath": "/workspace",
+		"capabilities": {}
+	}`
+	call := jsonrpc2.NewCall(id, "initialize", jsonrpc2.RawMessage(paramsJSON))
+
+	// Write the request as a Content-Length-framed message.
+	var reqBuf bytes.Buffer
+	if err := writeFramedMessage(&reqBuf, call); err != nil {
+		t.Fatalf("failed to write framed request: %v", err)
+	}
+
+	// Create an output buffer for the response.
+	var outBuf bytes.Buffer
+
+	// Create a logger.
+	logBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	// Act: run the server.
+	az := &stubAnalyzer{}
+	err := Run(
+		context.Background(),
+		&reqBuf,
+		&outBuf,
+		"0.1.0-test",
+		"/workspace",
+		az,
+		logger,
+	)
+
+	// Assert: no error from Run.
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Extract the JSON body from the framed response.
+	output := outBuf.String()
+	lines := strings.Split(output, "\r\n")
+	if len(lines) < 3 {
+		t.Fatalf("response too short; expected at least 3 lines, got %d", len(lines))
+	}
+	// Body starts after: "Content-Length: N\r\n\r\n"
+	bodyStart := len(lines[0]) + 2 + 2
+	bodyBytes := output[bodyStart:]
+
+	// Decode the response from the body bytes.
+	respMsg, err := jsonrpc2.DecodeMessage([]byte(bodyBytes))
+	if err != nil {
+		t.Fatalf("failed to decode response: %v (output was: %q)", err, output)
+	}
+
+	resp, ok := respMsg.(*jsonrpc2.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc2.Response, got %T", respMsg)
+	}
+
+	// Unmarshal the result into a map to check capabilities structure.
+	var result map[string]interface{}
+	if err := json.Unmarshal(resp.Result(), &result); err != nil {
+		t.Fatalf("failed to unmarshal initialize result: %v (result was: %q)", err, string(resp.Result()))
+	}
+
+	caps, ok := result["capabilities"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("capabilities missing or wrong type; want map[string]interface{}")
+	}
+
+	// RED: diagnosticProvider is NOT yet advertised (feature 30, T1).
+	// This assertion will FAIL until handleInitialize is updated.
+	diagnosticProviderVal, exists := caps["diagnosticProvider"]
+	if !exists {
+		t.Fatalf("diagnosticProvider not advertised; want present (feature 30, T1)")
+	}
+
+	diagnosticProvider, ok := diagnosticProviderVal.(map[string]interface{})
+	if !ok {
+		t.Fatalf("diagnosticProvider type = %T; want map[string]interface{} (DiagnosticOptions)", diagnosticProviderVal)
+	}
+
+	// Assert: interFileDependencies is true (FR-57, T1).
+	// Resolution-ambiguity diagnostics in file A depend on objects in other files,
+	// so editing one file can change another's diagnostics.
+	interFileDeps, hasInterFileDeps := diagnosticProvider["interFileDependencies"]
+	if !hasInterFileDeps {
+		t.Fatalf("interFileDependencies missing; want true (feature 30, T1)")
+	}
+	if interFileDeps != true {
+		t.Errorf("interFileDependencies = %v; want true", interFileDeps)
+	}
+
+	// Assert: workspaceDiagnostics is true (FR-57, T1).
+	// Story 2 serves workspace/diagnostic, so this must be true.
+	workspaceDiags, hasWorkspaceDiags := diagnosticProvider["workspaceDiagnostics"]
+	if !hasWorkspaceDiags {
+		t.Fatalf("workspaceDiagnostics missing; want true (feature 30, T1)")
+	}
+	if workspaceDiags != true {
+		t.Errorf("workspaceDiagnostics = %v; want true", workspaceDiags)
+	}
+
+	// Assert: identifier is present and is the string "natural-lsp" (FR-57, T1).
+	identifierVal, hasIdentifier := diagnosticProvider["identifier"]
+	if !hasIdentifier {
+		t.Fatalf("identifier missing; want string (feature 30, T1)")
+	}
+	if identifier, ok := identifierVal.(string); ok {
+		if identifier != "natural-lsp" {
+			t.Errorf("identifier = %q; want \"natural-lsp\"", identifier)
+		}
+	} else {
+		t.Errorf("identifier type = %T; want string", identifierVal)
 	}
 }
 

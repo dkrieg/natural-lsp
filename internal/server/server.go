@@ -140,11 +140,13 @@ func marshalResult(v any) ([]byte, error) {
 // initializeNegotiation holds the results of the initialize handshake,
 // capturing the negotiated capabilities and encoding for later use.
 type initializeNegotiation struct {
-	result                         []byte
-	posEncoding                    protocol.PositionEncodingKind
-	clientSupportsWatchedFilesReg  bool
-	clientSupportsWorkDoneProgress bool
-	initialTrace                   protocol.TraceValue
+	result                          []byte
+	posEncoding                     protocol.PositionEncodingKind
+	clientSupportsWatchedFilesReg   bool
+	clientSupportsWorkDoneProgress  bool
+	clientSupportsPullDiagnostics   bool
+	clientSupportsDiagnosticRefresh bool
+	initialTrace                    protocol.TraceValue
 }
 
 // isKnownTraceValue checks if a protocol.TraceValue is one of the three
@@ -207,6 +209,27 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 		clientSupportsWorkDoneProgress = true
 	}
 
+	// Check whether the client supports pull-based diagnostics (feature 30, T4).
+	// When the client advertises textDocument.diagnostic capability, the server suppresses
+	// push-based publishDiagnostics (OQ-1). Mirror the nil-chain deref pattern.
+	clientSupportsPullDiagnostics := false
+	if params.Capabilities.TextDocument != nil &&
+		params.Capabilities.TextDocument.Diagnostic != nil {
+		clientSupportsPullDiagnostics = true
+	}
+
+	// Check whether the client supports workspace diagnostics refresh (feature 30, T7).
+	// When the client advertises workspace.diagnostics.refreshSupport = true, the server
+	// sends workspace/diagnostic/refresh on index/resolution republish (Finding F-A).
+	// Mirror the nil-chain deref pattern.
+	clientSupportsDiagnosticRefresh := false
+	if params.Capabilities.Workspace != nil &&
+		params.Capabilities.Workspace.Diagnostics != nil &&
+		params.Capabilities.Workspace.Diagnostics.RefreshSupport != nil &&
+		*params.Capabilities.Workspace.Diagnostics.RefreshSupport {
+		clientSupportsDiagnosticRefresh = true
+	}
+
 	// Intentional minimal capability set — see comment above.
 	// Feature 10, T3: advertise the three navigation providers (definition, references, workspace symbol).
 	// Feature 11, T3: advertise documentSymbolProvider.
@@ -216,7 +239,9 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 	// Feature 17, T1: advertise signatureHelpProvider with space trigger and retrigger characters.
 	// Feature 18, T1: advertise callHierarchyProvider.
 	// Feature 29, T4: advertise semanticTokensProvider with legend.
+	// Feature 30, T1: advertise diagnosticProvider with inter-file dependencies and workspace diagnostics support.
 	falseVal := false
+	diagnosticID := "natural-lsp"
 	initResult := protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
 			TextDocumentSync:        protocol.TextDocumentSyncKindFull,
@@ -245,6 +270,11 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 				Full:  protocol.Boolean(true),
 				Range: protocol.Boolean(true),
 			},
+			DiagnosticProvider: &protocol.DiagnosticOptions{
+				Identifier:            &diagnosticID,
+				InterFileDependencies: true,
+				WorkspaceDiagnostics:  true,
+			},
 		},
 		ServerInfo: protocol.ServerInfo{
 			Name:    "natural-lsp",
@@ -266,11 +296,13 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 	}
 
 	return initializeNegotiation{
-		result:                         buf.Bytes(),
-		posEncoding:                    posEncoding,
-		clientSupportsWatchedFilesReg:  clientSupportsWatchedFilesReg,
-		clientSupportsWorkDoneProgress: clientSupportsWorkDoneProgress,
-		initialTrace:                   initialTrace,
+		result:                          buf.Bytes(),
+		posEncoding:                     posEncoding,
+		clientSupportsWatchedFilesReg:   clientSupportsWatchedFilesReg,
+		clientSupportsWorkDoneProgress:  clientSupportsWorkDoneProgress,
+		clientSupportsPullDiagnostics:   clientSupportsPullDiagnostics,
+		clientSupportsDiagnosticRefresh: clientSupportsDiagnosticRefresh,
+		initialTrace:                    initialTrace,
 	}, nil
 }
 
@@ -340,6 +372,17 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 	// work-done progress (parsed from initialize params, used in initialized handler).
 	// Initially false; set to true by handleInitialize if the client advertises support (feature 21, T1).
 	clientSupportsWorkDoneProgress := false
+
+	// clientSupportsPullDiagnostics tracks whether the client supports pull-based diagnostics
+	// (parsed from initialize params, used to gate push notifications). When true, the server
+	// suppresses publishDiagnostics notifications (OQ-1, feature 30, T4).
+	clientSupportsPullDiagnostics := false
+
+	// clientSupportsDiagnosticRefresh tracks whether the client supports workspace/diagnostic/refresh
+	// (parsed from initialize params, used to gate refresh notifications on republish).
+	// When true AND clientSupportsPullDiagnostics is true, the server sends workspace/diagnostic/refresh
+	// on index/resolution republish (feature 30, T7, Finding F-A).
+	clientSupportsDiagnosticRefresh := false
 
 	// bgCtx is the context for all background goroutines spawned by this server
 	// instance (indexer, watcher, etc.). It is derived from the caller's ctx so
@@ -450,9 +493,31 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 
 	// publishDiag publishes diagnostics for a file URI (T7, Feature 14).
 	// Errors are logged (FR-43) but don't crash the dispatch loop.
+	// Feature 30 (T4): suppressed when the client advertises pull-diagnostics support (OQ-1).
 	publishDiag := func(uriStr string) {
+		if clientSupportsPullDiagnostics {
+			return // OQ-1: suppress push for pull-capable clients
+		}
 		if err := hctx.publishFileDiagnostics(ctx, stream, uriStr); err != nil {
 			logger.Warn("failed to publish diagnostics", "uri", uriStr, "err", err)
+		}
+	}
+
+	// sendDiagnosticRefresh sends a workspace/diagnostic/refresh request to the client
+	// (Feature 30, finding F-A): on index/resolution republish, tell a pull-capable client
+	// to re-pull so cross-file (FR-31 ambiguity) diagnostics in unopened files refresh.
+	// This is fire-and-forget (responses are logged but not awaited) per OQ-A pattern.
+	// Errors are logged (FR-43) but don't crash the dispatch loop.
+	sendDiagnosticRefresh := func() {
+		if !clientSupportsPullDiagnostics || !clientSupportsDiagnosticRefresh {
+			return // refresh only for pull-capable clients that support refresh (Finding F-A)
+		}
+		// workspace/diagnostic/refresh takes no parameters; send with empty params
+		id := jsonrpc2.NewStringID("natural-lsp-diag-refresh")
+		call := jsonrpc2.NewCall(id, "workspace/diagnostic/refresh", jsonrpc2.RawMessage(`{}`))
+		_, err := stream.Write(ctx, call)
+		if err != nil {
+			logger.Warn("failed to send workspace/diagnostic/refresh", "err", err)
 		}
 	}
 
@@ -613,6 +678,18 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 							// content).
 							hctx.replayOpenBuffers()
 
+							// Feature 30 (review finding F-C): send diagnostic refresh on
+							// cold-build completion for pull+refresh-capable clients, so
+							// they re-pull workspace diagnostics that may have changed
+							// (e.g., cross-file ambiguity diagnostics in unopened files) —
+							// symmetric to the incremental didChange/watched-file republish
+							// paths. The closure self-gates on clientSupportsPullDiagnostics
+							// && clientSupportsDiagnosticRefresh, so push-only and non-refresh
+							// clients see no refresh. stream.Write is safe from this
+							// goroutine: headerStream serializes writes under its own writeMu,
+							// so this never races the dispatch loop's response writes.
+							sendDiagnosticRefresh()
+
 							// Feature 21 T5 (OQ-D): close the progress UI with a
 							// single "end" AFTER publish+replay but BEFORE the
 							// no-usable-root window/showMessage, so the progress
@@ -750,6 +827,8 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 									hctx.applyDocumentChange(relPath, []byte(whole.Text))
 									// T7: publish diagnostics after change (S3-AC1)
 									publishDiag(string(u))
+									// Feature 30 (T7): send diagnostic refresh on republish for pull-capable clients (Finding F-A)
+									sendDiagnosticRefresh()
 								} else if _, ok := change.(*protocol.TextDocumentContentChangePartial); ok {
 									// Partial (range) edit under Full-sync policy: log and skip
 									logger.Error("received partial change under full-sync policy; skipping", "uri", u)
@@ -770,8 +849,11 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 							hctx.store.Close(u)
 							// T7: publish empty diagnostics to clear stale issues on close (OQ-3).
 							// Publish directly with empty array (no version since file is no longer open).
-							if err := publishDiagnostics(ctx, stream, string(u), nil, nil); err != nil {
-								logger.Warn("failed to publish diagnostics on close", "uri", string(u), "err", err)
+							// Feature 30 (T4): suppressed when the client advertises pull-diagnostics support (OQ-1).
+							if !clientSupportsPullDiagnostics {
+								if err := publishDiagnostics(ctx, stream, string(u), nil, nil); err != nil {
+									logger.Warn("failed to publish diagnostics on close", "uri", string(u), "err", err)
+								}
 							}
 						}
 					}
@@ -805,8 +887,11 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 									hctx.applyDocumentChange(relPath, nil)
 									// T7: publish empty diagnostics to clear on delete (S3-AC1).
 									// Publish directly with empty array.
-									if err := publishDiagnostics(ctx, stream, string(event.URI), nil, nil); err != nil {
-										logger.Warn("failed to publish diagnostics on delete", "uri", string(event.URI), "err", err)
+									// Feature 30 (T4): suppressed when the client advertises pull-diagnostics support (OQ-1).
+									if !clientSupportsPullDiagnostics {
+										if err := publishDiagnostics(ctx, stream, string(event.URI), nil, nil); err != nil {
+											logger.Warn("failed to publish diagnostics on delete", "uri", string(event.URI), "err", err)
+										}
 									}
 									continue
 								}
@@ -822,6 +907,8 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 								// T7: publish diagnostics after change (S3-AC1)
 								publishDiag(string(event.URI))
 							}
+							// Feature 30 (T7): send diagnostic refresh once per watched-files event (Finding F-A)
+							sendDiagnosticRefresh()
 						}
 					}
 				case "$/setTrace":
@@ -927,6 +1014,8 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 				hctx.posEncoding = negotiation.posEncoding
 				clientSupportsWatchedFilesReg = negotiation.clientSupportsWatchedFilesReg
 				clientSupportsWorkDoneProgress = negotiation.clientSupportsWorkDoneProgress
+				clientSupportsPullDiagnostics = negotiation.clientSupportsPullDiagnostics
+				clientSupportsDiagnosticRefresh = negotiation.clientSupportsDiagnosticRefresh
 
 				// Feature 26 (T3): seed the trace level from the negotiated initial trace value (S2-AC1).
 				hctx.mlog.setTrace(negotiation.initialTrace)
@@ -1447,6 +1536,90 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal semantic tokens: %v", marshalErr))
 						return
 					}
+				}
+
+			case "textDocument/diagnostic":
+				// Feature 30, T3: pull diagnostics handler.
+				// Gate on stateInitialized; decode DocumentDiagnosticParams; call provideDocumentDiagnostic.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.DocumentDiagnosticParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid diagnostic params: %v", err))
+					return
+				}
+				// Validate required params: TextDocument.URI must be present
+				if params.TextDocument.URI == "" {
+					sendError(call.ID(), jsonrpc2.InvalidParams, "textDocument.uri is required")
+					return
+				}
+				// Call the provider function.
+				report, err := provideDocumentDiagnostic(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: report is always non-nil per the provider contract (OQ-2).
+				var marshalErr error
+				respResult, marshalErr = marshalResult(report)
+				if marshalErr != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal diagnostic report: %v", marshalErr))
+					return
+				}
+
+			case "workspace/diagnostic":
+				// Feature 30, T6: pull diagnostics handler for the workspace.
+				// Gate on stateInitialized; decode WorkspaceDiagnosticParams; call provideWorkspaceDiagnostic.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.WorkspaceDiagnosticParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid workspace diagnostic params: %v", err))
+					return
+				}
+
+				// Progress: if params.WorkDoneToken is non-empty AND clientSupportsWorkDoneProgress is true,
+				// construct a progressReporter on that token and wrap the provider call in create → begin → end.
+				// Fire-and-forget progress writes (a failed write is logged, never fails the request).
+				// If no token or the client doesn't support work-done progress, skip progress entirely
+				// and just return a single full report.
+				// Note: partial-result streaming (WorkspaceDiagnosticReportPartialResult on
+				// params.PartialResultToken) is DEFERRED — a single full response over the bounded,
+				// non-re-analyzing index sweep is spec-legal.
+				var pr *progressReporter
+				if params.WorkDoneToken != nil && clientSupportsWorkDoneProgress {
+					pr = newProgressReporter(stream, params.WorkDoneToken, logger, true)
+					_ = pr.create(ctx)
+					_ = pr.begin(ctx, "Workspace diagnostic scan")
+				}
+
+				// Call the provider function.
+				report, err := provideWorkspaceDiagnostic(hctx, params)
+				if err != nil {
+					if pr != nil {
+						_ = pr.end(ctx, "")
+					}
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+
+				// End progress if it was started (fire-and-forget, logged errors don't fail the request).
+				if pr != nil {
+					_ = pr.end(ctx, "")
+				}
+
+				// Marshal the result: report is always non-nil per the provider contract.
+				var marshalErr error
+				respResult, marshalErr = marshalResult(report)
+				if marshalErr != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal workspace diagnostic report: %v", marshalErr))
+					return
 				}
 
 			default:

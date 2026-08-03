@@ -50,11 +50,11 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
 **(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
 (lsp-tracing-and-logging), 27 (variable & reference navigation), 28 (rich symbol detail & `VIEW OF`
-binding), and 29 (semantic tokens) are shipped** (see their notes below). The remaining follow-ups are
-**planned** (features **30–34**): a set of smaller **P2 LSP-capability** plans, **30 (pull
-diagnostics)**, **31 (declaration & type-definition navigation)**, **32 (document links)**, **33
-(execute-command / server commands)**, and **34 (moniker — documented non-goal, deferred)** (see their
-`docs/plans/features/` dirs; summarized after the feature-29 note).
+binding), 29 (semantic tokens), and 30 (pull diagnostics) are shipped** (see their notes below). The
+remaining follow-ups are **planned** (features **31–34**): a set of smaller **P2 LSP-capability** plans,
+**31 (declaration & type-definition navigation)**, **32 (document links)**, **33 (execute-command /
+server commands)**, and **34 (moniker — documented non-goal, deferred)** (see their
+`docs/plans/features/` dirs; summarized after the feature-30 note).
 
 Feature 26 (lsp-tracing-and-logging) makes the server a well-behaved LSP logging/tracing citizen — its
 only observability channel was previously stderr `slog` (plus feature 20's one-shot `window/showMessage`),
@@ -176,11 +176,39 @@ semanticTokens/full`** and **`textDocument/semanticTokens/range`** (whole-token 
 **`full/delta`** is deferred (not advertised). `FuzzSemanticTokens` + `FuzzEncodeSemanticTokens` guard the
 never-panic / `len%5==0` invariants (FR-43). See `docs/plans/features/29-semantic-tokens/`.
 
-**Features 30–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
+Feature 30 (pull diagnostics) exposes feature 14's existing diagnostics through the **LSP 3.17 pull
+model** — `textDocument/diagnostic` (per-document) and `workspace/diagnostic` (workspace) — on top of a new
+`diagnosticProvider` capability, **without removing push** (`publishDiagnostics` stays for push-only
+clients). **Server-layer only: no `internal/model` change, no cache-format bump (stays `0.9.0`).** It
+reuses feature 14's `aggregateDiagnostics`/`toProtocolDiagnostic` pipeline **verbatim** so pull content is
+**byte-identical** to push. `internal/server/pull_diagnostics.go` holds `provideDocumentDiagnostic`
+(returns a `RelatedFullDocumentDiagnosticReport`, `Kind:"full"`, `Items` always non-nil so the wire is
+`"items":[]` never `null`, `ResultID` unset per OQ-2 — full report each time, no unchanged-report caching)
+and `provideWorkspaceDiagnostic` (a **disk-free** index sweep via `workspace.Index.ForEachWithRange` +
+`RangeConverter`, ADR-025; per-file `WorkspaceFullDocumentDiagnosticReport` items **sorted by URI** for
+byte-stable output, clean files omitted). Both mirror feature 14's F7 snapshot + store-first + graceful
+degradation: missing/unreadable/out-of-root/cold-index → an **empty full report, never an error** (FR-43);
+a converter-based `toProtocolDiagnosticFromConverter` keeps the workspace path disk-free while remaining
+byte-identical to the content-based `toProtocolDiagnostic` (both share `severityToProtocol`/`convertDiagnostics`).
+The report types carry `MarshalJSONTo`, so the existing feature-19 `marshalResult` (`gojson`) path encodes
+them — no bespoke wire assembly. **Push/pull coexistence (OQ-1):** when the client advertises pull support
+(`textDocument.diagnostic`), the server **suppresses** its `publishDiagnostics` push (incl. the
+clear-on-close/delete pushes) to avoid double delivery, relying on pull for those documents; push-only
+clients are unchanged. Because it advertises `interFileDependencies: true` (FR-31 ambiguity is genuinely
+cross-file) and suppresses push, it also sends **`workspace/diagnostic/refresh`** (fire-and-forget,
+server→client, gated on the client's `workspace.diagnostics.refreshSupport`) on every index/resolution
+republish — **and once after the initial cold build** — so a pull client re-pulls stale cross-file
+diagnostics in unopened files. `workspace/diagnostic` honors a supplied **work-done progress token** via
+feature 21's `progressReporter`; **partial-result streaming is deferred** (a single full response over the
+bounded, non-re-analyzing index sweep is spec-legal). **Adds one new server capability**
+(`diagnosticProvider{identifier:"natural-lsp", interFileDependencies:true, workspaceDiagnostics:true}`) — so
+the locked `TestInitialize` allow-list gains one entry. `FuzzProvideDocumentDiagnostic` +
+`FuzzProvideWorkspaceDiagnostic` guard the never-panic / non-nil-report invariants (FR-43). FR-57,
+NFR-11. See `docs/plans/features/30-pull-diagnostics/`.
+
+**Features 31–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
 server-layer only, **no `internal/model`/cache change** (all reuse existing extraction/resolution), and each
-adds one new capability (so `TestInitialize` grows by one) except 34: **30 (pull diagnostics,
-`textDocument/diagnostic`+`workspace/diagnostic`)** exposes feature 14's existing diagnostics through the
-LSP 3.17 pull model (push stays); **31 (declaration & type-definition)** are thin providers over features
+adds one new capability (so `TestInitialize` grows by one) except 34: **31 (declaration & type-definition)** are thin providers over features
 10/27/28 resolution (`declaration` mirrors `definition` + variable-use→`DEFINE DATA`; `typeDefinition`
 jumps a field to its DDM) — sequence after 27/28; **32 (document links)** renders resolved CALLNAT/INCLUDE/
 FETCH/RUN targets as clickable links (largely redundant with go-to-definition — value is discoverability,
@@ -188,7 +216,7 @@ build on demand); **33 (execute-command)** is a command-dispatch substrate shipp
 command (reindex workspace, reusing feature 21's background build) — the enabler for future code actions;
 **34 (moniker)** is a **documented non-goal / deferral record** — no use case in a filesystem-scoped
 single-workspace product, revisit only alongside an LSIF/SCIP export. See their
-`docs/plans/features/30..34-*` dirs. (Capabilities still absent and NOT planned: incremental
+`docs/plans/features/31..34-*` dirs. (Capabilities still absent and NOT planned: incremental
 `textDocumentSync` — a deliberate Full-sync choice; `implementation`, formatting, `inlineValue`,
 `typeHierarchy`, `linkedEditingRange`, color — niche/N-A for Natural.)
 
