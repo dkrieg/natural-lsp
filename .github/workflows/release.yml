@@ -70,6 +70,30 @@ jobs:
       - name: Build release artifacts
         run: just release "${{ inputs.version }}"
 
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: Package VS Code extension (.vsix)
+        working-directory: editors/vscode
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # Pin the packaged extension version to the release tag (minus the
+          # leading "v") so the .vsix version always matches the release, with no
+          # separate package.json bump to remember. --allow-same-version keeps it
+          # idempotent when package.json already matches; --no-git-tag-version so
+          # nothing is committed (CI-only mutation).
+          npm ci
+          npm version "${VERSION#v}" --no-git-tag-version --allow-same-version
+          npm run compile   # vsce does not compile the sources; build out/ first
+          npm run package   # produces natural-lsp-vscode-<version>.vsix
+          ls -1 ./*.vsix
+
       - name: Create tag and GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,7 +103,7 @@ jobs:
             prerelease_flag="--prerelease"
           fi
           gh release create "${{ inputs.version }}" \
-            dist/natural-lsp-* dist/checksums.txt \
+            dist/natural-lsp-* dist/checksums.txt editors/vscode/*.vsix \
             --title "${{ inputs.version }}" \
             --generate-notes \
             $prerelease_flag
