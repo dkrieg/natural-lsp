@@ -618,7 +618,7 @@ func TestInitialize(t *testing.T) {
 					t.Errorf("positionEncoding = %v, want %q", caps["positionEncoding"], tc.expectedEncoding)
 				}
 
-				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5; feature 29, T4; feature 30, T1; feature 31, T1).
+				// Assert: the navigation and hover providers are advertised (feature 10, T3; feature 11, T3; feature 12, T6; feature 27, T5; feature 29, T4; feature 30, T1; feature 31, T1; feature 32, T1).
 				// These are intentional additions per the locked allow-list convention:
 				// when features add providers, TestInitialize is extended to assert them explicitly.
 				requiredProviders := []string{
@@ -630,6 +630,7 @@ func TestInitialize(t *testing.T) {
 					"documentSymbolProvider",
 					"hoverProvider",
 					"codeLensProvider",
+					"documentLinkProvider",
 					"signatureHelpProvider",
 					"callHierarchyProvider",
 					"documentHighlightProvider",
@@ -728,6 +729,27 @@ func TestInitialize(t *testing.T) {
 					}
 				} else {
 					t.Errorf("signatureHelpProvider type = %T; want map[string]interface{} (SignatureHelpOptions)", signatureHelpProviderVal)
+				}
+
+				// Assert: documentLinkProvider is advertised with correct shape (feature 32, T1).
+				// documentLinkProvider must be a DocumentLinkOptions object (not a boolean).
+				documentLinkProviderVal, exists := caps["documentLinkProvider"]
+				if !exists {
+					t.Errorf("documentLinkProvider = %v; want present (required by feature 32, T1)", documentLinkProviderVal)
+				} else if documentLinkProvider, ok := documentLinkProviderVal.(map[string]interface{}); ok {
+					// Assert: resolveProvider is false.
+					resolveProvider, hasResolveProvider := documentLinkProvider["resolveProvider"]
+					if !hasResolveProvider {
+						t.Errorf("documentLinkProvider.resolveProvider = %v; want present", resolveProvider)
+					} else if resolveProviderVal, ok := resolveProvider.(bool); ok {
+						if resolveProviderVal != false {
+							t.Errorf("documentLinkProvider.resolveProvider = %v; want false", resolveProviderVal)
+						}
+					} else {
+						t.Errorf("documentLinkProvider.resolveProvider type = %T; want bool", resolveProvider)
+					}
+				} else {
+					t.Errorf("documentLinkProvider type = %T; want map[string]interface{} (DocumentLinkOptions)", documentLinkProviderVal)
 				}
 			}
 		})

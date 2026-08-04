@@ -255,6 +255,7 @@ func handleInitialize(params protocol.InitializeParams, version string) (initial
 			DocumentSymbolProvider:  protocol.Boolean(true),
 			HoverProvider:           protocol.Boolean(true),
 			CodeLensProvider:        &protocol.CodeLensOptions{ResolveProvider: &falseVal},
+			DocumentLinkProvider:    &protocol.DocumentLinkOptions{ResolveProvider: &falseVal},
 			CompletionProvider: &protocol.CompletionOptions{
 				TriggerCharacters: []string{" "},
 				ResolveProvider:   &falseVal,
@@ -1339,6 +1340,37 @@ func Run(ctx context.Context, r io.Reader, w io.Writer, version, cwdFallback str
 					respResult, marshalErr = marshalResult(lenses)
 					if marshalErr != nil {
 						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal code lenses: %v", marshalErr))
+						return
+					}
+				}
+
+			case "textDocument/documentLink":
+				// Feature 32, T1: document link provider handler.
+				// Gate on stateInitialized; decode DocumentLinkParams; call provideDocumentLink.
+				if state != stateInitialized {
+					sendError(call.ID(), jsonrpc2.ServerNotInitialized, "server not initialized")
+					return
+				}
+				var params protocol.DocumentLinkParams
+				dec := jsontext.NewDecoder(bytes.NewReader(call.Params()))
+				if err := params.UnmarshalJSONFrom(dec); err != nil {
+					sendError(call.ID(), jsonrpc2.InvalidParams, fmt.Sprintf("invalid document link params: %v", err))
+					return
+				}
+				// Call the provider function.
+				links, err := provideDocumentLink(hctx, params)
+				if err != nil {
+					sendError(call.ID(), jsonrpc2.InternalError, err.Error())
+					return
+				}
+				// Marshal the result: links may be nil (empty) for a no-match case.
+				if links == nil {
+					respResult = []byte(`null`)
+				} else {
+					var marshalErr error
+					respResult, marshalErr = marshalResult(links)
+					if marshalErr != nil {
+						sendError(call.ID(), jsonrpc2.InternalError, fmt.Sprintf("failed to marshal document links: %v", marshalErr))
 						return
 					}
 				}

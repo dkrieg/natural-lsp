@@ -50,12 +50,12 @@ routed through every key producer/consumer incl. cache load; `internal/document`
 again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` release failure slipped through.
 **(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
 (lsp-tracing-and-logging), 27 (variable & reference navigation), 28 (rich symbol detail & `VIEW OF`
-binding), 29 (semantic tokens), 30 (pull diagnostics), and 31 (declaration & type-definition
-navigation) are shipped** (see their notes below). The
-remaining follow-ups are **planned** (features **32–34**): a set of smaller **P2 LSP-capability** plans,
-**32 (document links)**, **33 (execute-command /
+binding), 29 (semantic tokens), 30 (pull diagnostics), 31 (declaration & type-definition
+navigation), and 32 (document links) are shipped** (see their notes below). The
+remaining follow-ups are **planned** (features **33–34**): a set of smaller **P2 LSP-capability** plans,
+**33 (execute-command /
 server commands)**, and **34 (moniker — documented non-goal, deferred)** (see their
-`docs/plans/features/` dirs; summarized after the feature-31 note).
+`docs/plans/features/` dirs; summarized after the feature-32 note).
 
 Feature 26 (lsp-tracing-and-logging) makes the server a well-behaved LSP logging/tracing citizen — its
 only observability channel was previously stderr `slog` (plus feature 20's one-shot `window/showMessage`),
@@ -231,15 +231,37 @@ definition-family **`null`** empty sentinel (never `[]`), and are dispatched exa
 two entries. `FuzzProvideDeclaration` + `FuzzProvideTypeDefinition` guard the never-panic invariant
 (FR-43). FR-58 (refines FR-24). See `docs/plans/features/31-declaration-and-type-definition/`.
 
-**Features 32–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
+Feature 32 (document links) wires **`textDocument/documentLink`** — an always-visible, clickable
+presentation of the same navigation go-to-definition already serves. `internal/server/document_links.go`
+renders a `DocumentLink` over each **resolved** module/copycode/subroutine target span (CALLNAT / INCLUDE /
+FETCH / RUN / external PERFORM) whose `Target` is the resolved object's file URI, reusing feature 06 edges +
+feature 07 resolution (`ResolutionSet.Get(relPath, edge.Source)` → `IsResolved()`/`Path`) + feature 10
+location conversion. **Server-layer only: no `internal/model` change, no cache-format bump (stays `0.9.0`).**
+The link **Range is `edge.Source`** (the widened keyword→target span, approved OQ-A — `EdgeEntry` exposes no
+target-token-only range without a model change); the `Target` is `uri.File(filepath.Join(root,
+resolution.Path))` and is **range-less by protocol** (`DocumentLink.Target` carries no position — a click
+opens the target file top, which is exactly why the feature is discoverability-only and redundant with the
+precise-landing go-to-definition, OQ-C). **Modeled gaps produce no link (FR-17):** dynamic / unresolved /
+**ambiguous** flat-namespace targets are skipped (a link to nowhere is worse than none, approved OQ-1 — no
+arbitrary candidate pick), and an **inline same-file `PERFORM`** is skipped (`paths.NormalizeKey(resolution.Path)
+== relPath` — a range-less link to the current doc has no navigation value; only an **external** `PERFORM` →
+`.NSS` links). A pure, I/O-free `buildDocumentLinks(fa, res, relPath, root, content, enc)` helper does the
+classification/assembly (sorted by `Range.Start` for a deterministic invariant), while `provideDocumentLink`
+owns the URL/lock/store orchestration — mirroring `code_lens.go`'s F7 `idxResMu` RLock snapshot (released
+before I/O) + store-first buffer read + encoding-aware ranges (ADR-008, UTF-8/UTF-16). Empty → **`null`**
+sentinel via the feature-19 `marshalResult` (`gojson`) path (matching the `codeLens`/`definition` family).
+**Adds one new server capability** (`documentLinkProvider{resolveProvider:false}` — eager targets, no
+`documentLink/resolve`, OQ-1) — so the locked `TestInitialize` allow-list gains one entry.
+`FuzzProvideDocumentLink` guards the never-panic invariant (FR-43). FR-59. See
+`docs/plans/features/32-document-links/`.
+
+**Features 33–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
 server-layer only, **no `internal/model`/cache change** (all reuse existing extraction/resolution), and each
-adds one new capability (so `TestInitialize` grows by one) except 34: **32 (document links)** renders resolved CALLNAT/INCLUDE/
-FETCH/RUN targets as clickable links (largely redundant with go-to-definition — value is discoverability,
-build on demand); **33 (execute-command)** is a command-dispatch substrate shipped with a first concrete
+adds one new capability (so `TestInitialize` grows by one) except 34: **33 (execute-command)** is a command-dispatch substrate shipped with a first concrete
 command (reindex workspace, reusing feature 21's background build) — the enabler for future code actions;
 **34 (moniker)** is a **documented non-goal / deferral record** — no use case in a filesystem-scoped
 single-workspace product, revisit only alongside an LSIF/SCIP export. See their
-`docs/plans/features/32..34-*` dirs. (Capabilities still absent and NOT planned: incremental
+`docs/plans/features/33..34-*` dirs. (Capabilities still absent and NOT planned: incremental
 `textDocumentSync` — a deliberate Full-sync choice; `implementation`, formatting, `inlineValue`,
 `typeHierarchy`, `linkedEditingRange`, color — niche/N-A for Natural.)
 

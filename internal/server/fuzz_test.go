@@ -1372,6 +1372,181 @@ func FuzzProvideCompletion(f *testing.F) {
 	})
 }
 
+// FuzzProvideDocumentLink is the executable proof of the document-link provider's
+// robustness (FR-43, Task T11 of feature 32): provideDocumentLink must NEVER panic
+// when fed arbitrary cursor positions over arbitrary workspace content, and must
+// ALWAYS return a well-formed result (either nil or a valid []protocol.DocumentLink).
+//
+// The provider is called on every textDocument/documentLink request. A panic on any
+// input violates FR-43. The result must be well-formed protocol output.
+//
+// The fuzzer exercises:
+//   - Arbitrary workspace content (valid, malformed, empty, mixed)
+//   - Both resolved and unresolved edges (calls, includes, fetches, runs)
+//   - Both position encodings (UTF-8 and UTF-16)
+//   - Same-file inline PERFORM targets (excluded from links)
+//   - Dynamic and ambiguous targets (excluded from links)
+//
+// Seed corpus:
+//   - Document-link fixtures (ENCODING.NSP, TGT.NSN)
+//   - Call-hierarchy fixtures (CALLER.NSP for call/include context)
+//   - Root-handshake fixtures (HELLO.NSP for multi-file context)
+//   - Empty input
+//   - Malformed constructs with valid edges nearby
+//
+// Feature 32 Task T11, FR-43.
+func FuzzProvideDocumentLink(f *testing.F) {
+	// Seed from document-link and navigation fixtures.
+	fixtureNames := []string{
+		// Document-link specific fixtures
+		"testdata/documentlinks/ENCODING.NSP",
+		"testdata/documentlinks/TGT.NSN",
+		// Call-hierarchy fixtures (multi-file context)
+		"testdata/callhierarchy/CALLER.NSP",
+		"testdata/callhierarchy/CALLEE.NSN",
+		"testdata/callhierarchy/PGM.NSP",
+		"testdata/callhierarchy/CC.NSC",
+		// Root-handshake fixtures
+		"testdata/roothandshake/HELLO.NSP",
+		// Navigation fixtures (reused)
+		"testdata/navigation/caller.NSP",
+		"testdata/navigation/helper.NSN",
+		"testdata/navigation/unresolved.NSP",
+	}
+
+	for _, name := range fixtureNames {
+		// Fixture names are already package-relative ("testdata/..."); read them
+		// directly. (A former filepath.Join("internal/server", name) double-prefixed
+		// the path so every real fixture was silently skipped.)
+		data, err := os.ReadFile(filepath.FromSlash(name))
+		if err != nil {
+			// Skip missing fixtures (not a test failure).
+			continue
+		}
+		f.Add(data)
+	}
+
+	// Hand-written edge-case seeds (FR-43 graceful degradation).
+
+	// Empty input.
+	f.Add([]byte(""))
+
+	// Single CALLNAT with resolved target.
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nCALLNAT 'PROG'\nEND\n"))
+
+	// INCLUDE copycode.
+	f.Add([]byte("INCLUDE 'SHARED'\nCALLNAT 'X'\nEND\n"))
+
+	// FETCH program.
+	f.Add([]byte("FETCH 'PROG'\nEND\n"))
+
+	// RUN program with library.
+	f.Add([]byte("RUN 'PROG' 'LIB'\nEND\n"))
+
+	// Dynamic CALLNAT (#VAR) — variable target, excluded from links.
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #SUB-NAME (A10)\nEND-DEFINE\nCALLNAT #SUB-NAME\nEND\n"))
+
+	// Inline PERFORM with DEFINE SUBROUTINE — same-file, excluded from links.
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nDEFINE SUBROUTINE MY-SUB\n  CALLNAT 'X'\nEND-SUBROUTINE\nPERFORM MY-SUB\nEND\n"))
+
+	// External PERFORM (would require target in index to resolve, but illustrates the edge type).
+	f.Add([]byte("DEFINE DATA LOCAL END-DEFINE\nPERFORM 'EXT-SUB'\nEND\n"))
+
+	// Bare CALLNAT with no target — unresolved, no link.
+	f.Add([]byte("CALLNAT"))
+
+	// Multiple statement types (mixed valid and invalid).
+	f.Add([]byte("CALLNAT 'GOOD'\nINCLUDE 'SHARED'\nFETCH 'PROG'\nRUN 'PROG' 'LIB'\nEND\n"))
+
+	// Malformed DEFINE DATA (no END-DEFINE).
+	f.Add([]byte("DEFINE DATA LOCAL\n  1 #X (A5)\nCALLNAT 'Y'\n"))
+
+	// Program with only whitespace.
+	f.Add([]byte("   \n   \n   "))
+
+	// Multi-byte UTF-8 content in comments or strings.
+	f.Add([]byte("* café comment\nCALLNAT 'café-program'\nEND\n"))
+
+	f.Fuzz(func(t *testing.T, input []byte) {
+		// Arrange: build a minimal handler context over a single-file workspace.
+		az := natural.New(nil)
+		fa, err := az.Analyze("fuzz.NSP", input)
+		// err may be non-nil (expected for malformed input), fa is a value type.
+		_ = err
+
+		// Build a minimal index containing just the fuzzed file.
+		idx := &workspace.Index{}
+		idx.Add("fuzz.NSP", fa)
+
+		// Resolve the index (will return an empty result set for unresolvable edges).
+		cfg := &config.Config{}
+		res := workspace.Resolve(idx, cfg)
+
+		// Create a minimal handler context with a temp root.
+		tmpDir := t.TempDir()
+		hctx := &handlerContext{
+			idx:         idx,
+			res:         res,
+			posEncoding: protocol.PositionEncodingKindUTF8,
+			root:        tmpDir,
+			cfg:         *cfg,
+		}
+
+		// Write the fuzzed input to a file so provideDocumentLink can read it.
+		fuzzPath := filepath.Join(tmpDir, "fuzz.NSP")
+		if err := os.WriteFile(fuzzPath, input, 0600); err != nil {
+			// If we can't write the file, skip this test case (FR-43).
+			return
+		}
+
+		// Test both encodings (UTF-8 and UTF-16)
+		encodings := []protocol.PositionEncodingKind{
+			protocol.PositionEncodingKindUTF8,
+			protocol.PositionEncodingKindUTF16,
+		}
+
+		// Act: call provideDocumentLink with the fuzzed document.
+		// This must NOT panic for any encoding (FR-43).
+		for _, enc := range encodings {
+			hctx.posEncoding = enc
+			params := protocol.DocumentLinkParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(fuzzPath),
+				},
+			}
+
+			// Call provideDocumentLink — must not panic (FR-43).
+			links, err := provideDocumentLink(hctx, params)
+
+			// Assert: result is well-formed.
+			// Either nil or a valid []protocol.DocumentLink.
+			if links != nil {
+				// Non-nil result must be a valid slice.
+				for _, link := range links {
+					// Each link must have a Range.
+					_ = link.Range
+					// Target may be nil (empty link) or a valid URI.
+					if link.Target != nil {
+						// If Target is set, it must be a valid URI string.
+						_ = link.Target.String()
+					}
+				}
+			}
+			// No specific assertion on links or err beyond type safety;
+			// the main goal is no panic.
+			_ = links
+			_ = err
+		}
+
+		// Bonus: if the file analysis is present, exercise the pure buildDocumentLinks
+		// builder directly with both encodings and a mock resolution set.
+		if res != nil {
+			_ = buildDocumentLinks(fa, res, "fuzz.NSP", tmpDir, string(input), protocol.PositionEncodingKindUTF8)
+			_ = buildDocumentLinks(fa, res, "fuzz.NSP", tmpDir, string(input), protocol.PositionEncodingKindUTF16)
+		}
+	})
+}
+
 // FuzzSignatureContext is the executable proof of the signature-context detector's
 // robustness (FR-43, Task T2 of feature 17): detectSignatureContext must NEVER panic
 // when fed arbitrary line text and cursor positions.
