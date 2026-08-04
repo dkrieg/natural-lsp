@@ -1,0 +1,10 @@
+* Target for encoding test
+SUBROUTINE TGT
+
+DEFINE DATA
+  LOCAL
+    1 #P (A10)
+  END
+END
+
+END-SUBROUTINE

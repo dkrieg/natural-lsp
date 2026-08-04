@@ -1,0 +1,12 @@
+* Test multibyte UTF-8 encoding in document links
+PROGRAM ENCODING
+
+DEFINE DATA
+  LOCAL
+    1 #X (N5)
+  END
+END
+
+TGTË: CALLNAT 'TGT' #X
+
+END
