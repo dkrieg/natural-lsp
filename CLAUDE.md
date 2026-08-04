@@ -51,11 +51,14 @@ again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` releas
 **(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
 (lsp-tracing-and-logging), 27 (variable & reference navigation), 28 (rich symbol detail & `VIEW OF`
 binding), 29 (semantic tokens), 30 (pull diagnostics), 31 (declaration & type-definition
-navigation), and 32 (document links) are shipped** (see their notes below). The
-remaining follow-ups are **planned** (features **33–34**): a set of smaller **P2 LSP-capability** plans,
-**33 (execute-command /
-server commands)**, and **34 (moniker — documented non-goal, deferred)** (see their
-`docs/plans/features/` dirs; summarized after the feature-32 note).
+navigation), and 32 (document links) are shipped** (see their notes below). **The LSP capability
+surface is now considered complete for v1.0** — the two remaining backlog candidates, **33
+(execute-command)** and **34 (moniker)**, were evaluated and **dropped as non-goals** (their plan dirs
+removed): moniker has no use case in a filesystem-scoped single-workspace product (cross-repo LSIF/SCIP
+interchange only), and execute-command was a consumer-less enabler whose one concrete command (reindex) is
+already covered by the content-hash cache invalidation + fsnotify watcher and the editor's built-in
+"restart server". Revisit execute-command only if server-driven code actions are added, and moniker only
+alongside an LSIF/SCIP exporter.
 
 Feature 26 (lsp-tracing-and-logging) makes the server a well-behaved LSP logging/tracing citizen — its
 only observability channel was previously stderr `slog` (plus feature 20's one-shot `window/showMessage`),
@@ -255,14 +258,15 @@ sentinel via the feature-19 `marshalResult` (`gojson`) path (matching the `codeL
 `FuzzProvideDocumentLink` guards the never-panic invariant (FR-43). FR-59. See
 `docs/plans/features/32-document-links/`.
 
-**Features 33–34 (smaller P2 LSP-capability plans, from an LSP capability-gap review).** Each is
-server-layer only, **no `internal/model`/cache change** (all reuse existing extraction/resolution), and each
-adds one new capability (so `TestInitialize` grows by one) except 34: **33 (execute-command)** is a command-dispatch substrate shipped with a first concrete
-command (reindex workspace, reusing feature 21's background build) — the enabler for future code actions;
-**34 (moniker)** is a **documented non-goal / deferral record** — no use case in a filesystem-scoped
-single-workspace product, revisit only alongside an LSIF/SCIP export. See their
-`docs/plans/features/33..34-*` dirs. (Capabilities still absent and NOT planned: incremental
-`textDocumentSync` — a deliberate Full-sync choice; `implementation`, formatting, `inlineValue`,
+**Features 33 (execute-command) and 34 (moniker) were dropped** (2026-08-04) after a value review — their
+plan dirs were removed. **33 (execute-command)** was a consumer-less dispatch enabler: the only concrete
+command it proposed (reindex workspace) is already covered by content-hash cache invalidation + the
+fsnotify watcher for the routine case and by the editor's built-in "restart language server" as the manual
+escape hatch, and there are no server-driven code actions to consume the substrate. **34 (moniker)** has
+no use case in a filesystem-scoped single-workspace product (monikers exist for cross-repo LSIF/SCIP index
+interchange, which this product does not participate in). Revisit execute-command only if code actions are
+added, and moniker only alongside an LSIF/SCIP exporter. (Other capabilities still absent and NOT planned:
+incremental `textDocumentSync` — a deliberate Full-sync choice; `implementation`, formatting, `inlineValue`,
 `typeHierarchy`, `linkedEditingRange`, color — niche/N-A for Natural.)
 
 Feature 24 (cache-format-compaction) fixes a real-user-reported bug: the on-disk workspace cache was
