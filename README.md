@@ -77,7 +77,12 @@ exported to files before it can be indexed.
 > `textDocument/typeDefinition` (a `typeDefinitionProvider` that jumps a `VIEW OF` field to the `.NSD` DDM
 > field that types it, via the feature-28 view→DDM binding and the steplib chain); scalar-only fields with
 > no DDM type object return empty (FR-17). Thin providers over features 10/27/28 resolution — server-layer
-> only, no cache-format change (FR-58). There are no published binaries yet;
+> only, no cache-format change (FR-58).
+> **Document links are now implemented** (feature 32): a `documentLinkProvider` renders each **resolved**
+> CALLNAT/INCLUDE/FETCH/RUN/external-PERFORM target span as a clickable link to the resolved object's file —
+> an always-visible presentation of the same navigation go-to-definition serves. Dynamic/unresolved/ambiguous
+> targets (and inline same-file PERFORMs) get no link (FR-17). Server-layer only, no cache-format change
+> (FR-59). There are no published binaries yet;
 > build from source or via the VS Code extension.
 >
 > **A full independent assessment (2026-07-14) — [`docs/assessment-2026-07-14.md`](docs/assessment-2026-07-14.md) —
@@ -151,6 +156,9 @@ The capabilities below define the **target** feature set for the first stable re
   targets and variable use → `DEFINE DATA`) — **shipped** ([feature 31](docs/plans/features/31-declaration-and-type-definition/plan.md))
 - `textDocument/typeDefinition` (a `typeDefinitionProvider` jumping a `VIEW OF` field to the `.NSD` DDM
   field that types it; scalar-only fields → empty) — **shipped** ([feature 31](docs/plans/features/31-declaration-and-type-definition/plan.md))
+- `textDocument/documentLink` (a `documentLinkProvider` — resolved CALLNAT/INCLUDE/FETCH/RUN/external-PERFORM
+  targets as clickable links to the resolved object; dynamic/unresolved/ambiguous → no link) — **shipped**
+  ([feature 32](docs/plans/features/32-document-links/plan.md))
 - `textDocument/references` — **shipped** (feature 10)
 - `workspace/symbol` — **shipped** (feature 10)
 - `textDocument/hover` — **shipped** (feature 12)
