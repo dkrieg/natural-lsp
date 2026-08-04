@@ -2,7 +2,7 @@
   "name": "natural-lsp-vscode",
   "displayName": "Natural LSP",
   "description": "Language support for Software AG Natural, backed by the natural-lsp language server.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "publisher": "dkrieg",
   "license": "MIT",
   "engines": {

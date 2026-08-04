@@ -13,7 +13,10 @@ It operates on **filesystem-based Natural sources** — the `.NSx` object files 
 objects stored only in the mainframe Natural/Adabas library system. Natural that lives solely on the mainframe must be
 exported to files before it can be indexed.
 
-> **Project status: early development.** The LSP lifecycle (`initialize`/`shutdown`/`exit`) and
+> **Project status: v1.0.0 — feature-complete for a 1.0 release.** The LSP capability surface (navigation,
+> declaration/type-definition, references, workspace symbols, document outline, hover, code lens, push +
+> pull diagnostics, completion, signature help, call hierarchy, semantic tokens, document links, document
+> highlight) is implemented and reviewed. The LSP lifecycle (`initialize`/`shutdown`/`exit`) and
 > `Content-Length` framing are implemented (features 01–03). `textDocument/didOpen`,
 > `textDocument/didChange`, `textDocument/didClose`, and `workspace/didChangeWatchedFiles` are wired to
 > an in-memory document store; an `fsnotify`-based workspace watcher re-analyzes files on disk change
@@ -84,8 +87,9 @@ exported to files before it can be indexed.
 > CALLNAT/INCLUDE/FETCH/RUN/external-PERFORM target span as a clickable link to the resolved object's file —
 > an always-visible presentation of the same navigation go-to-definition serves. Dynamic/unresolved/ambiguous
 > targets (and inline same-file PERFORMs) get no link (FR-17). Server-layer only, no cache-format change
-> (FR-59). There are no published binaries yet;
-> build from source or via the VS Code extension.
+> (FR-59). Pre-built binaries for Linux/macOS/Windows are published on
+> [GitHub Releases](https://github.com/dkrieg/natural-lsp/releases) (with checksums); you can also
+> `go install` or build from source (see [Installation](#installation)).
 >
 > **A full independent assessment (2026-07-14) — [`docs/assessment-2026-07-14.md`](docs/assessment-2026-07-14.md) —
 > confirmed the core is solid but identified five known issues, re-planned as features 19–23.**
