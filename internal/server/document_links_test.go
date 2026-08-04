@@ -106,10 +106,15 @@ func TestProvideDocumentLink_ResolvedCALLNAT(t *testing.T) {
 		t.Errorf("link Target = %q, want %q", string(*calleeLink.Target), string(calleeURI))
 	}
 
-	// Assert: Range matches the edge.Source (line 12, the CALLNAT statement)
-	// This is a sanity check; the exact range depends on edge.Source span
-	if calleeLink.Range.Start.Line != 11 { // 0-based, so line 12 → 11
-		t.Errorf("link Range.Start.Line = %d, want 11 (line 12)", calleeLink.Range.Start.Line)
+	// Assert: full Range == edge.Source converted (T2 DoD). Line 12 (0-based 11) is
+	// "CALLNAT 'CALLEE' #A"; edge.Source spans the keyword through the target literal
+	// 'CALLEE', i.e. bytes 0..15 inclusive → protocol [0,16) on line 11 (UTF-8).
+	wantRange := protocol.Range{
+		Start: protocol.Position{Line: 11, Character: 0},
+		End:   protocol.Position{Line: 11, Character: 16},
+	}
+	if calleeLink.Range != wantRange {
+		t.Errorf("link Range = %+v, want %+v", calleeLink.Range, wantRange)
 	}
 }
 
@@ -933,8 +938,9 @@ func TestProvideDocumentLink_StoreFirst(t *testing.T) {
 
 // TestProvideDocumentLink_Encoding tests T9: link ranges are encoding-aware
 // (UTF-8 vs UTF-16 code units).
-// The fixture ENCODING.NSP has a multibyte character (emoji) on the same line
-// as a resolved CALLNAT, so the UTF-8 byte columns differ from UTF-16 code units.
+// The fixture ENCODING.NSP has a multibyte character (Ë, U+00CB — 2 bytes in
+// UTF-8, 1 code unit in UTF-16) on the same line as a resolved CALLNAT, so the
+// UTF-8 byte columns differ from UTF-16 code units.
 // Running with UTF-8 and UTF-16 encodings, the link Range.Character should
 // differ per encoding exactly as toProtocolRange computes.
 func TestProvideDocumentLink_Encoding(t *testing.T) {
@@ -1032,16 +1038,19 @@ func TestProvideDocumentLink_Encoding(t *testing.T) {
 		})
 	}
 
-	// Assert: Character positions differ between UTF-8 and UTF-16
-	// The emoji 🎯 is 4 bytes in UTF-8 but 2 code units in UTF-16
-	// So UTF-16 Character should be LESS than UTF-8 Character for the same byte position
+	// Assert: Character positions differ between UTF-8 and UTF-16.
+	// Line 10 is "TGTË: CALLNAT 'TGT' #X"; Ë (U+00CB) is 2 bytes in UTF-8 but 1
+	// code unit in UTF-16, so CALLNAT begins at byte column 7 (UTF-8) vs code-unit
+	// column 6 (UTF-16) — the UTF-16 column is exactly one less.
 	if len(utf8Links) > 0 && len(utf16Links) > 0 {
 		utf8Char := utf8Links[0].Range.Start.Character
 		utf16Char := utf16Links[0].Range.Start.Character
 
-		if utf8Char == utf16Char {
-			t.Errorf("Character should differ per encoding: UTF-8 = %d, UTF-16 = %d; they must differ",
-				utf8Char, utf16Char)
+		if utf8Char != 7 {
+			t.Errorf("UTF-8 Range.Start.Character = %d, want 7", utf8Char)
+		}
+		if utf16Char != 6 {
+			t.Errorf("UTF-16 Range.Start.Character = %d, want 6", utf16Char)
 		}
 	}
 }

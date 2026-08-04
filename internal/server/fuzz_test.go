@@ -1415,8 +1415,10 @@ func FuzzProvideDocumentLink(f *testing.F) {
 	}
 
 	for _, name := range fixtureNames {
-		path := filepath.Join("internal/server", name)
-		data, err := os.ReadFile(path)
+		// Fixture names are already package-relative ("testdata/..."); read them
+		// directly. (A former filepath.Join("internal/server", name) double-prefixed
+		// the path so every real fixture was silently skipped.)
+		data, err := os.ReadFile(filepath.FromSlash(name))
 		if err != nil {
 			// Skip missing fixtures (not a test failure).
 			continue
