@@ -36,6 +36,14 @@ func parseForSemanticTokensDefault(content string) *Program {
 	return ast
 }
 
+// These package-level func vars are read on every SemanticTokens request but written only by
+// TestSemanticTokens_ParseOnce, so they are effectively immutable in production and safe to read
+// without synchronization. Two invariants keep that true — do not break either without adding a
+// mutex/atomic:
+//  1. SemanticTokens must stay on the server's serial dispatch loop (no per-request goroutine), so
+//     production reads never run concurrently with each other or with a writer.
+//  2. No test in this package that swaps these vars (or runs concurrently with the swap) may call
+//     t.Parallel — the swap + t.Cleanup restoration rely on serial test execution.
 var (
 	lexAllForSemanticTokens = lexAllForSemanticTokensDefault
 	parseForSemanticTokens  = parseForSemanticTokensDefault
