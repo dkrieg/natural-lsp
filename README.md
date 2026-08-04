@@ -66,7 +66,9 @@ exported to files before it can be indexed.
 > drives AST-aware highlighting — keyword/comment/string/number/operator lexically, plus
 > variable/parameter/call-target/DDM-view-and-field/system-variable classification with
 > declaration/definition/readonly/modification/defaultLibrary modifiers — computed on demand behind the
-> Analyzer seam with no cache-format change (`full/delta` deferred).
+> Analyzer seam with no cache-format change (`full/delta` deferred). **(Feature 35)** the classifier was
+> then made **O(n log n)** — a byte-identical fix removing an O(n²) latency cliff (a large file went from
+> ~2.6 s to ~12 ms per request).
 > **Pull diagnostics are now implemented** (feature 30): the LSP 3.17 pull model
 > (`textDocument/diagnostic` + `workspace/diagnostic`, `diagnosticProvider` capability) serves the same
 > content as the feature-14 push path (byte-identical); push is suppressed for pull-capable clients and a
