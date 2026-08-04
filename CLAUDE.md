@@ -51,7 +51,8 @@ again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` releas
 **(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
 (lsp-tracing-and-logging), 27 (variable & reference navigation), 28 (rich symbol detail & `VIEW OF`
 binding), 29 (semantic tokens), 30 (pull diagnostics), 31 (declaration & type-definition
-navigation), and 32 (document links) are shipped** (see their notes below). **The LSP capability
+navigation), 32 (document links), and 35 (semantic-tokens classifier performance — an O(n²)→O(n log n)
+fix) are shipped** (see their notes below). **The LSP capability
 surface is now considered complete for v1.0** — the two remaining backlog candidates, **33
 (execute-command)** and **34 (moniker)**, were evaluated and **dropped as non-goals** (their plan dirs
 removed): moniker has no use case in a filesystem-scoped single-workspace product (cross-repo LSIF/SCIP
@@ -170,7 +171,8 @@ precedence (`function > type > property > parameter/variable > lexical`), recurs
 dynamic/`&`-placeholder targets and `INCLUDE` copycode are never `function`, a `*`-line-start comment is
 never a system var, and an undeclared identifier falls back to nothing. The lexer gained `:=` as a single
 operator token (no keyword change). Computed **on demand from the open buffer** (store-first, F7,
-O(tokens), no workspace sweep — a large-file bench is recorded, NFR-3); the classifier lives entirely
+no workspace sweep, NFR-3 — the classifier was **O(n²)** as first shipped and was made **O(n log n)** by
+feature 35, see its note below); the classifier lives entirely
 behind the Analyzer seam so `internal/server` imports no parser internals. **Adds one new server
 capability** (`semanticTokensProvider` + a fixed-order legend — types `keyword, comment, string, number,
 operator, variable, parameter, function, type, property`; modifiers `declaration, definition, readonly,
@@ -268,6 +270,23 @@ interchange, which this product does not participate in). Revisit execute-comman
 added, and moniker only alongside an LSIF/SCIP exporter. (Other capabilities still absent and NOT planned:
 incremental `textDocumentSync` — a deliberate Full-sync choice; `implementation`, formatting, `inlineValue`,
 `typeHierarchy`, `linkedEditingRange`, color — niche/N-A for Natural.)
+
+Feature 35 (semantic-tokens classifier performance) fixes an **O(n²) latency cliff** in feature 29's
+`Analyzer.SemanticTokens` — on the interactive hot path (`semanticTokens/full`+`/range` on the open buffer,
+per open/edit). A CPU profile showed **~95% of the cost was `computeTokenRange` rescanning the file from
+byte 0 for every token** (O(tokens × bytes)); the plan's originally-suspected hot spot (the merge/dedup
+loop) turned out to be <3% — the `//go:build bench` `BenchmarkSemanticTokens` (Story 3) is what surfaced
+the misdiagnosis. Three behavior-preserving fixes, all **byte-identical** (a checked-in golden test +
+differential execution vs. `main` prove it): **(T5, the real fix)** a **line-start byte-offset table**
+built once per request so `computeTokenRange` resolves each token within its own line → O(1)/token,
+dropping the classifier to **O(n log n)** (8,000-line file **2.6 s → 11.7 ms, ~223×**; ns/op now scales
+with token count, not its square); **(T3)** lex/parse **once** and thread the shared `*Program`+`[]Token`
+into the five phases (was 7 lexes + 4 parses/request → 1+1, ~3.4× fewer allocs — a package-private
+func-var seam lets a test assert the single parse); **(T2)** the O(n²) merge/dedup scans replaced by a
+`seen` set + a precomputed readonly-`variable` start-position set. **Entirely behind the Analyzer seam: no
+`internal/model` change, no cache-format bump (`0.9.0`), no capability/legend change, seam signature
+unchanged.** `FuzzSemanticTokens`/`FuzzEncodeSemanticTokens` still guard never-panic (FR-43). NFR-3. See
+`docs/plans/features/35-semantic-tokens-performance/` (`## Results` records the before/after + scaling).
 
 Feature 24 (cache-format-compaction) fixes a real-user-reported bug: the on-disk workspace cache was
 **~1 GB for ~7,790 files** because it was serialized as **indented** JSON (`json.MarshalIndent`) of the

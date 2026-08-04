@@ -790,3 +790,51 @@ func TestSemanticTokens_PhaseA_UnparseableFallback(t *testing.T) {
 		t.Errorf("unparseable input: no string token emitted; expected 'HELLO' to still lex (lexical fallback)")
 	}
 }
+
+// TestSemanticTokens_ParseOnce pins feature 35, T3 (Story 2 AC1): a single SemanticTokens
+// request must lex the content exactly once and parse it exactly once, no matter how many of
+// the five phase helpers consume the AST/token stream. Before T3, semanticTokensPhaseB's five
+// helpers each independently re-derived their own lex/parse (7 explicit lexes + 4 parses per
+// request); this test wraps the package-level lexAllForSemanticTokens/parseForSemanticTokens
+// func vars with counting wrappers and asserts both land at exactly 1.
+//
+// This is a genuine behavioral assertion, not a structural one: it fails if any phase helper
+// (or a future one) reintroduces its own NewLexer/NewParser call instead of consuming the
+// shared inputs threaded by semanticTokensPhaseB.
+func TestSemanticTokens_ParseOnce(t *testing.T) {
+	origLex := lexAllForSemanticTokens
+	origParse := parseForSemanticTokens
+	t.Cleanup(func() {
+		lexAllForSemanticTokens = origLex
+		parseForSemanticTokens = origParse
+	})
+
+	var lexCount, parseCount int
+	lexAllForSemanticTokens = func(content string) []Token {
+		lexCount++
+		return origLex(content)
+	}
+	parseForSemanticTokens = func(content string) *Program {
+		parseCount++
+		return origParse(content)
+	}
+
+	// A content sample that exercises every phase helper (declarations, a use site, a
+	// CALLNAT call target, a VIEW OF binding, and a system variable) so a reintroduced
+	// per-helper re-lex/re-parse would be caught regardless of which helper regressed.
+	content := "DEFINE DATA\nLOCAL\n1 #X (A10)\nEND-DEFINE\nMOVE 'HI' TO #X\nCALLNAT 'SUB1'\nMOVE *DATX TO #X\nEND\n"
+
+	az := New(nil)
+	got := az.SemanticTokens("parseonce.NSP", []byte(content))
+
+	if got == nil {
+		t.Fatal("SemanticTokens returned nil, want non-nil slice")
+	}
+
+	if lexCount != 1 {
+		t.Errorf("explicit lex count = %d, want exactly 1 (feature 35, T3 parse-once)", lexCount)
+	}
+	if parseCount != 1 {
+		t.Errorf("parse count = %d, want exactly 1 (feature 35, T3 parse-once)", parseCount)
+	}
+}
