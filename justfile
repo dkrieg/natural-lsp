@@ -60,11 +60,13 @@ bench:
     #   just bench                             # small/medium/large default tiers
     #   BENCH_CORPUS_OBJECTS=10000 just bench  # add a manual large tier
     #   BENCH_CORPUS_OBJECTS=30000 just bench  # headline-figure run
-    # Covers both the workspace bench package (cold/warm/memory + name-index
-    # micro-benchmarks) and the internal/server request-latency baselines
+    # Covers the workspace bench package (cold/warm/memory + name-index
+    # micro-benchmarks), the internal/server request-latency baselines
     # (workspace/symbol + references providers, which need the unexported
-    # handlerContext so they live in-package behind the bench tag).
-    go test -tags bench -bench=. -benchmem -run=^$ ./internal/workspace/bench/... ./internal/server/...
+    # handlerContext so they live in-package behind the bench tag), and the
+    # internal/analysis/natural semantic-tokens classifier latency benchmark
+    # (feature 35 — BenchmarkSemanticTokens, lives in-package behind the seam).
+    go test -tags bench -bench=. -benchmem -run=^$ ./internal/workspace/bench/... ./internal/server/... ./internal/analysis/natural/...
 
 # Enable the repo git hooks (pre-push then runs `just verify`)
 install-hooks:

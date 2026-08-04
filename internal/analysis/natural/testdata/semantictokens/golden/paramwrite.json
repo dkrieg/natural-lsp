@@ -1,0 +1,188 @@
+[
+  {
+    "range": {
+      "start": {
+        "line": 1,
+        "column": 1
+      },
+      "end": {
+        "line": 1,
+        "column": 6
+      }
+    },
+    "type": "keyword",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 1,
+        "column": 8
+      },
+      "end": {
+        "line": 1,
+        "column": 11
+      }
+    },
+    "type": "keyword",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 2,
+        "column": 1
+      },
+      "end": {
+        "line": 2,
+        "column": 5
+      }
+    },
+    "type": "keyword",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 3,
+        "column": 3
+      },
+      "end": {
+        "line": 3,
+        "column": 3
+      }
+    },
+    "type": "number",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 3,
+        "column": 5
+      },
+      "end": {
+        "line": 3,
+        "column": 6
+      }
+    },
+    "type": "variable",
+    "modifiers": 1,
+    "modifierNames": [
+      "declaration"
+    ]
+  },
+  {
+    "range": {
+      "start": {
+        "line": 4,
+        "column": 1
+      },
+      "end": {
+        "line": 4,
+        "column": 9
+      }
+    },
+    "type": "keyword",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 5,
+        "column": 3
+      },
+      "end": {
+        "line": 5,
+        "column": 3
+      }
+    },
+    "type": "number",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 5,
+        "column": 5
+      },
+      "end": {
+        "line": 5,
+        "column": 6
+      }
+    },
+    "type": "parameter",
+    "modifiers": 1,
+    "modifierNames": [
+      "declaration"
+    ]
+  },
+  {
+    "range": {
+      "start": {
+        "line": 8,
+        "column": 1
+      },
+      "end": {
+        "line": 8,
+        "column": 4
+      }
+    },
+    "type": "keyword",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 8,
+        "column": 6
+      },
+      "end": {
+        "line": 8,
+        "column": 7
+      }
+    },
+    "type": "variable",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 8,
+        "column": 9
+      },
+      "end": {
+        "line": 8,
+        "column": 10
+      }
+    },
+    "type": "keyword",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 8,
+        "column": 12
+      },
+      "end": {
+        "line": 8,
+        "column": 13
+      }
+    },
+    "type": "parameter",
+    "modifiers": 8,
+    "modifierNames": [
+      "modification"
+    ]
+  }
+]

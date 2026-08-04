@@ -6,6 +6,41 @@ import (
 	"github.com/dkrieg/natural-lsp/internal/model"
 )
 
+// lexAllForSemanticTokens and parseForSemanticTokens are the sole lex/parse entry points used by
+// semanticTokensPhaseB (feature 35, T3 — parse-once). They are package-level func vars, rather than
+// plain functions, purely so a white-box test can substitute counting wrappers and assert exactly
+// one lex + one parse per SemanticTokens request (TestSemanticTokens_ParseOnce); production code
+// always uses these default implementations — nothing on the hot path is affected.
+
+// lexAllForSemanticTokensDefault drains content into a single, order-preserving, EOF-excluded
+// []Token slice — the same sequence every phase helper independently produced before T3.
+func lexAllForSemanticTokensDefault(content string) []Token {
+	lexer := NewLexer(content)
+	var tokens []Token
+	for {
+		tok := lexer.NextToken()
+		if tok.Type == TokenEOF {
+			break
+		}
+		tokens = append(tokens, tok)
+	}
+	return tokens
+}
+
+// parseForSemanticTokensDefault lexes and parses content once into a *Program. Parse errors are
+// intentionally ignored here (as every phase helper did before T3): an unparseable file still gets
+// Phase-A lexical tokens, and a nil *Program short-circuits every AST-consuming phase (FR-43).
+func parseForSemanticTokensDefault(content string) *Program {
+	parser := NewParser(NewLexer(content))
+	ast, _ := parser.Parse()
+	return ast
+}
+
+var (
+	lexAllForSemanticTokens = lexAllForSemanticTokensDefault
+	parseForSemanticTokens  = parseForSemanticTokensDefault
+)
+
 // Phase A: Lexical token classification (Phase B identifier/call/DDM semantic classification is deferred).
 // This implementation walks the lexer and emits SemanticToken for unambiguous lexical classes:
 // keyword, comment, string, number, operator. Identifiers, punctuation, SQL opaque, and error
@@ -14,20 +49,15 @@ import (
 // Each token's Range is computed from actual source bytes (not Token.Literal length),
 // because Literal is normalized (upper-cased, quotes stripped).
 
-// semanticTokensPhaseA classifies tokens from source content via lexical analysis.
+// semanticTokensPhaseA classifies tokens from a pre-computed lexer token stream
+// (shared across all phase helpers by semanticTokensPhaseB — feature 35, T3 parse-once).
 // It returns a non-nil, possibly-empty slice of classified tokens in document order (FR-43).
-func semanticTokensPhaseA(path string, content string) []model.SemanticToken {
+func semanticTokensPhaseA(lexTokens []Token, content string, lineStarts []int) []model.SemanticToken {
 	var tokens []model.SemanticToken
 
-	lexer := NewLexer(content)
 	contentBytes := []byte(content)
 
-	for {
-		tok := lexer.NextToken()
-		if tok.Type == TokenEOF {
-			break
-		}
-
+	for _, tok := range lexTokens {
 		// Determine the semantic type and whether to emit this token.
 		var semanticType model.SemanticTokenType
 		shouldEmit := true
@@ -57,7 +87,7 @@ func semanticTokensPhaseA(path string, content string) []model.SemanticToken {
 		// Compute the real source Range from the actual bytes in content.
 		// The token's Line and Column are 1-based, matching model.Position convention.
 		// We must find the token's actual byte position and width in the source.
-		rangeStart, rangeEnd := computeTokenRange(contentBytes, tok)
+		rangeStart, rangeEnd := computeTokenRange(contentBytes, lineStarts, tok)
 
 		tokens = append(tokens, model.SemanticToken{
 			Range: model.Range{
@@ -72,22 +102,79 @@ func semanticTokensPhaseA(path string, content string) []model.SemanticToken {
 	return tokens
 }
 
+// buildLineStarts precomputes, in a single O(len(contentBytes)) pass, the byte offset at which
+// each 1-based source line begins: buildLineStarts(b)[i] is the byte offset of line i+1's first
+// byte, so line 1 always starts at buildLineStarts(b)[0] == 0.
+//
+// It replicates EXACTLY the line-termination rule computeTokenRange's start-scan has always used
+// (feature 29): `\r` — whether or not followed by `\n` — ends a line (a lone `\r`, i.e. old
+// classic-Mac style, is its own terminator; `\r\n` is consumed as the single CRLF terminator), and
+// a bare `\n` ends a line. This is the ONLY input computeTokenRange needs to jump straight to the
+// start of a token's line instead of rescanning from byte 0 — see computeTokenRange's doc comment
+// for why re-deriving the identical byte offset from here on is provably behavior-identical to the
+// old from-scratch scan (feature 35, T5 — the O(n²)→O(n) fix; CPU profile showed this rescan-from-0
+// was 94–96% of classifier CPU, since it ran once per emitted token).
+func buildLineStarts(contentBytes []byte) []int {
+	lineStarts := []int{0} // line 1 always starts at offset 0, even for empty content.
+	bytePos := 0
+	for bytePos < len(contentBytes) {
+		switch contentBytes[bytePos] {
+		case '\r':
+			bytePos++
+			// Skip \n of CRLF.
+			if bytePos < len(contentBytes) && contentBytes[bytePos] == '\n' {
+				bytePos++
+			}
+			lineStarts = append(lineStarts, bytePos)
+		case '\n':
+			bytePos++
+			lineStarts = append(lineStarts, bytePos)
+		default:
+			bytePos++
+		}
+	}
+	return lineStarts
+}
+
 // computeTokenRange computes the Range of a token from its actual source bytes.
 // The lexer provides Line and Column (1-based); we scan the source to find the
 // token's actual byte span and compute the end position.
 //
 // The model.Range uses inclusive-end semantics: both Start and End point to actual
 // positions within the token.
-func computeTokenRange(contentBytes []byte, tok Token) (model.Position, model.Position) {
+//
+// lineStarts is the precomputed table from buildLineStarts (built ONCE per request by
+// semanticTokensPhaseB and threaded through every phase helper — feature 35, T5). Rather than
+// rescanning from byte 0 for every token (the O(n²) hot path a CPU profile identified as 94–96% of
+// classifier time), the start-scan below jumps straight to lineStarts[startLine-1] — the exact byte
+// offset the old from-0 scan would have reached the FIRST time its (line, colInLine) state became
+// (startLine, 1), since buildLineStarts uses the identical \r/\r\n/\n stepping rule. Continuing the
+// same loop body from that provably-identical state produces a byte-for-byte identical tokenStart,
+// including every edge case the old scan handled (a startCol past the actual line's length keeps
+// advancing into subsequent lines exactly as before; a startLine beyond the content falls through to
+// the same not-found result, tokenStart == len(contentBytes)). Only the START scan is optimized —
+// the END scan below (tokenStart → tokenEnd) is already bounded by a single token's byte width, not
+// the whole file, so it stays untouched.
+func computeTokenRange(contentBytes []byte, lineStarts []int, tok Token) (model.Position, model.Position) {
 	startLine := tok.Line
 	startCol := tok.Column
 
-	// Scan the content to find the byte offset of the token's start position.
-	line := 1
-	bytePos := 0
-	colInLine := 1
+	// Seed (bytePos, line, colInLine) at the start of the token's own line when that line exists in
+	// lineStarts; otherwise fall through exactly as the old scan did when startLine never occurs in
+	// the content — running straight to EOF without ever matching (tokenStart == len(contentBytes)).
+	var bytePos, line, colInLine int
+	if startLine >= 1 && startLine-1 < len(lineStarts) {
+		bytePos = lineStarts[startLine-1]
+		line = startLine
+		colInLine = 1
+	} else {
+		bytePos = len(contentBytes)
+		line = startLine
+		colInLine = 1
+	}
 
-	// Advance byte-by-byte until we reach (line, col).
+	// Advance byte-by-byte (within the seeded line, spilling into later lines if startCol is never
+	// reached on the seeded line — identical to the old scan) until we reach (line, col).
 	for bytePos < len(contentBytes) {
 		if line == startLine && colInLine == startCol {
 			break // Found the token's start position.
@@ -248,13 +335,11 @@ func buildVarLookup(defs []model.DataDefinition) map[string]*model.DataDefinitio
 //
 // This is a shared Phase-B classifier (T7) that is extended by T8-T10 for other
 // identifier categories (calls, DDM/view, system vars, etc.).
-func semanticTokensPhaseBIdentifiers(path string, content string) []model.SemanticToken {
+//
+// ast and lexTokens are pre-computed once by semanticTokensPhaseB and shared across all
+// phase helpers (feature 35, T3 parse-once); a nil ast (unparseable content) yields no tokens.
+func semanticTokensPhaseBIdentifiers(ast *Program, lexTokens []Token, content string, lineStarts []int) []model.SemanticToken {
 	contentBytes := []byte(content)
-
-	// Parse to get the AST and extract definitions.
-	lexer := NewLexer(content)
-	parser := NewParser(lexer)
-	ast, _ := parser.Parse()
 
 	if ast == nil {
 		return []model.SemanticToken{}
@@ -273,17 +358,10 @@ func semanticTokensPhaseBIdentifiers(path string, content string) []model.Semant
 	// (data.go does not repeat SectionKind on children).
 	varLookup := buildVarLookup(definitions)
 
-	// Walk the token stream and emit variable/parameter tokens.
+	// Walk the shared token stream and emit variable/parameter tokens.
 	var tokens []model.SemanticToken
-	lexer = NewLexer(content)
 
-	for {
-		tok := lexer.NextToken()
-
-		if tok.Type == TokenEOF {
-			break
-		}
-
+	for _, tok := range lexTokens {
 		// Only classify identifiers (not comments, strings, keywords, etc.).
 		if tok.Type != TokenIdentifier {
 			continue
@@ -309,7 +387,7 @@ func semanticTokensPhaseBIdentifiers(path string, content string) []model.Semant
 		}
 
 		// Compute the real source Range for this identifier token.
-		startRange, endRange := computeTokenRange(contentBytes, tok)
+		startRange, endRange := computeTokenRange(contentBytes, lineStarts, tok)
 
 		// Determine if this is a declaration site (computed range matches the NameRange).
 		var modifiers model.SemanticTokenModifier
@@ -336,13 +414,11 @@ func semanticTokensPhaseBIdentifiers(path string, content string) []model.Semant
 //
 // The precedence rule: a view name that was classified as `variable` by T7 is overridden to `type`.
 // Write targets (EdgeWrites) receive the `modification` modifier.
-func semanticTokensPhaseBDDMView(path string, content string) []model.SemanticToken {
+//
+// ast is pre-computed once by semanticTokensPhaseB and shared across all phase helpers
+// (feature 35, T3 parse-once); a nil ast (unparseable content) yields no tokens.
+func semanticTokensPhaseBDDMView(ast *Program, content string) []model.SemanticToken {
 	contentBytes := []byte(content)
-
-	// Parse to get the AST and extract data.
-	lexer := NewLexer(content)
-	parser := NewParser(lexer)
-	ast, _ := parser.Parse()
 
 	if ast == nil {
 		return []model.SemanticToken{}
@@ -564,13 +640,11 @@ func isIdentifierChar(ch rune) bool {
 // Read operands (RHS of `:=`, MOVE source, COMPUTE RHS) get NO modification.
 //
 // OQ-E: DataDefinition has NO const flag, so `readonly` is applied only to system vars.
-func semanticTokensPhaseBSystemVarsAndWrites(path string, content string) []model.SemanticToken {
+//
+// ast and lexTokens are pre-computed once by semanticTokensPhaseB and shared across all
+// phase helpers (feature 35, T3 parse-once); a nil ast (unparseable content) yields no tokens.
+func semanticTokensPhaseBSystemVarsAndWrites(ast *Program, lexTokens []Token, content string, lineStarts []int) []model.SemanticToken {
 	contentBytes := []byte(content)
-
-	// Parse to get the AST and extract definitions.
-	lexer := NewLexer(content)
-	parser := NewParser(lexer)
-	ast, _ := parser.Parse()
 
 	if ast == nil {
 		return []model.SemanticToken{}
@@ -585,18 +659,9 @@ func semanticTokensPhaseBSystemVarsAndWrites(path string, content string) []mode
 
 	var tokens []model.SemanticToken
 
-	// Walk the token stream to detect system variables and write targets.
-	// First pass: collect all tokens so we can do lookahead/lookbehind.
-	lexer = NewLexer(content)
-	var allLexerTokens []Token
-
-	for {
-		tok := lexer.NextToken()
-		if tok.Type == TokenEOF {
-			break
-		}
-		allLexerTokens = append(allLexerTokens, tok)
-	}
+	// Walk the shared token stream to detect system variables and write targets
+	// (lookahead/lookbehind over the full, order-identical slice).
+	allLexerTokens := lexTokens
 
 	// Detect system variables: a TokenOperator "*" immediately followed by a TokenIdentifier
 	// on the same line.
@@ -656,7 +721,7 @@ func semanticTokensPhaseBSystemVarsAndWrites(path string, content string) []mode
 		// Check if the next non-whitespace token is `:=`.
 		if i+1 < len(allLexerTokens) && allLexerTokens[i+1].Type == TokenOperator && allLexerTokens[i+1].Literal == ":=" {
 			// This identifier is the LHS of an assignment → write target.
-			startRange, endRange := computeTokenRange(contentBytes, tok)
+			startRange, endRange := computeTokenRange(contentBytes, lineStarts, tok)
 			tokens = append(tokens, model.SemanticToken{
 				Range:     model.Range{Start: startRange, End: endRange},
 				Type:      model.SemanticTokenTypeVariable,
@@ -669,7 +734,7 @@ func semanticTokensPhaseBSystemVarsAndWrites(path string, content string) []mode
 		// Check if the previous non-whitespace token is `TO` keyword.
 		if i > 0 && allLexerTokens[i-1].Type == TokenKeyword && allLexerTokens[i-1].Literal == "TO" {
 			// This identifier is after TO → write target.
-			startRange, endRange := computeTokenRange(contentBytes, tok)
+			startRange, endRange := computeTokenRange(contentBytes, lineStarts, tok)
 			tokens = append(tokens, model.SemanticToken{
 				Range:     model.Range{Start: startRange, End: endRange},
 				Type:      model.SemanticTokenTypeVariable,
@@ -693,7 +758,7 @@ func semanticTokensPhaseBSystemVarsAndWrites(path string, content string) []mode
 			}
 			if foundCompute {
 				// This identifier is the LHS of a COMPUTE statement → write target.
-				startRange, endRange := computeTokenRange(contentBytes, tok)
+				startRange, endRange := computeTokenRange(contentBytes, lineStarts, tok)
 				tokens = append(tokens, model.SemanticToken{
 					Range:     model.Range{Start: startRange, End: endRange},
 					Type:      model.SemanticTokenTypeVariable,
@@ -716,12 +781,27 @@ func semanticTokensPhaseBSystemVarsAndWrites(path string, content string) []mode
 //
 // Precedence (when multiple classifications exist for the same span):
 // function (T8) > type (T9 DDM/view) > property (T9 field) > parameter/variable (T7) > Phase-A lexical
+//
+// Feature 35, T3 (parse-once): content is lexed exactly once into a shared []Token and parsed
+// exactly once into a shared *Program, both threaded into the five phase helpers below instead
+// of each helper re-deriving them from content independently. lexAllForSemanticTokens/
+// parseForSemanticTokens are package-level func vars purely so a test can wrap them with a
+// counting seam (TestSemanticTokens_ParseOnce) — production always uses the default impls.
 func semanticTokensPhaseB(path string, content string) []model.SemanticToken {
-	phaseATokens := semanticTokensPhaseA(path, content)
-	phaseBTokens := semanticTokensPhaseBIdentifiers(path, content)
-	phaseBCallTokens := semanticTokensPhaseBCalls(path, content)
-	phaseBDDMTokens := semanticTokensPhaseBDDMView(path, content)
-	phaseBSysVarTokens := semanticTokensPhaseBSystemVarsAndWrites(path, content)
+	lexTokens := lexAllForSemanticTokens(content)
+	ast := parseForSemanticTokens(content)
+
+	// Precompute the line-start byte-offset table ONCE per request (feature 35, T5) and thread it
+	// into every phase helper that calls computeTokenRange, so the per-token start-scan jumps
+	// straight to the token's own line instead of rescanning from byte 0 — the O(n²) hot spot a CPU
+	// profile identified (94-96% of classifier CPU). See buildLineStarts/computeTokenRange docs.
+	lineStarts := buildLineStarts([]byte(content))
+
+	phaseATokens := semanticTokensPhaseA(lexTokens, content, lineStarts)
+	phaseBTokens := semanticTokensPhaseBIdentifiers(ast, lexTokens, content, lineStarts)
+	phaseBCallTokens := semanticTokensPhaseBCalls(ast)
+	phaseBDDMTokens := semanticTokensPhaseBDDMView(ast, content)
+	phaseBSysVarTokens := semanticTokensPhaseBSystemVarsAndWrites(ast, lexTokens, content, lineStarts)
 
 	_ = phaseBSysVarTokens // Ensure it's used; will be merged below
 
@@ -789,43 +869,40 @@ func semanticTokensPhaseB(path string, content string) []model.SemanticToken {
 		}
 	}
 
+	// Precompute the start positions of every readonly-variable token (e.g. `*DATX` system vars) in
+	// one O(n) pass, so the operator-suppression check below is an O(1) lookup instead of a rescan
+	// over allTokens for every operator token.
+	type posKey = struct{ line, col int }
+	readonlyVarStarts := make(map[posKey]bool)
+	for _, tok := range allTokens {
+		if tok.Type == model.SemanticTokenTypeVariable &&
+			(tok.Modifiers&model.SemanticTokenModifierReadonly) != 0 {
+			readonlyVarStarts[posKey{tok.Range.Start.Line, tok.Range.Start.Column}] = true
+		}
+	}
+
 	// Reconstruct in sorted order from the tokenMap (which has already deduplicated by precedence).
 	// We need to iterate in sorted order of (line, col).
 	var dedupedTokens []model.SemanticToken
+	seen := make(map[posKey]bool)
 	for _, tok := range allTokens {
-		key := struct{ line, col int }{tok.Range.Start.Line, tok.Range.Start.Column}
+		key := posKey{tok.Range.Start.Line, tok.Range.Start.Column}
 		selectedTok, exists := tokenMap[key]
 		if exists {
 			// Check if we've already added this key to the result.
-			alreadyAdded := false
-			for _, added := range dedupedTokens {
-				if added.Range.Start.Line == selectedTok.Range.Start.Line &&
-					added.Range.Start.Column == selectedTok.Range.Start.Column {
-					alreadyAdded = true
-					break
-				}
-			}
-			if alreadyAdded {
+			if seen[key] {
 				continue // Skip; already added.
 			}
 
 			// Filter out operator tokens that are immediately before system-var tokens.
 			if selectedTok.Type == model.SemanticTokenTypeOperator {
-				isSuppressed := false
-				for _, other := range allTokens {
-					if other.Range.Start.Line == selectedTok.Range.Start.Line &&
-						other.Range.Start.Column == selectedTok.Range.End.Column+1 &&
-						other.Type == model.SemanticTokenTypeVariable &&
-						(other.Modifiers&model.SemanticTokenModifierReadonly) != 0 {
-						isSuppressed = true
-						break
-					}
-				}
-				if isSuppressed {
+				suppressKey := posKey{selectedTok.Range.Start.Line, selectedTok.Range.End.Column + 1}
+				if readonlyVarStarts[suppressKey] {
 					continue // Skip this operator token.
 				}
 			}
 
+			seen[key] = true
 			dedupedTokens = append(dedupedTokens, selectedTok)
 		}
 	}
@@ -841,12 +918,10 @@ func semanticTokensPhaseB(path string, content string) []model.SemanticToken {
 //
 // Dynamic targets (EdgeCallsDynamic, EdgeNavigatesToDynamic) are NOT emitted here
 // (they fall back to variable classification if declared, per T7).
-func semanticTokensPhaseBCalls(path string, content string) []model.SemanticToken {
-	// Parse to get the AST.
-	lexer := NewLexer(content)
-	parser := NewParser(lexer)
-	ast, _ := parser.Parse()
-
+//
+// ast is pre-computed once by semanticTokensPhaseB and shared across all phase helpers
+// (feature 35, T3 parse-once); a nil ast (unparseable content) yields no tokens.
+func semanticTokensPhaseBCalls(ast *Program) []model.SemanticToken {
 	if ast == nil {
 		return []model.SemanticToken{}
 	}

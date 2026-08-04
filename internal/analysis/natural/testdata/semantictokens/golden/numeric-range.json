@@ -1,0 +1,77 @@
+[
+  {
+    "range": {
+      "start": {
+        "line": 1,
+        "column": 1
+      },
+      "end": {
+        "line": 1,
+        "column": 7
+      }
+    },
+    "type": "keyword",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 1,
+        "column": 12
+      },
+      "end": {
+        "line": 1,
+        "column": 12
+      }
+    },
+    "type": "operator",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 1,
+        "column": 14
+      },
+      "end": {
+        "line": 1,
+        "column": 14
+      }
+    },
+    "type": "number",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 1,
+        "column": 15
+      },
+      "end": {
+        "line": 1,
+        "column": 15
+      }
+    },
+    "type": "operator",
+    "modifiers": 0,
+    "modifierNames": null
+  },
+  {
+    "range": {
+      "start": {
+        "line": 1,
+        "column": 16
+      },
+      "end": {
+        "line": 1,
+        "column": 16
+      }
+    },
+    "type": "number",
+    "modifiers": 0,
+    "modifierNames": null
+  }
+]
