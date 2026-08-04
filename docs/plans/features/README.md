@@ -24,8 +24,9 @@ fixtures.
 
 The `#`/link column matches the on-disk directory names exactly. **Status** is `shipped` (merged to
 `main`) or `planned` (plan written, not yet implemented). Features 19–23 were assessment-remediation
-follow-ups (see the `2026-07-14` assessment); 24–25 were post-release fixes; 26–34 are the current
-planned backlog.
+follow-ups (see the `2026-07-14` assessment); 24–25 were post-release fixes; 26–32 completed the LSP
+capability backlog. Features 33 (execute-command) and 34 (moniker) were evaluated and **dropped as
+non-goals** (2026-08-04) — see the "Project state" note in `CLAUDE.md` for the rationale.
 
 | # | Plan | Covers (PRD FR/CR/NFR) | Phase | Status |
 |---|------|------------------------|-------|--------|
@@ -69,8 +70,8 @@ planned backlog.
 | 27 | [Variable & reference navigation](27-variable-navigation/plan.md) | FR-54 (refines FR-24/25/28) | P1 | planned |
 | 28 | [Rich symbol detail & `VIEW OF` binding](28-symbol-detail-and-view-binding/plan.md) | FR-55 (refines FR-23/27) | P1 | planned |
 | 29 | [Semantic tokens](29-semantic-tokens/plan.md) | FR-56 | P1 | planned |
-| 30 | [Pull diagnostics](30-pull-diagnostics/plan.md) | FR-57 (complements FR-30/31) | P2 | planned |
-| 31 | [Declaration & type-definition navigation](31-declaration-and-type-definition/plan.md) | FR-58 (refines FR-24) | P2 | planned |
-| 32 | [Document links](32-document-links/plan.md) | FR-59 | P2 | planned |
-| 33 | [Execute command](33-execute-command/plan.md) | FR-60 | P2 | planned |
-| 34 | [Moniker](34-moniker/plan.md) | FR-61 | P2 | planned (deferred / non-goal) |
+| 30 | [Pull diagnostics](30-pull-diagnostics/plan.md) | FR-57 (complements FR-30/31) | P2 | shipped |
+| 31 | [Declaration & type-definition navigation](31-declaration-and-type-definition/plan.md) | FR-58 (refines FR-24) | P2 | shipped |
+| 32 | [Document links](32-document-links/plan.md) | FR-59 | P2 | shipped |
+| 33 | Execute command | FR-60 | P2 | dropped (non-goal — no consumer; reindex covered by cache/watcher + server restart) |
+| 34 | Moniker | FR-61 | P2 | dropped (non-goal — no cross-repo/LSIF use case) |
