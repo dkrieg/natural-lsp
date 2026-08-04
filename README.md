@@ -71,7 +71,13 @@ exported to files before it can be indexed.
 > (`textDocument/diagnostic` + `workspace/diagnostic`, `diagnosticProvider` capability) serves the same
 > content as the feature-14 push path (byte-identical); push is suppressed for pull-capable clients and a
 > `workspace/diagnostic/refresh` prompts re-pull of cross-file diagnostics, so nothing double-reports
-> (FR-57, server-layer only, no cache-format change). There are no published binaries yet;
+> (FR-57, server-layer only, no cache-format change).
+> **Declaration & type-definition navigation is now implemented** (feature 31): `textDocument/declaration`
+> (a `declarationProvider`, delegating to the definition path — Natural has no header/impl split) and
+> `textDocument/typeDefinition` (a `typeDefinitionProvider` that jumps a `VIEW OF` field to the `.NSD` DDM
+> field that types it, via the feature-28 view→DDM binding and the steplib chain); scalar-only fields with
+> no DDM type object return empty (FR-17). Thin providers over features 10/27/28 resolution — server-layer
+> only, no cache-format change (FR-58). There are no published binaries yet;
 > build from source or via the VS Code extension.
 >
 > **A full independent assessment (2026-07-14) — [`docs/assessment-2026-07-14.md`](docs/assessment-2026-07-14.md) —
@@ -141,6 +147,10 @@ The capabilities below define the **target** feature set for the first stable re
 **LSP protocol compliance**
 
 - `textDocument/definition` — **shipped** (feature 10)
+- `textDocument/declaration` (a `declarationProvider` mirroring definition — call/transfer/subroutine
+  targets and variable use → `DEFINE DATA`) — **shipped** ([feature 31](docs/plans/features/31-declaration-and-type-definition/plan.md))
+- `textDocument/typeDefinition` (a `typeDefinitionProvider` jumping a `VIEW OF` field to the `.NSD` DDM
+  field that types it; scalar-only fields → empty) — **shipped** ([feature 31](docs/plans/features/31-declaration-and-type-definition/plan.md))
 - `textDocument/references` — **shipped** (feature 10)
 - `workspace/symbol` — **shipped** (feature 10)
 - `textDocument/hover` — **shipped** (feature 12)
