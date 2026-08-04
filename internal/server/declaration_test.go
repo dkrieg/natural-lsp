@@ -402,8 +402,11 @@ MOVE #NEW-VAR TO #NEW-VAR
 END
 `)
 
-	// Open the document in the store (this triggers analysis)
-	testURI := newTestURI("test-buffer.NSP")
+	// Open the document in the store (this triggers analysis).
+	// Root the URI under tempDir so uriToRelPath succeeds on all platforms — a bare
+	// relative filename can't be made relative to the workspace root on Windows, which
+	// would make provideDefinition bail before ever consulting the store.
+	testURI := uri.File(filepath.Join(tempDir, "test-buffer.NSP"))
 	store.Open(testURI, 1, bufferContent)
 
 	// Verify the store has the analysis
