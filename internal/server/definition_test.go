@@ -1128,27 +1128,22 @@ func TestProvideDefinition_UsingDataArea(t *testing.T) {
 			}
 
 			if tc.wantResolved {
-				// Expect a non-empty result
-				if locations == nil || len(locations) == 0 {
-					t.Errorf("%s: expected non-empty locations, got %v", tc.description, locations)
-					return
-				}
-
-				// Verify the location points to the expected target file
+				// Expect EXACTLY ONE location — the chain winner. A regression that
+				// returned the unreachable ALT copy alongside COMMON (i.e. treated the
+				// USING name as flat-namespace ambiguous instead of chain-resolved)
+				// would yield len>1 and fail here. This pins the chain-exclusion at the
+				// provider layer, not just in the resolution unit test.
 				targetURI := uri.File(filepath.Join(fixtureAbs, tc.wantTargetFile))
-				found := false
-				for _, loc := range locations {
-					if loc.URI == targetURI {
-						found = true
-						// Assert the range is the object root (zero-width at start of file)
-						if loc.Range.Start.Line != 0 || loc.Range.Start.Character != 0 {
-							t.Errorf("%s: expected range start {0,0}, got {%d,%d}", tc.description, loc.Range.Start.Line, loc.Range.Start.Character)
-						}
-						break
-					}
+				if len(locations) != 1 {
+					t.Fatalf("%s: expected exactly one location (%q, ALT excluded), got %d: %v", tc.description, tc.wantTargetFile, len(locations), locations)
 				}
-				if !found {
-					t.Errorf("%s: expected target file %q in locations; got URIs: %v", tc.description, tc.wantTargetFile, locations)
+				loc := locations[0]
+				if loc.URI != targetURI {
+					t.Errorf("%s: expected target %q, got %q", tc.description, targetURI, loc.URI)
+				}
+				// Assert the range is the object root (zero-width at start of file)
+				if loc.Range.Start.Line != 0 || loc.Range.Start.Character != 0 {
+					t.Errorf("%s: expected range start {0,0}, got {%d,%d}", tc.description, loc.Range.Start.Line, loc.Range.Start.Character)
 				}
 			} else {
 				// Expect an empty result

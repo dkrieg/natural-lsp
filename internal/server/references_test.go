@@ -693,6 +693,12 @@ func TestProvideReferences_UsingDataArea(t *testing.T) {
 		if strings.Contains(fsPath, "CALLER2.NSP") {
 			foundCALLER2 = true
 		}
+		// CALLER_BAD.NSP has `USING NOSUCHDA` — an UNRESOLVED USING targeting a
+		// different (nonexistent) data area. It must NOT appear among references
+		// to CUSTLDA (dynamic/unresolved sites are excluded, FR-17).
+		if strings.Contains(fsPath, "CALLER_BAD") {
+			t.Errorf("provideReferences: CALLER_BAD.NSP (unresolved USING NOSUCHDA) must not be a reference to CUSTLDA, got %s", fsPath)
+		}
 	}
 
 	if !foundCALLER {

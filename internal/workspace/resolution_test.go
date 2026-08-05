@@ -4137,6 +4137,20 @@ func TestResolve_EdgeUsesDataArea_T2(t *testing.T) {
 				"Proves chain-aware resolution (not candidates[0] pick). FR-13/FR-16 (steplib chain), FR-17 (out-of-chain unresolved).",
 		},
 		{
+			name:                "Unresolvable: APP/CALLER_NODA USING NODATA → Unresolved, no diagnostic (FR-17)",
+			workspaceRoot:       "testdata/multilib",
+			filePath:            "APP/CALLER_NODA.NSP",
+			targetName:          "NODATA",
+			expectedPath:        "",
+			expectedType:        model.ObjectUnknown,
+			wantResolved:        false,
+			wantAmbiguous:       false,
+			ambigCandidateCount: 0,
+			description: "APP/CALLER_NODA has LOCAL USING NODATA; no data area named NODATA exists in APP's " +
+				"steplib chain (APP, COMMON) or anywhere in the workspace. Resolution is Unresolved(ReasonNoTarget) " +
+				"with NO diagnostic — a modeled gap, not an error (FR-17). Exercises the unresolved branch.",
+		},
+		{
 			name:                "Flat-namespace ambiguity: MAIN USING SHARED → Ambiguous (LIBA/SHARED.NSL, LIBB/SHARED.NSL)",
 			workspaceRoot:       "testdata/resolution/dataarea-ambiguous-flat",
 			filePath:            "MAIN.NSP",

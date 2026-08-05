@@ -525,7 +525,13 @@ func resolveEdge(
 		)
 
 	default:
-		// Other edge kinds not handled.
+		// Unreachable in practice: every edge kind that can appear in
+		// FileAnalysis.Edges is handled by a case above (READS/WRITES live in
+		// FileAnalysis.DataAccess, not Edges). This inert fallback returns
+		// Unresolved rather than the pre-refactor `continue` (skip); because the
+		// branch is unreachable it is behavior-preserving, and returning a
+		// zero-value Unresolved is the safe outcome should a new Edges kind ever
+		// be added without a matching case here.
 		return Resolution{} // zero value = Unresolved(ReasonNoTarget)
 	}
 }

@@ -1308,6 +1308,18 @@ func TestProvideDocumentLink_UsingDataArea(t *testing.T) {
 					switch expectedTarget {
 					case "COMMON/CUSTLDA.NSL":
 						foundCUSTLDA = true
+						// The link Range must be the USING-name span (edge.Source),
+						// not the whole line. CALLER.NSP line 2 is
+						// "LOCAL USING CUSTLDA"; CUSTLDA spans 0-based chars 12..18,
+						// i.e. protocol [12,19) on line 1 (UTF-8). This pins the
+						// encoding-aware name-span Range (plan T6).
+						wantRange := protocol.Range{
+							Start: protocol.Position{Line: 1, Character: 12},
+							End:   protocol.Position{Line: 1, Character: 19},
+						}
+						if link.Range != wantRange {
+							t.Errorf("CUSTLDA link Range = %+v, want %+v (USING name span)", link.Range, wantRange)
+						}
 					case "COMMON/PDAPARM.NSA":
 						foundPDAPARM = true
 					case "COMMON/GDAGLOB.NSG":
