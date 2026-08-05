@@ -13,6 +13,12 @@ tsconfig.json
 **/.eslintrc.json
 **/*.ts
 **/*.map
-node_modules/**
+# NOTE: node_modules is intentionally NOT excluded. This extension is not
+# bundled (main = ./out/extension.js, plain tsc output), so it require()s its
+# runtime dependency `vscode-languageclient` from node_modules at activation.
+# Excluding node_modules stripped the dependency from the .vsix and crashed the
+# extension on activation ("Cannot find module 'vscode-languageclient'"). vsce
+# includes only the production dependency tree here, not devDependencies.
+# If this extension ever adds a bundler (esbuild/webpack), re-add the exclusion.
 .github/**
 *.vsix
