@@ -51,8 +51,9 @@ again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` releas
 **(iii)** **Features 24 (cache-format-compaction), 25 (lsp4ij-template-validation), 26
 (lsp-tracing-and-logging), 27 (variable & reference navigation), 28 (rich symbol detail & `VIEW OF`
 binding), 29 (semantic tokens), 30 (pull diagnostics), 31 (declaration & type-definition
-navigation), 32 (document links), and 35 (semantic-tokens classifier performance — an O(n²)→O(n log n)
-fix) are shipped** (see their notes below). **The LSP capability
+navigation), 32 (document links), 35 (semantic-tokens classifier performance — an O(n²)→O(n log n)
+fix), and 36 (`DEFINE DATA … USING` data-area navigation — bug #58; cache `0.10.0`) are shipped**
+(see their notes below). **The LSP capability
 surface is now considered complete for v1.0** — the two remaining backlog candidates, **33
 (execute-command)** and **34 (moniker)**, were evaluated and **dropped as non-goals** (their plan dirs
 removed): moniker has no use case in a filesystem-scoped single-workspace product (cross-repo LSIF/SCIP
@@ -287,6 +288,32 @@ func-var seam lets a test assert the single parse); **(T2)** the O(n²) merge/de
 `internal/model` change, no cache-format bump (`0.9.0`), no capability/legend change, seam signature
 unchanged.** `FuzzSemanticTokens`/`FuzzEncodeSemanticTokens` still guard never-panic (FR-43). NFR-3. See
 `docs/plans/features/35-semantic-tokens-performance/` (`## Results` records the before/after + scaling).
+
+Feature 36 (`DEFINE DATA … USING <data-area>` navigation) fixes real-user-reported **bug #58**:
+go-to-definition (and `declaration`/`references`/`documentLink`) on the **data-area name token** of a
+`DEFINE DATA {LOCAL|PARAMETER|GLOBAL} USING <name>` clause returned nothing — the name was captured as a
+`model.DataAreaRef` (feature 27) but never wired as a navigable reference, so it was the one *module*
+reference with no go-to-definition even though the object resolves identically to `INCLUDE`. **Fix
+(bug #58's recommended approach): treat a `USING` reference as a first-class module edge.** A new
+**additive** `model.EdgeUsesDataArea` kind is derived in `Analyze` — one edge per `DataAreaRef`
+(`Source = ref.Range`, `TargetName = ref.Name`), appended and re-sorted into global source order (no fresh
+AST walk, OQ-1). `workspace.Resolve` resolves it via the steplib chain across the data-area object
+namespace (`.NSL`/`.NSA`/`.NSG`, first-reachable `ObjectLocalDataArea`→`Parameter`→`Global`, OQ-2, reusing
+feature 27's resolver). Because `definition`/`references`/`documentLink` consume resolved edges
+generically and a data-area object already gets a root `Structure.SelectionRange` (feature 09), all of them
+work from that single edge addition with **no per-provider change**; `declaration` inherits it by delegating
+to `definition` (feature 31). Modeled gaps stay off the error channel (FR-17): an unresolvable/out-of-chain
+name → empty (no diagnostic), and a **flat-namespace** duplicate → `Ambiguous`. `typeDefinition` on the
+`USING` name stays **empty** (a data area is a module, not a *type* — intentional, out of scope). The
+`Resolve`/`ResolveInto` per-edge switches were **DRY'd into one shared `resolveEdge` helper** (OQ-5,
+behavior-preserving for every existing kind — the full resolution suite stayed green). A guard the feature
+added caught a **latent defect**: `providePrepareCallHierarchy` treated *any* resolved edge at the cursor as
+a call site, so it built a bogus call-hierarchy item for a data area — fixed with an `isCallableEdgeKind`
+gate that also correctly excludes `INCLUDE`/`READS`/`WRITES` (a data area is not callable). **Cache-format
+bump `0.9.0` → `0.10.0`** (the new persisted `EdgeUsesDataArea` edges force a one-time rebuild; additive
+`EdgeKind` value, no struct-shape change). No new capability. `FuzzParse` and the extraction/resolution
+fuzz targets still guard never-panic (FR-43). Closes #58. See
+`docs/plans/features/36-using-data-area-navigation/`.
 
 Feature 24 (cache-format-compaction) fixes a real-user-reported bug: the on-disk workspace cache was
 **~1 GB for ~7,790 files** because it was serialized as **indented** JSON (`json.MarshalIndent`) of the

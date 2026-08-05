@@ -87,7 +87,13 @@ exported to files before it can be indexed.
 > CALLNAT/INCLUDE/FETCH/RUN/external-PERFORM target span as a clickable link to the resolved object's file —
 > an always-visible presentation of the same navigation go-to-definition serves. Dynamic/unresolved/ambiguous
 > targets (and inline same-file PERFORMs) get no link (FR-17). Server-layer only, no cache-format change
-> (FR-59). Pre-built binaries for Linux/macOS/Windows are published on
+> (FR-59).
+> **`DEFINE DATA … USING` data-area navigation is now implemented** (feature 36, bug #58): go-to-definition
+> (and declaration/references/document-link) on the data-area name in a
+> `DEFINE DATA {LOCAL|PARAMETER|GLOBAL} USING <name>` clause now navigates to the `.NSL`/`.NSA`/`.NSG`
+> object via the steplib chain — previously the one module reference with no go-to-definition. A new
+> `USES_DATA_AREA` edge kind bumps the cache format to `0.10.0` (one-time rebuild). Pre-built binaries for
+> Linux/macOS/Windows are published on
 > [GitHub Releases](https://github.com/dkrieg/natural-lsp/releases) (with checksums); you can also
 > `go install` or build from source (see [Installation](#installation)).
 >
