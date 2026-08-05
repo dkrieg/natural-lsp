@@ -94,6 +94,23 @@ jobs:
           npm run package   # produces natural-lsp-vscode-<version>.vsix
           ls -1 ./*.vsix
 
+      - name: Verify .vsix bundles runtime dependencies
+        working-directory: editors/vscode
+        run: |
+          set -euo pipefail
+          # The extension is NOT bundled — out/extension.js require()s
+          # `vscode-languageclient` from node_modules at activation. If
+          # .vscodeignore ever excludes node_modules (or vsce is run with
+          # --no-dependencies), the runtime dep is stripped and the extension
+          # crashes on activation ("Cannot find module 'vscode-languageclient'").
+          # Fail the release here rather than ship a broken .vsix.
+          vsix="$(ls -1 ./*.vsix | head -1)"
+          if ! unzip -l "$vsix" | grep -q 'extension/node_modules/vscode-languageclient/'; then
+            echo "::error::$vsix is missing the vscode-languageclient runtime dependency — the extension would crash on activation. Check editors/vscode/.vscodeignore (node_modules must NOT be excluded while the extension is unbundled)."
+            exit 1
+          fi
+          echo "Verified: $vsix bundles vscode-languageclient (production dependency tree)."
+
       - name: Create tag and GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
