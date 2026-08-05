@@ -388,3 +388,87 @@ func TestProvideTypeDefinition_StoreFirst(t *testing.T) {
 		t.Errorf("store-first: Location.Range = %v; want %v", locations[0].Range, wantRange)
 	}
 }
+
+// TestProvideTypeDefinition_UsingDataArea tests T7: typeDefinition stays empty on a USING clause
+// (feature 36, guard test). A data area is a module reference, not a type of the name, so
+// typeDefinition must return nil even when the USING name resolves to an object (FR-17,
+// out-of-scope decision). This pins the intentional gap so it is not "fixed" later.
+//
+// FR-58 (declaration/typeDefinition), FR-17 (modeled gaps), FR-43 (graceful degradation).
+func TestProvideTypeDefinition_UsingDataArea(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	fixtureRoot := filepath.Join(wd, "testdata", "multilib")
+
+	// Arrange: build the workspace index from the multilib fixture
+	_, cfg, err := config.Bootstrap(fixtureRoot, "", logger)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	sourceFile := filepath.Join(fixtureRoot, "APP/CALLER.NSP")
+	sourceContent, err := os.ReadFile(sourceFile)
+	if err != nil {
+		t.Fatalf("failed to read source file: %v", err)
+	}
+	_ = sourceContent
+
+	// Build the handler context
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		cfg:         cfg,
+		logger:      logger,
+		az:          az,
+	}
+
+	// Act: call provideTypeDefinition on the USING name
+	// Cursor on line 2, column 13 (CUSTLDA in "LOCAL USING CUSTLDA")
+	// The USING name resolves to a data-area object, but typeDefinition intentionally
+	// returns empty because a data area is a module, not a type of the name.
+	params := protocol.TypeDefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(sourceFile),
+			},
+			Position: protocol.Position{
+				Line:      uint32(2 - 1),
+				Character: uint32(13 - 1),
+			},
+		},
+	}
+
+	locations, err := provideTypeDefinition(hctx, params)
+
+	// Assert: no error
+	if err != nil {
+		t.Fatalf("provideTypeDefinition failed: %v", err)
+	}
+
+	// Assert: returns empty (nil or len 0), never an error
+	// Rationale: typeDefinition is for resolving a field's DDM *type*; a USING name is
+	// a module reference (definition/declaration are the correct gestures).
+	if locations != nil && len(locations) > 0 {
+		t.Errorf("provideTypeDefinition on USING name: expected empty result, got %d location(s)", len(locations))
+		for i, loc := range locations {
+			t.Logf("  location[%d]: %s", i, loc.URI)
+		}
+	}
+}

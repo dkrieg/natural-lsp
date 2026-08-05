@@ -409,6 +409,174 @@ func resolveViaChain(candidates []Candidate, searchChain []string) *Candidate {
 //   - EdgeNavigatesTo (FETCH/RUN) → ObjectProgram
 //   - EdgePerforms (external)     → ObjectExternalSubroutine
 //   - EdgeIncludes (INCLUDE)      → ObjectCopycode
+
+// resolveEdge is the shared edge-resolution dispatcher used by both Resolve
+// and ResolveInto (OQ-5 behavior-preserving refactor). It centralizes the per-edge-kind
+// logic to keep the two switch statements in sync and eliminate duplication.
+//
+// Parameters:
+//   - edge: the EdgeEntry to resolve
+//   - filePath: workspace-relative path of the referencing file
+//   - fileObjectType: ObjectType of the referencing file (used for PERFORM inline resolution)
+//   - nameIndex: pre-built name→candidates index for fast lookup
+//   - cfg: workspace configuration (library map, etc.)
+//   - ambigDiagnostics: map to accumulate ambiguity diagnostics
+//
+// Returns a Resolution outcome (Resolved/Unresolved/Ambiguous) for the edge.
+func resolveEdge(
+	edge model.EdgeEntry,
+	filePath string,
+	fileObjectType model.ObjectType,
+	nameIndex map[string][]Candidate,
+	cfg *config.Config,
+	ambigDiagnostics map[string][]model.Diagnostic,
+) Resolution {
+	switch edge.Kind {
+	case model.EdgeCallsDynamic, model.EdgeNavigatesToDynamic:
+		// Variable targets cannot be statically resolved.
+		return Unresolved(ReasonDynamic)
+
+	case model.EdgePerforms:
+		// PERFORM has two cases:
+		// 1. Non-zero Target range: inline match found in-file.
+		//    Resolve to the referencing file.
+		// 2. Zero Target range: no inline match, fall back to external
+		//    subroutine (.NSS) resolution via resolveByName.
+		if !isZeroRange(edge.Target) {
+			// Inline match: the DEFINE SUBROUTINE was found in this file.
+			return Resolved(filePath, fileObjectType)
+		}
+		// External fallback: resolve to ObjectExternalSubroutine.
+		return resolveByName(
+			edge.TargetName,
+			model.ObjectExternalSubroutine,
+			filePath,
+			edge,
+			nameIndex,
+			cfg,
+			ambigDiagnostics,
+		)
+
+	case model.EdgeCalls:
+		// Static CALLNAT with a literal target name.
+		// Resolve to ObjectSubprogram via resolveByName.
+		return resolveByName(
+			edge.TargetName,
+			model.ObjectSubprogram,
+			filePath,
+			edge,
+			nameIndex,
+			cfg,
+			ambigDiagnostics,
+		)
+
+	case model.EdgeNavigatesTo:
+		// Static FETCH/RUN with a literal program target.
+		// Resolve to ObjectProgram via resolveByName.
+		// edge.Library may be non-empty (explicit library bypass).
+		return resolveByName(
+			edge.TargetName,
+			model.ObjectProgram,
+			filePath,
+			edge,
+			nameIndex,
+			cfg,
+			ambigDiagnostics,
+		)
+
+	case model.EdgeIncludes:
+		// INCLUDE binds to a copycode (.NSC) object at compile time.
+		// Resolution uses resolveByName with ObjectCopycode as the expected type.
+		//
+		// INCLUDE targets are always literal names — the parser never produces an
+		// EdgeIncludesDynamic kind — so ReasonDynamic is never applicable here.
+		// edge.Library is always empty for INCLUDE (there is no library-id syntax).
+		//
+		// An unavailable copycode (TargetName matches nothing in the index) →
+		// Unresolved(ReasonNoTarget). This is a modeled outcome (FR-13/FR-17):
+		// no diagnostic is emitted to the referencing file.
+		return resolveByName(
+			edge.TargetName,
+			model.ObjectCopycode,
+			filePath,
+			edge,
+			nameIndex,
+			cfg,
+			ambigDiagnostics,
+		)
+
+	case model.EdgeUsesDataArea:
+		// DEFINE DATA … USING <data-area> binds to a data-area object
+		// (.NSL/.NSA/.NSG). Resolution tries the three data-area types in order:
+		// ObjectLocalDataArea → ObjectParameterDataArea → ObjectGlobalDataArea.
+		// Returns the first Resolved/Ambiguous outcome; if all are Unresolved,
+		// returns Unresolved(ReasonNoTarget).
+		//
+		// USING targets are always literal names (dynamic USING does not exist
+		// in Natural), so ReasonDynamic is never applicable here.
+		// edge.Library is always empty (no library-id syntax for USING).
+		return resolveDataAreaEdge(
+			edge.TargetName,
+			filePath,
+			edge,
+			nameIndex,
+			cfg,
+			ambigDiagnostics,
+		)
+
+	default:
+		// Unreachable in practice: every edge kind that can appear in
+		// FileAnalysis.Edges is handled by a case above (READS/WRITES live in
+		// FileAnalysis.DataAccess, not Edges). This inert fallback returns
+		// Unresolved rather than the pre-refactor `continue` (skip); because the
+		// branch is unreachable it is behavior-preserving, and returning a
+		// zero-value Unresolved is the safe outcome should a new Edges kind ever
+		// be added without a matching case here.
+		return Resolution{} // zero value = Unresolved(ReasonNoTarget)
+	}
+}
+
+// resolveDataAreaEdge resolves an EdgeUsesDataArea edge by trying the three
+// data-area namespaces in order: ObjectLocalDataArea → ObjectParameterDataArea →
+// ObjectGlobalDataArea (OQ-2 order). It returns the first outcome that
+// IsResolved() or IsAmbiguous(); if all three are Unresolved, returns
+// Unresolved(ReasonNoTarget).
+//
+// This implements the data-area namespace hierarchy where local data areas
+// are preferred over parameter, which are preferred over global.
+func resolveDataAreaEdge(
+	targetName string,
+	filePath string,
+	edge model.EdgeEntry,
+	nameIndex map[string][]Candidate,
+	cfg *config.Config,
+	ambigDiagnostics map[string][]model.Diagnostic,
+) Resolution {
+	// Try each data-area type in order, returning the first resolved/ambiguous outcome
+	for _, expectedType := range []model.ObjectType{
+		model.ObjectLocalDataArea,
+		model.ObjectParameterDataArea,
+		model.ObjectGlobalDataArea,
+	} {
+		resolution := resolveByName(
+			targetName,
+			expectedType,
+			filePath,
+			edge,
+			nameIndex,
+			cfg,
+			ambigDiagnostics,
+		)
+		// Return the first outcome that is Resolved or Ambiguous
+		if resolution.IsResolved() || resolution.IsAmbiguous() {
+			return resolution
+		}
+		// If Unresolved, continue to the next type
+	}
+	// All three types unresolved: return Unresolved(ReasonNoTarget)
+	return Unresolved(ReasonNoTarget)
+}
+
 func resolveByName(
 	targetName string,
 	expectedType model.ObjectType,
@@ -548,88 +716,8 @@ func Resolve(idx *Index, cfg *config.Config) *ResolutionSet {
 	idx.ForEach(func(filePath string, fa model.FileAnalysis) {
 		// Process each edge in the file.
 		for _, edge := range fa.Edges {
-			var resolution Resolution
-
-			// Handle each edge kind.
-			switch edge.Kind {
-			case model.EdgeCallsDynamic, model.EdgeNavigatesToDynamic:
-				// Variable targets cannot be statically resolved.
-				resolution = Unresolved(ReasonDynamic)
-
-			case model.EdgePerforms:
-				// PERFORM has two cases:
-				// 1. Non-zero Target range: inline match found in-file.
-				//    Resolve to the referencing file.
-				// 2. Zero Target range: no inline match, fall back to external
-				//    subroutine (.NSS) resolution via resolveByName.
-				if !isZeroRange(edge.Target) {
-					// Inline match: the DEFINE SUBROUTINE was found in this file.
-					resolution = Resolved(filePath, fa.ObjectType)
-				} else {
-					// External fallback: resolve to ObjectExternalSubroutine.
-					resolution = resolveByName(
-						edge.TargetName,
-						model.ObjectExternalSubroutine,
-						filePath,
-						edge,
-						nameIndex,
-						cfg,
-						rs.ambigDiagnostics,
-					)
-				}
-
-			case model.EdgeCalls:
-				// Static CALLNAT with a literal target name.
-				// Resolve to ObjectSubprogram via resolveByName.
-				resolution = resolveByName(
-					edge.TargetName,
-					model.ObjectSubprogram,
-					filePath,
-					edge,
-					nameIndex,
-					cfg,
-					rs.ambigDiagnostics,
-				)
-
-			case model.EdgeNavigatesTo:
-				// Static FETCH/RUN with a literal program target.
-				// Resolve to ObjectProgram via resolveByName.
-				// edge.Library may be non-empty (explicit library bypass).
-				resolution = resolveByName(
-					edge.TargetName,
-					model.ObjectProgram,
-					filePath,
-					edge,
-					nameIndex,
-					cfg,
-					rs.ambigDiagnostics,
-				)
-
-			case model.EdgeIncludes:
-				// INCLUDE binds to a copycode (.NSC) object at compile time.
-				// Resolution uses resolveByName with ObjectCopycode as the expected type.
-				//
-				// INCLUDE targets are always literal names — the parser never produces an
-				// EdgeIncludesDynamic kind — so ReasonDynamic is never applicable here.
-				// edge.Library is always empty for INCLUDE (there is no library-id syntax).
-				//
-				// An unavailable copycode (TargetName matches nothing in the index) →
-				// Unresolved(ReasonNoTarget). This is a modeled outcome (FR-13/FR-17):
-				// no diagnostic is emitted to the referencing file.
-				resolution = resolveByName(
-					edge.TargetName,
-					model.ObjectCopycode,
-					filePath,
-					edge,
-					nameIndex,
-					cfg,
-					rs.ambigDiagnostics,
-				)
-
-			default:
-				// Other edge kinds not handled in this slice.
-				continue
-			}
+			// Resolve the edge using the shared dispatcher (OQ-5).
+			resolution := resolveEdge(edge, filePath, fa.ObjectType, nameIndex, cfg, rs.ambigDiagnostics)
 
 			// Store the resolution keyed by (filePath, edgeSourceRange).
 			key := resolutionKey{
@@ -748,63 +836,8 @@ func ResolveInto(rs *ResolutionSet, idx *Index, cfg *config.Config, changedPaths
 	for affectedPath := range affectedSet {
 		if fa, ok := idx.Get(affectedPath); ok {
 			for _, edge := range fa.Edges {
-				var resolution Resolution
-
-				switch edge.Kind {
-				case model.EdgeCallsDynamic, model.EdgeNavigatesToDynamic:
-					resolution = Unresolved(ReasonDynamic)
-
-				case model.EdgePerforms:
-					if !isZeroRange(edge.Target) {
-						resolution = Resolved(affectedPath, fa.ObjectType)
-					} else {
-						resolution = resolveByName(
-							edge.TargetName,
-							model.ObjectExternalSubroutine,
-							affectedPath,
-							edge,
-							nameIndex,
-							cfg,
-							newRS.ambigDiagnostics,
-						)
-					}
-
-				case model.EdgeCalls:
-					resolution = resolveByName(
-						edge.TargetName,
-						model.ObjectSubprogram,
-						affectedPath,
-						edge,
-						nameIndex,
-						cfg,
-						newRS.ambigDiagnostics,
-					)
-
-				case model.EdgeNavigatesTo:
-					resolution = resolveByName(
-						edge.TargetName,
-						model.ObjectProgram,
-						affectedPath,
-						edge,
-						nameIndex,
-						cfg,
-						newRS.ambigDiagnostics,
-					)
-
-				case model.EdgeIncludes:
-					resolution = resolveByName(
-						edge.TargetName,
-						model.ObjectCopycode,
-						affectedPath,
-						edge,
-						nameIndex,
-						cfg,
-						newRS.ambigDiagnostics,
-					)
-
-				default:
-					continue
-				}
+				// Resolve the edge using the shared dispatcher (OQ-5).
+				resolution := resolveEdge(edge, affectedPath, fa.ObjectType, nameIndex, cfg, newRS.ambigDiagnostics)
 
 				key := resolutionKey{
 					filePath: affectedPath,

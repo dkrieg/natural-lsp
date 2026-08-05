@@ -149,6 +149,16 @@ func FuzzParse(f *testing.F) {
 	// Malformed VIEW — no DDM name, and nothing follows (bare EOF after VIEW).
 	f.Add([]byte("DEFINE DATA LOCAL\n1 V VIEW"))
 
+	// Feature 36 T1: USING data-area clauses (exercises the edge derivation path).
+	// Well-formed USING clauses in all three section types.
+	f.Add([]byte("DEFINE DATA\nLOCAL USING CUSTLDA\nPARAMETER USING PDAPARM\nGLOBAL USING GDAGLOB\nEND-DEFINE\nEND\n"))
+
+	// Malformed USING — no data-area name (parser should not panic, field created with empty Name).
+	f.Add([]byte("DEFINE DATA LOCAL USING\nEND-DEFINE\nEND\n"))
+
+	// USING followed by valid field declarations (mixed with valid structure).
+	f.Add([]byte("DEFINE DATA LOCAL USING MYDATA\n  1 #VAR (A10)\nEND-DEFINE\nEND\n"))
+
 	f.Fuzz(func(t *testing.T, input []byte) {
 		// Arrange: construct the lexer and parser from the arbitrary input.
 		lexer := NewLexer(string(input))

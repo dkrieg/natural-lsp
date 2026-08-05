@@ -4091,3 +4091,285 @@ func TestResolveDataAreaField_Integration(t *testing.T) {
 
 	t.Skip("Placeholder for T7 GREEN implementation of field resolution")
 }
+
+// TestResolve_EdgeUsesDataArea_T2 tests workspace.Resolve for EdgeUsesDataArea edges.
+// Feature 36, Task T2: resolve DEFINE DATA … USING <data-area> references via the
+// steplib chain, producing Resolved/Unresolved/Ambiguous outcomes and persisting
+// the resolution in the ResolutionSet.
+//
+// Acceptance criteria (Story 3 AC2):
+//   - Chain positive + unreachable-exclusion: a USING reference from a caller
+//     resolves to the data-area object via the steplib chain (not an out-of-chain copy).
+//   - Unresolvable: a USING name matching no data area → Unresolved(ReasonNoTarget),
+//     no diagnostic (FR-17).
+//   - Flat-namespace ambiguity: a USING name matching >1 data-area objects in a
+//     flat namespace (no library map) → Ambiguous with diagnostics.
+//   - ResolveInto parity: incremental re-resolve after a change yields the same result
+//     as a full Resolve.
+func TestResolve_EdgeUsesDataArea_T2(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name                string
+		workspaceRoot       string
+		filePath            string // Referencing file with the USING clause
+		targetName          string // Data-area name
+		expectedPath        string // Workspace-relative path (or "" if unresolved)
+		expectedType        model.ObjectType
+		wantResolved        bool
+		wantAmbiguous       bool
+		ambigCandidateCount int
+		description         string
+	}{
+		{
+			name:                "Chain positive + unreachable-exclusion: APP/CALLER USING CUSTLDA → COMMON/CUSTLDA.NSL (not ALT)",
+			workspaceRoot:       "testdata/multilib",
+			filePath:            "APP/CALLER.NSP",
+			targetName:          "CUSTLDA",
+			expectedPath:        "COMMON/CUSTLDA.NSL",
+			expectedType:        model.ObjectLocalDataArea,
+			wantResolved:        true,
+			wantAmbiguous:       false,
+			ambigCandidateCount: 0,
+			description: "APP/CALLER has LOCAL USING CUSTLDA. Both COMMON and ALT have CUSTLDA.NSL. " +
+				"APP's steplib chain is [APP, COMMON, SYSTEM]. CUSTLDA exists in COMMON (chain member), " +
+				"so resolves to COMMON/CUSTLDA.NSL. ALT is out-of-chain (never in the chain), so ALT/CUSTLDA.NSL is unreachable. " +
+				"Proves chain-aware resolution (not candidates[0] pick). FR-13/FR-16 (steplib chain), FR-17 (out-of-chain unresolved).",
+		},
+		{
+			name:                "Unresolvable: APP/CALLER_NODA USING NODATA → Unresolved, no diagnostic (FR-17)",
+			workspaceRoot:       "testdata/multilib",
+			filePath:            "APP/CALLER_NODA.NSP",
+			targetName:          "NODATA",
+			expectedPath:        "",
+			expectedType:        model.ObjectUnknown,
+			wantResolved:        false,
+			wantAmbiguous:       false,
+			ambigCandidateCount: 0,
+			description: "APP/CALLER_NODA has LOCAL USING NODATA; no data area named NODATA exists in APP's " +
+				"steplib chain (APP, COMMON) or anywhere in the workspace. Resolution is Unresolved(ReasonNoTarget) " +
+				"with NO diagnostic — a modeled gap, not an error (FR-17). Exercises the unresolved branch.",
+		},
+		{
+			name:                "Flat-namespace ambiguity: MAIN USING SHARED → Ambiguous (LIBA/SHARED.NSL, LIBB/SHARED.NSL)",
+			workspaceRoot:       "testdata/resolution/dataarea-ambiguous-flat",
+			filePath:            "MAIN.NSP",
+			targetName:          "SHARED",
+			expectedPath:        "",
+			expectedType:        model.ObjectUnknown,
+			wantResolved:        false,
+			wantAmbiguous:       true,
+			ambigCandidateCount: 2,
+			description: "Flat-namespace (no library map) with two SHARED.NSL files in different locations (LIBA and LIBB). " +
+				"MAIN.NSP has LOCAL USING SHARED, which matches >1 data-area object. " +
+				"Resolution returns Ambiguous([LIBA/SHARED.NSL, LIBB/SHARED.NSL]) with a diagnostic. " +
+				"Proves ambiguity detection in flat namespace (FR-5, FR-31, OQ-2).",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Load the config from the fixture.
+			cfg, problems, err := config.Load(tc.workspaceRoot + "/.natural-lsp.toml")
+			if err != nil {
+				t.Fatalf("config.Load failed: %v", err)
+			}
+			if len(problems) > 0 {
+				for _, p := range problems {
+					t.Logf("config problem: %v", p)
+				}
+			}
+
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			az := natural.New(nil)
+
+			// Build the index from the fixture.
+			idx, _, _, err := BuildWithCache(context.Background(), tc.workspaceRoot, cfg, az, logger, "", nil, nil)
+			if err != nil {
+				t.Fatalf("BuildWithCache failed: %v", err)
+			}
+
+			// Call Resolve with the config.
+			resSet := Resolve(idx, &cfg)
+
+			// Get the referencing file from the index.
+			refFA, ok := idx.Get(tc.filePath)
+			if !ok {
+				t.Fatalf("fixture file %q not found in index", tc.filePath)
+			}
+
+			// Find the EdgeUsesDataArea edge with the target name.
+			var targetEdge model.EdgeEntry
+			var edgeFound bool
+
+			for _, edge := range refFA.Edges {
+				if edge.Kind == model.EdgeUsesDataArea && edge.TargetName == tc.targetName {
+					targetEdge = edge
+					edgeFound = true
+					break
+				}
+			}
+
+			if !edgeFound {
+				t.Fatalf("EdgeUsesDataArea with TargetName=%q not found in file %q; edges: %v",
+					tc.targetName, tc.filePath, refFA.Edges)
+			}
+
+			// Look up the resolution for this edge in the set.
+			res, exists := resSet.Get(tc.filePath, targetEdge.Source)
+			if !exists {
+				t.Fatalf("resolution for EdgeUsesDataArea at %v not found in result set (edge not resolved)", targetEdge.Source)
+			}
+
+			// Verify the resolution outcome.
+			if tc.wantResolved {
+				if !res.IsResolved() {
+					t.Errorf("IsResolved() = false, want true; outcome: %+v (description: %s)",
+						res, tc.description)
+				}
+
+				if res.Path != tc.expectedPath {
+					t.Errorf("resolved Path = %q, want %q (description: %s)",
+						res.Path, tc.expectedPath, tc.description)
+				}
+
+				if res.Type != tc.expectedType {
+					t.Errorf("resolved Type = %v, want %v (description: %s)",
+						res.Type, tc.expectedType, tc.description)
+				}
+			} else if tc.wantAmbiguous {
+				if !res.IsAmbiguous() {
+					t.Errorf("IsAmbiguous() = false, want true; resolved to %q (description: %s)",
+						res.Path, tc.description)
+				}
+
+				if len(res.Candidates) != tc.ambigCandidateCount {
+					t.Errorf("Ambiguous.Candidates count = %d, want %d (description: %s)",
+						len(res.Candidates), tc.ambigCandidateCount, tc.description)
+				}
+
+				// Verify a diagnostic is present for the ambiguous case.
+				diags := resSet.DiagnosticsFor(tc.filePath)
+				if len(diags) == 0 {
+					t.Error("Expected ambiguity diagnostic for flat-namespace ambiguous case, got none")
+				}
+			} else {
+				if res.IsResolved() {
+					t.Errorf("IsResolved() = true, want false; resolved to %q (description: %s)",
+						res.Path, tc.description)
+				}
+
+				// Verify no diagnostic for unresolvable (FR-17: modeled gap, not a diagnostic).
+				diags := resSet.DiagnosticsFor(tc.filePath)
+				if len(diags) > 0 {
+					t.Errorf("Expected no diagnostic for unresolvable, got %d: %v (description: %s)",
+						len(diags), diags, tc.description)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveInto_EdgeUsesDataArea_Parity_T2 tests that ResolveInto produces the same
+// result as a full Resolve for EdgeUsesDataArea edges (F6a correctness invariant).
+func TestResolveInto_EdgeUsesDataArea_Parity_T2(t *testing.T) {
+	t.Helper()
+
+	workspaceRoot := "testdata/multilib"
+
+	// Load the config from the fixture.
+	cfg, problems, err := config.Load(workspaceRoot + "/.natural-lsp.toml")
+	if err != nil {
+		t.Fatalf("config.Load failed: %v", err)
+	}
+	if len(problems) > 0 {
+		for _, p := range problems {
+			t.Logf("config problem: %v", p)
+		}
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Initial full build.
+	idx, _, _, err := BuildWithCache(context.Background(), workspaceRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("BuildWithCache failed: %v", err)
+	}
+
+	// Full Resolve for baseline.
+	fullResSet := Resolve(idx, &cfg)
+
+	// Simulate a change: re-analyze APP/CALLER.NSP with its current content.
+	callerPath := "APP/CALLER.NSP"
+	callerFile := filepath.Join(workspaceRoot, callerPath)
+	callerContent, err := os.ReadFile(callerFile)
+	if err != nil {
+		t.Fatalf("ReadFile %q failed: %v", callerFile, err)
+	}
+
+	callerAnalysis, err := az.Analyze(callerPath, callerContent)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+
+	// Add the re-analyzed file to the index.
+	idx.Add(callerPath, callerAnalysis)
+
+	// ResolveInto: incremental re-resolve for the changed file.
+	changedPaths := []string{callerPath}
+	incrResSet := ResolveInto(fullResSet, idx, &cfg, changedPaths)
+
+	// Compare outcomes: for each EdgeUsesDataArea edge, the full Resolve and ResolveInto
+	// must produce the same resolution.
+	callerFA, ok := idx.Get(callerPath)
+	if !ok {
+		t.Fatalf("file %q not found in index after Add", callerPath)
+	}
+
+	for _, edge := range callerFA.Edges {
+		if edge.Kind != model.EdgeUsesDataArea {
+			continue
+		}
+
+		fullRes, fullExists := fullResSet.Get(callerPath, edge.Source)
+		incrRes, incrExists := incrResSet.Get(callerPath, edge.Source)
+
+		if fullExists != incrExists {
+			t.Errorf("EdgeUsesDataArea %q: full Resolve found=%v, ResolveInto found=%v (different entry existence)",
+				edge.TargetName, fullExists, incrExists)
+		}
+
+		if fullExists && incrExists {
+			if fullRes.IsResolved() != incrRes.IsResolved() {
+				t.Errorf("EdgeUsesDataArea %q: IsResolved mismatch (full=%v, incr=%v)",
+					edge.TargetName, fullRes.IsResolved(), incrRes.IsResolved())
+			}
+
+			if fullRes.IsResolved() && incrRes.IsResolved() {
+				if fullRes.Path != incrRes.Path {
+					t.Errorf("EdgeUsesDataArea %q: resolved Path mismatch (full=%q, incr=%q)",
+						edge.TargetName, fullRes.Path, incrRes.Path)
+				}
+				if fullRes.Type != incrRes.Type {
+					t.Errorf("EdgeUsesDataArea %q: resolved Type mismatch (full=%v, incr=%v)",
+						edge.TargetName, fullRes.Type, incrRes.Type)
+				}
+			}
+
+			if fullRes.IsAmbiguous() != incrRes.IsAmbiguous() {
+				t.Errorf("EdgeUsesDataArea %q: IsAmbiguous mismatch (full=%v, incr=%v)",
+					edge.TargetName, fullRes.IsAmbiguous(), incrRes.IsAmbiguous())
+			}
+
+			if fullRes.IsAmbiguous() && incrRes.IsAmbiguous() {
+				if len(fullRes.Candidates) != len(incrRes.Candidates) {
+					t.Errorf("EdgeUsesDataArea %q: Candidates length mismatch (full=%d, incr=%d)",
+						edge.TargetName, len(fullRes.Candidates), len(incrRes.Candidates))
+				}
+			}
+		}
+	}
+}

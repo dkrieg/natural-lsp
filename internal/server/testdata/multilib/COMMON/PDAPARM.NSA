@@ -1,0 +1,4 @@
+* Parameter Data Area for feature 36 test (PARAMETER USING)
+DEFINE DATA PARAMETER
+01 #PARAM-ID (N8)
+END-DEFINE

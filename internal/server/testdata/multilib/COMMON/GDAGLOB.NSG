@@ -1,0 +1,4 @@
+* Global Data Area for feature 36 test (GLOBAL USING)
+DEFINE DATA GLOBAL
+01 #GLOBAL-VAR (A20)
+END-DEFINE

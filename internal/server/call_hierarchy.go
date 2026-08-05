@@ -246,7 +246,7 @@ func providePrepareCallHierarchy(hctx *handlerContext, params protocol.CallHiera
 
 	// Case A: cursor on a call site (EdgeEntry at cursor position)
 	edge, _, _ := findCursorTarget(*sourceFA, cursorPos, string(sourceContent), hctx.az)
-	if edge != nil {
+	if edge != nil && isCallableEdgeKind(edge.Kind) {
 		// Look up the resolution for this edge
 		resolution, ok := res.Get(relPath, edge.Source)
 		if !ok {
@@ -381,6 +381,17 @@ func cursorInRange(r model.Range, pos model.Position) bool {
 // A zero-width range indicates a synthetic name (not from the source).
 func isZeroRange(r model.Range) bool {
 	return r.Start == r.End
+}
+
+// isCallableEdgeKind checks if an edge kind is a callable kind (call site).
+// Callable kinds are: CALLNAT (static/dynamic), PERFORM, FETCH/RUN (static/dynamic).
+// Non-callable kinds (data access, includes, data-area uses) are excluded.
+func isCallableEdgeKind(kind model.EdgeKind) bool {
+	return kind == model.EdgeCalls ||
+		kind == model.EdgeCallsDynamic ||
+		kind == model.EdgePerforms ||
+		kind == model.EdgeNavigatesTo ||
+		kind == model.EdgeNavigatesToDynamic
 }
 
 // adjustCallHierarchyItemKind updates an item's kind based on the file's ObjectType.

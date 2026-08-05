@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -1228,5 +1229,127 @@ func TestProvideDocumentLink_Degradation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, tc.test)
+	}
+}
+
+// TestProvideDocumentLink_UsingDataArea tests T6: document link (FR-59) on a resolved USING
+// data-area name produces a link to the data-area object. Unresolved USINGs yield no link (FR-17).
+// Feature 36 (USING data-area navigation, bug #58).
+func TestProvideDocumentLink_UsingDataArea(t *testing.T) {
+	// Setup
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: build the workspace index from the multilib fixture
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	fixtureRoot := filepath.Join("testdata", "multilib")
+	fixtureAbs := filepath.Join(wd, fixtureRoot)
+
+	_, cfg, err := config.Bootstrap(fixtureAbs, "", logger)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureAbs, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	hctx := &handlerContext{
+		cfg:         cfg,
+		idx:         idx,
+		res:         resSet,
+		root:        fixtureAbs,
+		posEncoding: enc,
+		logger:      logger,
+	}
+
+	// Act: call provideDocumentLink on CALLER.NSP (which has LOCAL USING CUSTLDA)
+	callerURI := uri.File(filepath.Join(fixtureAbs, "APP/CALLER.NSP"))
+	params := protocol.DocumentLinkParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: callerURI},
+	}
+
+	links, err := provideDocumentLink(hctx, params)
+
+	// Assert: no error
+	if err != nil {
+		t.Fatalf("provideDocumentLink failed: %v", err)
+	}
+
+	// Assert: should find at least one link for the USING clauses
+	// We expect links for CUSTLDA, PDAPARM, and GDAGLOB (3 USING clauses in CALLER.NSP)
+	if links == nil {
+		t.Fatal("expected non-nil links, got nil")
+	}
+
+	// We should find links for the three USING data areas
+	foundCUSTLDA := false
+	foundPDAPARM := false
+	foundGDAGLOB := false
+
+	expectedTargets := map[string]bool{
+		"COMMON/CUSTLDA.NSL": true,
+		"COMMON/PDAPARM.NSA": true,
+		"COMMON/GDAGLOB.NSG": true,
+	}
+
+	for _, link := range links {
+		if link.Target != nil {
+			targetStr := string(*link.Target)
+			for expectedTarget := range expectedTargets {
+				if strings.Contains(targetStr, expectedTarget) {
+					switch expectedTarget {
+					case "COMMON/CUSTLDA.NSL":
+						foundCUSTLDA = true
+						// The link Range must be the USING-name span (edge.Source),
+						// not the whole line. CALLER.NSP line 2 is
+						// "LOCAL USING CUSTLDA"; CUSTLDA spans 0-based chars 12..18,
+						// i.e. protocol [12,19) on line 1 (UTF-8). This pins the
+						// encoding-aware name-span Range (plan T6).
+						wantRange := protocol.Range{
+							Start: protocol.Position{Line: 1, Character: 12},
+							End:   protocol.Position{Line: 1, Character: 19},
+						}
+						if link.Range != wantRange {
+							t.Errorf("CUSTLDA link Range = %+v, want %+v (USING name span)", link.Range, wantRange)
+						}
+					case "COMMON/PDAPARM.NSA":
+						foundPDAPARM = true
+					case "COMMON/GDAGLOB.NSG":
+						foundGDAGLOB = true
+					}
+				}
+			}
+		}
+	}
+
+	if !foundCUSTLDA {
+		t.Error("expected a link to COMMON/CUSTLDA.NSL (LOCAL USING)")
+	}
+	if !foundPDAPARM {
+		t.Error("expected a link to COMMON/PDAPARM.NSA (PARAMETER USING)")
+	}
+	if !foundGDAGLOB {
+		t.Error("expected a link to COMMON/GDAGLOB.NSG (GLOBAL USING)")
+	}
+
+	// Test the gap case: CALLER_BAD.NSP with unresolved USING
+	badCallerURI := uri.File(filepath.Join(fixtureAbs, "APP/CALLER_BAD.NSP"))
+	badParams := protocol.DocumentLinkParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: badCallerURI},
+	}
+
+	badLinks, err := provideDocumentLink(hctx, badParams)
+
+	// Assert: unresolved USING should not produce any links
+	if badLinks != nil && len(badLinks) > 0 {
+		t.Errorf("expected no links for unresolved USING 'NOSUCHDA', got %d links", len(badLinks))
 	}
 }

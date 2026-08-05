@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -1795,4 +1796,134 @@ func TestProvideOutgoingCalls_MarshaledEmpty(t *testing.T) {
 	if jsonStr != "[]" {
 		t.Errorf("expected empty result to marshal as '[]', got: %s", jsonStr)
 	}
+}
+
+// TestCallHierarchy_IgnoresUsesDataArea tests T7: call hierarchy excludes EdgeUsesDataArea
+// (feature 36, guard test). A data area is not callable, so outgoingCalls must never include
+// USING references in the results, and prepareCallHierarchy on a USING name must return empty
+// (FR-17, FR-49, Story 3 AC4). This pins the intentional gap so USING edges don't leak into
+// call paths.
+//
+// FR-49 (call hierarchy), FR-17 (modeled gaps), FR-43 (graceful degradation).
+func TestCallHierarchy_IgnoresUsesDataArea(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	fixtureRoot := filepath.Join(wd, "testdata", "multilib")
+
+	// Arrange: build the workspace index from the multilib fixture
+	_, cfg, err := config.Bootstrap(fixtureRoot, "", logger)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureRoot, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Read CALLER.NSP to build the source item
+	callerAbsPath := filepath.Join(fixtureRoot, "APP/CALLER.NSP")
+	callerContent, err := os.ReadFile(callerAbsPath)
+	if err != nil {
+		t.Fatalf("failed to read source file: %v", err)
+	}
+
+	callerAnalysis, ok := idx.Get("APP/CALLER.NSP")
+	if !ok {
+		t.Fatalf("APP/CALLER.NSP not in index")
+	}
+
+	if callerAnalysis.Structure == nil {
+		t.Fatalf("APP/CALLER.NSP Structure is nil")
+	}
+
+	// Build the source item from CALLER's object root
+	sourceItem := buildCallHierarchyItem(wd, "APP/CALLER.NSP", callerContent, callerAnalysis.Structure, enc)
+
+	// Create handler context
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureRoot,
+		logger:      logger,
+	}
+
+	t.Run("outgoing calls: data area USING excluded from results", func(t *testing.T) {
+		// Act: call provideOutgoingCalls on the CALLER object
+		params := protocol.CallHierarchyOutgoingCallsParams{
+			Item: sourceItem,
+		}
+
+		result, err := provideOutgoingCalls(hctx, params)
+
+		// Assert: no error
+		if err != nil {
+			t.Errorf("provideOutgoingCalls returned error: %v", err)
+		}
+
+		// Assert: the results do NOT contain any data-area names (CUSTLDA, PDAPARM, GDAGLOB)
+		// These are in USING clauses, not callable targets, so they must be excluded.
+		calleeNames := make(map[string]int)
+		for _, call := range result {
+			calleeNames[call.To.Name]++
+		}
+
+		if calleeNames["CUSTLDA"] > 0 {
+			t.Errorf("CUSTLDA (data area from LOCAL USING) appears in outgoingCalls; excluded expected (not callable)")
+		}
+		if calleeNames["PDAPARM"] > 0 {
+			t.Errorf("PDAPARM (data area from PARAMETER USING) appears in outgoingCalls; excluded expected (not callable)")
+		}
+		if calleeNames["GDAGLOB"] > 0 {
+			t.Errorf("GDAGLOB (data area from GLOBAL USING) appears in outgoingCalls; excluded expected (not callable)")
+		}
+
+		// The outgoing calls may contain actual CALLNAT/FETCH/PERFORM targets from the file;
+		// the assertion is solely that USING targets are NOT present.
+	})
+
+	t.Run("prepareCallHierarchy: USING name yields no callable item", func(t *testing.T) {
+		// Act: call providePrepareCallHierarchy on the USING name (cursor at CUSTLDA)
+		sourceAbs := filepath.Join(fixtureRoot, "APP/CALLER.NSP")
+		params := protocol.CallHierarchyPrepareParams{
+			TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+				TextDocument: protocol.TextDocumentIdentifier{
+					URI: uri.File(sourceAbs),
+				},
+				// Cursor on line 2, column 13 (CUSTLDA in "LOCAL USING CUSTLDA")
+				Position: protocol.Position{
+					Line:      uint32(2 - 1),
+					Character: uint32(13 - 1),
+				},
+			},
+		}
+
+		result, err := providePrepareCallHierarchy(hctx, params)
+
+		// Assert: no error
+		if err != nil {
+			t.Errorf("providePrepareCallHierarchy returned error: %v", err)
+		}
+
+		// Assert: returns empty (nil or len 0)
+		// A USING name is not a callable symbol, so prepareCallHierarchy intentionally
+		// returns empty here (modeled gap, FR-17).
+		if result != nil && len(result) > 0 {
+			t.Errorf("prepareCallHierarchy on USING name: expected empty result, got %d item(s)", len(result))
+			for i, item := range result {
+				t.Logf("  item[%d]: %s (%s)", i, item.Name, item.URI)
+			}
+		}
+	})
 }
