@@ -20,11 +20,12 @@ import (
 )
 
 // cacheFormatVersion is bumped on any model/shape change that requires a rebuild.
+// 0.10.0: feature 36 — persists model.EdgeUsesDataArea edges (DEFINE DATA … USING navigation).
 // 0.9.0: feature 28 — persists Symbol.{Type,Level,Dimensions,Redefines,ViewOfDDM}
 // and DataDefinition.{Redefines,ViewOfDDM} + DDM field NameRange.
 // 0.8.0: feature 27 — persists NameRange and DataAreaRefs.
 // 0.7.0: feature 24 — encoding change only (compact JSON + gzip), no shape change.
-const cacheFormatVersion = "0.9.0"
+const cacheFormatVersion = "0.10.0"
 
 // CacheFile represents the on-disk cache format.
 type CacheFile struct {

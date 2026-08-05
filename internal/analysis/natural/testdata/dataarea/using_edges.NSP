@@ -1,0 +1,15 @@
+* Test program with USING clauses in DEFINE DATA sections.
+* Feature 36: DEFINE DATA … USING <data-area> navigation.
+DEFINE DATA
+LOCAL USING LDACUST
+01 #LOCAL-VAR (A10)
+
+PARAMETER USING PDAPARM
+01 P-PARAM (N5)
+
+GLOBAL USING GDAGLOB
+01 G-VAR (L)
+END-DEFINE
+
+WRITE 'Hello'
+END

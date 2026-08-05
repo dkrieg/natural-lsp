@@ -130,6 +130,29 @@ func (a *Analyzer) Analyze(path string, content []byte) (model.FileAnalysis, err
 		// Used for feature 27, T7 (cross-file field resolution via external data areas).
 		result.DataAreaRefs = extractDataAreaRefs(ast)
 
+		// Derive USES_DATA_AREA edges from data-area references (Feature 36, T1).
+		// One edge per USING clause, extracted from the already-computed DataAreaRefs
+		// to guarantee Source matches the feature-27 field-resolution range (OQ-1).
+		// Do not re-walk the AST (extractDataAreaRefs already omits malformed USING).
+		dataAreaEdges := []model.EdgeEntry{}
+		for _, ref := range result.DataAreaRefs {
+			dataAreaEdges = append(dataAreaEdges, model.EdgeEntry{
+				Source:     ref.Range,
+				Target:     model.Range{},
+				Kind:       model.EdgeUsesDataArea,
+				TargetName: ref.Name,
+			})
+		}
+		result.Edges = append(result.Edges, dataAreaEdges...)
+
+		// Re-sort all edges (USES_DATA_AREA + existing CALLNAT/INCLUDE/etc.) by Source.Start.
+		sort.SliceStable(result.Edges, func(i, j int) bool {
+			return sourceStartLess(
+				result.Edges[i].Source.Start.Line, result.Edges[i].Source.Start.Column,
+				result.Edges[j].Source.Start.Line, result.Edges[j].Source.Start.Column,
+			)
+		})
+
 		// Wire extractStructure into the analysis pipeline (Feature 09, Task 5).
 		// Call after all extractors (Edges, DataAccess, Definitions, WorkFiles, HostVarRefs, DataAreaRefs)
 		// and after all sorting is complete, so DataAccess slice is final.

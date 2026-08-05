@@ -1,0 +1,7 @@
+# Flat-namespace config (no library map) for testing ambiguous data-area resolution.
+# Two SHARED.NSL files exist in different locations (LIBA/SHARED.NSL and LIBB/SHARED.NSL).
+# With no library map, MAIN.NSP's LOCAL USING SHARED is ambiguous and should produce
+# an Ambiguous outcome with a diagnostic.
+
+[analysis]
+index_all_extensions = true

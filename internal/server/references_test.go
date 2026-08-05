@@ -1,6 +1,9 @@
 package server
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -595,5 +598,107 @@ func TestProvideReferences_MarshaledNonEmptyCase(t *testing.T) {
 	want := `[{"uri":"file:///test/source.NSP","range":{"start":{"line":5,"character":10},"end":{"line":5,"character":15}}}]`
 	if string(got) != want {
 		t.Errorf("non-empty references wire bytes mismatch:\n got: %s\nwant: %s", string(got), want)
+	}
+}
+
+// TestProvideReferences_UsingDataArea tests T5: find-references (FR-25) on a USING clause
+// lists all callers with USING references to that data area (reverse sweep via edgeMatchesTarget).
+// Feature 36 (USING data-area navigation, bug #58).
+func TestProvideReferences_UsingDataArea(t *testing.T) {
+	// Setup
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	// Arrange: build the workspace index from the multilib fixture
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	fixtureRoot := filepath.Join("testdata", "multilib")
+	fixtureAbs := filepath.Join(wd, fixtureRoot)
+
+	_, cfg, err := config.Bootstrap(fixtureAbs, "", logger)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureAbs, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	// Read source file (CALLER.NSP with USING CUSTLDA on line 2)
+	sourceAbs := filepath.Join(fixtureAbs, "APP/CALLER.NSP")
+	sourceContent, err := os.ReadFile(sourceAbs)
+	if err != nil {
+		t.Fatalf("failed to read source file: %v", err)
+	}
+	_ = sourceContent
+
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureAbs,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Act: call provideReferences on the USING CUSTLDA name (line 2, column 13)
+	params := protocol.ReferenceParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(sourceAbs),
+			},
+			Position: protocol.Position{
+				Line:      uint32(2 - 1),  // Line 2 (1-based) → 1 (0-based)
+				Character: uint32(13 - 1), // Column 13 (1-based) → 12 (0-based)
+			},
+		},
+		Context: protocol.ReferenceContext{
+			IncludeDeclaration: false,
+		},
+	}
+
+	locations, err := provideReferences(hctx, params)
+
+	// Assert: no error
+	if err != nil {
+		t.Fatalf("provideReferences failed: %v", err)
+	}
+
+	// Assert: should find BOTH CALLER.NSP and CALLER2.NSP with USING CUSTLDA
+	// Expect at least 2 references (one from each caller)
+	if locations == nil || len(locations) < 2 {
+		t.Errorf("provideReferences: expected at least 2 references (CALLER.NSP + CALLER2.NSP), got %d", len(locations))
+		if locations != nil {
+			for i, loc := range locations {
+				t.Logf("  location[%d]: %s %v", i, loc.URI, loc.Range)
+			}
+		}
+		return
+	}
+
+	// Verify the references come from the expected files
+	foundCALLER := false
+	foundCALLER2 := false
+	for _, loc := range locations {
+		fsPath := loc.URI.FsPath()
+		if strings.Contains(fsPath, "CALLER.NSP") && !strings.Contains(fsPath, "CALLER2") {
+			foundCALLER = true
+		}
+		if strings.Contains(fsPath, "CALLER2.NSP") {
+			foundCALLER2 = true
+		}
+	}
+
+	if !foundCALLER {
+		t.Error("provideReferences: expected a reference from CALLER.NSP")
+	}
+	if !foundCALLER2 {
+		t.Error("provideReferences: expected a reference from CALLER2.NSP")
 	}
 }

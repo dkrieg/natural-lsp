@@ -20,6 +20,7 @@ const (
 	EdgeIncludes           EdgeKind = "INCLUDES"             // INCLUDE copycode
 	EdgeReads              EdgeKind = "READS"                // READ / FIND / GET
 	EdgeWrites             EdgeKind = "WRITES"               // STORE / UPDATE / DELETE
+	EdgeUsesDataArea       EdgeKind = "USES_DATA_AREA"       // DEFINE DATA … USING <data-area>
 )
 
 // ObjectType classifies a Natural source object by its file extension and

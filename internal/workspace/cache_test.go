@@ -1972,14 +1972,14 @@ func TestLoad_ReadsGzipAndPlaintext(t *testing.T) {
 // 0.6.0 to 0.7.0 (feature 24, T3) causes an old-format cache to trigger a
 // full rebuild. This tests FR-39 (format-version gating) and Story 3 AC1
 // (version bump → one-time rebuild).
-// NOTE: As of feature 27 T1, the cache version is 0.8.0 (DataDefinition.NameRange added).
+// NOTE: As of feature 36 T3, the cache version is 0.10.0 (model.EdgeUsesDataArea edges added).
 func TestLoad_CacheVersionBumpedTo070(t *testing.T) {
 	t.Helper()
 
-	// First, verify the version constant has been bumped to 0.9.0 (feature 28 T9: Symbol/DataDefinition detail fields).
-	// This test documents the progression: 0.6.0 → 0.7.0 (feature 24) → 0.8.0 (feature 27) → 0.9.0 (feature 28).
-	if cacheFormatVersion != "0.9.0" {
-		t.Errorf("cacheFormatVersion = %q, want %q (version must be 0.9.0)", cacheFormatVersion, "0.9.0")
+	// First, verify the version constant has been bumped to 0.10.0 (feature 36 T3: EdgeUsesDataArea edges).
+	// This test documents the progression: 0.6.0 → 0.7.0 (feature 24) → 0.8.0 (feature 27) → 0.9.0 (feature 28) → 0.10.0 (feature 36).
+	if cacheFormatVersion != "0.10.0" {
+		t.Errorf("cacheFormatVersion = %q, want %q (version must be 0.10.0)", cacheFormatVersion, "0.10.0")
 	}
 
 	tests := []struct {
@@ -3007,6 +3007,260 @@ func TestSave_Load_Feature28SymbolAndDataDefinitionFields(t *testing.T) {
 			}
 			if viewDef.ViewOfDDM != "EMPLOYEES" {
 				t.Errorf("Definition[3].ViewOfDDM = %q, want EMPLOYEES", viewDef.ViewOfDDM)
+			}
+		})
+	}
+}
+
+// TestCacheFormatVersionIsFeature36 asserts that the cache format version
+// constant is bumped to 0.10.0 for feature 36 (EdgeUsesDataArea edges).
+// This test FAILS until the cache format version is bumped to "0.10.0"
+// (GREEN phase / Task 3 of feature 36-using-data-area-navigation).
+func TestCacheFormatVersionIsFeature36(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"cacheFormatVersion bumped to 0.10.0 for feature 36"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Assert: cacheFormatVersion must be "0.10.0" after the feature 36 cache-format bump
+			if cacheFormatVersion != "0.10.0" {
+				t.Errorf("cacheFormatVersion = %q, want 0.10.0 (feature 36 EdgeUsesDataArea edges)", cacheFormatVersion)
+			}
+		})
+	}
+}
+
+// TestLoad_CacheVersionBumpedForFeature36 verifies that a cache created before
+// feature 36 (format version 0.9.0) is marked as stale when the version is
+// bumped to 0.10.0 to accommodate the new EdgeUsesDataArea edges.
+// This test FAILS until the cache format version is bumped to "0.10.0"
+// (GREEN phase / Task 3 of feature 36-using-data-area-navigation).
+//
+// Task 3 spec: "Bump cacheFormatVersion '0.9.0' → '0.10.0' in
+// internal/workspace/cache.go; a stale 0.9.0 cache (fabricated as
+// CacheFile{Version:"0.9.0"} in Go) triggers a cold rebuild; a save→load
+// round-trip of a FileAnalysis carrying EdgeUsesDataArea edges preserves
+// the new edge kind."
+//
+// This test arranges a 0.9.0 cache (the pre-feature-36 version) and verifies
+// that Load() at the new 0.10.0 version treats it as stale (all files marked
+// for rebuild).
+func TestLoad_CacheVersionBumpedForFeature36(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"0.9.0 cache marked stale when version bumped to 0.10.0"},
+		{"forces full rebuild on EdgeUsesDataArea edge addition"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Manually build a 0.9.0 cache (the pre-feature-36 version) with plaintext JSON.
+			// This simulates a cache written by the old format before the new EdgeUsesDataArea edges.
+			// Include an edge that will become a USES_DATA_AREA edge after the feature 36 implementation.
+			oldVersionCache := CacheFile{
+				Version: "0.9.0",
+				Entries: map[string]cacheEntry{
+					"caller.NSP": {
+						ObjectType:  string(model.ObjectProgram),
+						ContentHash: "deadbeef",
+						Edges: []model.EdgeEntry{
+							{
+								Kind:       model.EdgeCalls,
+								TargetName: "SUBPROG",
+								Source: model.Range{
+									Start: model.Position{Line: 10, Column: 1},
+									End:   model.Position{Line: 10, Column: 20},
+								},
+							},
+						},
+						Structure: &model.Symbol{
+							Kind: model.SymbolObject,
+							Name: "CALLER",
+							Range: model.Range{
+								Start: model.Position{Line: 1, Column: 1},
+								End:   model.Position{Line: 20, Column: 1},
+							},
+							SelectionRange: model.Range{
+								Start: model.Position{Line: 1, Column: 1},
+								End:   model.Position{Line: 1, Column: 6},
+							},
+							Children: nil,
+						},
+						Definitions: []model.DataDefinition{},
+					},
+				},
+			}
+			data, err := json.MarshalIndent(oldVersionCache, "", "    ")
+			if err != nil {
+				t.Fatalf("Failed to marshal old-version cache: %v", err)
+			}
+			if err := os.WriteFile(cachePath, data, 0644); err != nil {
+				t.Fatalf("Failed to write old-version cache: %v", err)
+			}
+
+			// Try to load the cache - should treat it as stale due to version mismatch.
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			// Verify Load() returns nil index (stale, version mismatch).
+			if loaded != nil {
+				t.Error("Load() returned non-nil index for 0.9.0 cache, want nil (stale)")
+			}
+
+			// Verify stale list contains the file (forces rebuild).
+			if len(stale) == 0 {
+				t.Error("Load() returned empty stale list for version mismatch, want all files marked stale")
+			}
+
+			// Verify the stale list contains our test file.
+			foundStale := false
+			for _, s := range stale {
+				if s == "caller.NSP" {
+					foundStale = true
+					break
+				}
+			}
+			if !foundStale {
+				t.Errorf("Load() did not mark caller.NSP as stale: %v", stale)
+			}
+		})
+	}
+}
+
+// TestSave_Load_EdgeUsesDataAreaRoundTrip verifies that FileAnalysis entries
+// carrying the new EdgeUsesDataArea edge kind (added in feature 36) persist
+// correctly through a cache Save→Load round-trip.
+// This test verifies that once the cache version is bumped to 0.10.0, a file
+// with DEFINE DATA … USING edges survives the round-trip with the edge kind intact.
+func TestSave_Load_EdgeUsesDataAreaRoundTrip(t *testing.T) {
+	t.Helper()
+
+	tests := []struct {
+		name string
+	}{
+		{"persists EdgeUsesDataArea edges across round-trip"},
+		{"preserves edge Source and TargetName for USING references"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			// Create a temporary directory for the cache file.
+			tmpDir := t.TempDir()
+			cachePath := filepath.Join(tmpDir, "cache.json")
+
+			// Build an index with a FileAnalysis containing EdgeUsesDataArea edges.
+			idx := &Index{}
+			idx.Add("dataareauser.NSP", model.FileAnalysis{
+				ObjectType: model.ObjectProgram,
+				Symbols:    []model.SymbolEntry{{Name: "TESTUSER", Kind: model.SymbolProgram}},
+				Edges: []model.EdgeEntry{
+					{
+						Kind:       model.EdgeUsesDataArea,
+						TargetName: "CUSTLDA",
+						Source: model.Range{
+							Start: model.Position{Line: 5, Column: 1},
+							End:   model.Position{Line: 5, Column: 25},
+						},
+					},
+					{
+						Kind:       model.EdgeUsesDataArea,
+						TargetName: "CUSTPARM",
+						Source: model.Range{
+							Start: model.Position{Line: 6, Column: 1},
+							End:   model.Position{Line: 6, Column: 25},
+						},
+					},
+				},
+				Structure: &model.Symbol{
+					Kind:  model.SymbolObject,
+					Name:  "DATAAREAUSER",
+					Range: model.Range{Start: model.Position{Line: 1, Column: 1}, End: model.Position{Line: 20, Column: 1}},
+					SelectionRange: model.Range{
+						Start: model.Position{Line: 1, Column: 1},
+						End:   model.Position{Line: 1, Column: 12},
+					},
+					Children: nil,
+				},
+			})
+
+			// Save the index.
+			err := Save(idx, cachePath)
+			if err != nil {
+				t.Fatalf("Save() returned error: %v", err)
+			}
+
+			// Load the index (no current hashes, so no stale files).
+			loaded, stale, err := Load(cachePath, map[string]string{}, nil)
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+
+			// Verify no stale files (cache is fresh).
+			if len(stale) != 0 {
+				t.Errorf("Load() returned %d stale files, want 0: %v", len(stale), stale)
+			}
+
+			// Verify loaded index is not nil.
+			if loaded == nil {
+				t.Fatal("Load() returned nil index")
+			}
+
+			// Retrieve the loaded FileAnalysis.
+			fa, ok := loaded.Get("dataareauser.NSP")
+			if !ok {
+				t.Fatal("Load() missing dataareauser.NSP")
+			}
+
+			// Verify EdgeUsesDataArea edges are preserved.
+			usesDataAreaEdges := []model.EdgeEntry{}
+			for _, edge := range fa.Edges {
+				if edge.Kind == model.EdgeUsesDataArea {
+					usesDataAreaEdges = append(usesDataAreaEdges, edge)
+				}
+			}
+
+			if len(usesDataAreaEdges) != 2 {
+				t.Errorf("Loaded FileAnalysis has %d EdgeUsesDataArea edges, want 2", len(usesDataAreaEdges))
+			}
+
+			// Verify the first edge.
+			if len(usesDataAreaEdges) >= 1 {
+				if usesDataAreaEdges[0].TargetName != "CUSTLDA" {
+					t.Errorf("Edge[0].TargetName = %q, want CUSTLDA", usesDataAreaEdges[0].TargetName)
+				}
+				if usesDataAreaEdges[0].Source.Start.Line != 5 {
+					t.Errorf("Edge[0].Source.Start.Line = %d, want 5", usesDataAreaEdges[0].Source.Start.Line)
+				}
+			}
+
+			// Verify the second edge.
+			if len(usesDataAreaEdges) >= 2 {
+				if usesDataAreaEdges[1].TargetName != "CUSTPARM" {
+					t.Errorf("Edge[1].TargetName = %q, want CUSTPARM", usesDataAreaEdges[1].TargetName)
+				}
+				if usesDataAreaEdges[1].Source.Start.Line != 6 {
+					t.Errorf("Edge[1].Source.Start.Line = %d, want 6", usesDataAreaEdges[1].Source.Start.Line)
+				}
 			}
 		})
 	}

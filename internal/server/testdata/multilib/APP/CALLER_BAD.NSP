@@ -1,0 +1,6 @@
+* Caller with unresolved USING reference (modeled gap test)
+DEFINE DATA
+LOCAL USING NOSUCHDA
+END-DEFINE
+
+END

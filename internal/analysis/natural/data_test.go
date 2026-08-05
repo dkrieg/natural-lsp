@@ -2872,3 +2872,120 @@ func TestExtractDefinitions_NestedRedefine(t *testing.T) {
 		t.Run(tc.name, tc.verify)
 	}
 }
+
+// TestExtractEdges_UsesDataArea verifies that DEFINE DATA … USING <name> clauses
+// are extracted as EdgeUsesDataArea edges (Feature 36, T1).
+//
+// Acceptance criteria:
+//   - Emit exactly one EdgeUsesDataArea edge for each LOCAL/PARAMETER/GLOBAL USING clause
+//   - TargetName is the upper-cased data-area name
+//   - Source is the name-token span (DataAreaRef.Range)
+//   - Edges are in global source order (Source.Start non-decreasing)
+//   - A USING clause with no name emits no edge (modeled gap, mirrors extractDataAreaRefs)
+func TestExtractEdges_UsesDataArea(t *testing.T) {
+	// Arrange: Read the fixture with three USING clauses
+	content, err := os.ReadFile(filepath.Join("testdata", "dataarea", "using_edges.NSP"))
+	if err != nil {
+		t.Fatalf("Failed to read fixture: %v", err)
+	}
+
+	// Act: Run the full extraction pipeline via Analyzer
+	az := New(nil)
+	result, errAna := az.Analyze("testdata/dataarea/using_edges.NSP", content)
+	if errAna != nil {
+		t.Errorf("Analyze returned error: %v", errAna)
+	}
+
+	// Verify DataAreaRefs are populated (feature 27 foundation)
+	if len(result.DataAreaRefs) != 3 {
+		t.Fatalf("Expected 3 DataAreaRefs, got %d", len(result.DataAreaRefs))
+	}
+
+	// Assert: Exactly three EdgeUsesDataArea edges in result.Edges
+	usesDataAreaEdges := []model.EdgeEntry{}
+	for _, edge := range result.Edges {
+		if edge.Kind == model.EdgeUsesDataArea {
+			usesDataAreaEdges = append(usesDataAreaEdges, edge)
+		}
+	}
+
+	if len(usesDataAreaEdges) != 3 {
+		t.Errorf("Expected 3 EdgeUsesDataArea edges, got %d", len(usesDataAreaEdges))
+		for i, edge := range result.Edges {
+			t.Logf("  Edges[%d]: Kind=%s, TargetName=%s", i, edge.Kind, edge.TargetName)
+		}
+	}
+
+	// Verify each edge's TargetName and Source match the corresponding DataAreaRef
+	expectedNames := []string{"LDACUST", "PDAPARM", "GDAGLOB"}
+	for i, edge := range usesDataAreaEdges {
+		if i >= len(expectedNames) {
+			break
+		}
+
+		// Check TargetName
+		if edge.TargetName != expectedNames[i] {
+			t.Errorf("usesDataAreaEdges[%d].TargetName = %q, want %q", i, edge.TargetName, expectedNames[i])
+		}
+
+		// Check Source matches the DataAreaRef.Range (OQ-1 guarantee)
+		refRange := result.DataAreaRefs[i].Range
+		if edge.Source != refRange {
+			t.Errorf("usesDataAreaEdges[%d].Source = %v, want %v (DataAreaRef[%d].Range)",
+				i, edge.Source, refRange, i)
+		}
+	}
+
+	// Verify all edges are in global source order
+	for i := 1; i < len(result.Edges); i++ {
+		prevStart := result.Edges[i-1].Source.Start
+		currStart := result.Edges[i].Source.Start
+		if prevStart.Line > currStart.Line ||
+			(prevStart.Line == currStart.Line && prevStart.Column > currStart.Column) {
+			t.Errorf("Edges not in global source order: Edges[%d] at (%d:%d) comes after Edges[%d] at (%d:%d)",
+				i, currStart.Line, currStart.Column, i-1, prevStart.Line, prevStart.Column)
+		}
+	}
+}
+
+// TestExtractEdges_UsesDataAreaGap verifies that a malformed USING clause with no name
+// emits no EdgeUsesDataArea edge (Feature 36, T1 modeled gap).
+//
+// Acceptance criteria:
+//   - A DEFINE DATA LOCAL USING (with no name) produces no EdgeUsesDataArea edge
+//   - No panic, no diagnostic on the extraction side (diagnostics stay with the parser)
+func TestExtractEdges_UsesDataAreaGap(t *testing.T) {
+	// Arrange: Read the fixture with a malformed USING clause (no name)
+	content, err := os.ReadFile(filepath.Join("testdata", "dataarea", "using_gap.NSP"))
+	if err != nil {
+		t.Fatalf("Failed to read fixture: %v", err)
+	}
+
+	// Act: Run the full extraction pipeline
+	az := New(nil)
+	result, errAna := az.Analyze("testdata/dataarea/using_gap.NSP", content)
+	if errAna != nil {
+		t.Errorf("Analyze returned error: %v", errAna)
+	}
+
+	// Assert: No DataAreaRefs (USING with empty name is skipped by extractDataAreaRefs)
+	if len(result.DataAreaRefs) != 0 {
+		t.Errorf("Expected 0 DataAreaRefs for malformed USING, got %d", len(result.DataAreaRefs))
+	}
+
+	// Assert: No EdgeUsesDataArea edges (derived from DataAreaRefs, so none if refs are empty)
+	usesDataAreaEdges := 0
+	for _, edge := range result.Edges {
+		if edge.Kind == model.EdgeUsesDataArea {
+			usesDataAreaEdges++
+		}
+	}
+	if usesDataAreaEdges != 0 {
+		t.Errorf("Expected 0 EdgeUsesDataArea edges for malformed USING, got %d", usesDataAreaEdges)
+	}
+
+	// Confirm no panic occurred (FR-43 graceful degradation)
+	if result.AST == nil {
+		t.Error("AST is nil, expected a parsed program despite malformed USING")
+	}
+}

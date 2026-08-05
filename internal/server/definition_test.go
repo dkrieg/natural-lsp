@@ -1003,3 +1003,260 @@ func TestProvideDefinition_ViewFieldModeledGaps(t *testing.T) {
 		})
 	}
 }
+
+// TestProvideDefinition_UsingDataArea tests T4: definition (FR-24) and declaration (FR-58)
+// on a DEFINE DATA … USING <data-area> clause resolves to the data-area object's root.
+// Feature 36 (USING data-area navigation, bug #58).
+func TestProvideDefinition_UsingDataArea(t *testing.T) {
+	// Setup: position encoding and logger
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	tt := []struct {
+		name           string
+		fixtureRoot    string
+		sourceFile     string
+		usingLine      int
+		usingColumn    int
+		wantResolved   bool
+		wantTargetFile string
+		expectedKind   model.ObjectType
+		description    string
+	}{
+		{
+			name:           "LOCAL_USING_resolves_via_chain",
+			fixtureRoot:    filepath.Join("testdata", "multilib"),
+			sourceFile:     "APP/CALLER.NSP",
+			usingLine:      2,
+			usingColumn:    15,
+			wantResolved:   true,
+			wantTargetFile: "COMMON/CUSTLDA.NSL",
+			expectedKind:   model.ObjectLocalDataArea,
+			description:    "cursor on 'CUSTLDA' in LOCAL USING → resolves to COMMON (chain winner, not ALT)",
+		},
+		{
+			name:           "PARAMETER_USING_resolves",
+			fixtureRoot:    filepath.Join("testdata", "multilib"),
+			sourceFile:     "APP/CALLER.NSP",
+			usingLine:      3,
+			usingColumn:    19,
+			wantResolved:   true,
+			wantTargetFile: "COMMON/PDAPARM.NSA",
+			expectedKind:   model.ObjectParameterDataArea,
+			description:    "cursor on 'PDAPARM' in PARAMETER USING → resolves to COMMON/PDAPARM.NSA",
+		},
+		{
+			name:           "GLOBAL_USING_resolves",
+			fixtureRoot:    filepath.Join("testdata", "multilib"),
+			sourceFile:     "APP/CALLER.NSP",
+			usingLine:      4,
+			usingColumn:    15,
+			wantResolved:   true,
+			wantTargetFile: "COMMON/GDAGLOB.NSG",
+			expectedKind:   model.ObjectGlobalDataArea,
+			description:    "cursor on 'GDAGLOB' in GLOBAL USING → resolves to COMMON/GDAGLOB.NSG",
+		},
+		{
+			name:         "USING_unresolved_returns_empty",
+			fixtureRoot:  filepath.Join("testdata", "multilib"),
+			sourceFile:   "APP/CALLER_BAD.NSP",
+			usingLine:    2,
+			usingColumn:  15,
+			wantResolved: false,
+			description:  "cursor on unresolved USING 'NOSUCHDA' → returns empty (no definition found)",
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange: build the workspace index from the fixture
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("failed to get working directory: %v", err)
+			}
+			fixtureAbs := filepath.Join(wd, tc.fixtureRoot)
+
+			_, cfg, err := config.Bootstrap(fixtureAbs, "", logger)
+			if err != nil {
+				t.Fatalf("bootstrap: %v", err)
+			}
+			idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureAbs, cfg, az, logger, "", nil, nil)
+			if err != nil {
+				t.Fatalf("failed to build index: %v", err)
+			}
+
+			// Resolve the workspace edges
+			resSet := workspace.Resolve(idx, &cfg)
+
+			// Read the source file content for position conversion
+			sourceAbs := filepath.Join(fixtureAbs, tc.sourceFile)
+			sourceContent, err := os.ReadFile(sourceAbs)
+			if err != nil {
+				t.Fatalf("failed to read source file: %v", err)
+			}
+			_ = sourceContent
+
+			// Build the handlerContext
+			hctx := &handlerContext{
+				idx:         idx,
+				res:         resSet,
+				posEncoding: enc,
+				root:        fixtureAbs,
+				cfg:         cfg,
+				logger:      logger,
+			}
+
+			// Act: call provideDefinition with the cursor position
+			params := protocol.DefinitionParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{
+						URI: uri.File(sourceAbs),
+					},
+					Position: protocol.Position{
+						Line:      uint32(tc.usingLine - 1),
+						Character: uint32(tc.usingColumn - 1),
+					},
+				},
+			}
+
+			locations, err := provideDefinition(hctx, params)
+
+			// Assert: check results
+			if err != nil {
+				t.Fatalf("provideDefinition failed: %v", err)
+			}
+
+			if tc.wantResolved {
+				// Expect a non-empty result
+				if locations == nil || len(locations) == 0 {
+					t.Errorf("%s: expected non-empty locations, got %v", tc.description, locations)
+					return
+				}
+
+				// Verify the location points to the expected target file
+				targetURI := uri.File(filepath.Join(fixtureAbs, tc.wantTargetFile))
+				found := false
+				for _, loc := range locations {
+					if loc.URI == targetURI {
+						found = true
+						// Assert the range is the object root (zero-width at start of file)
+						if loc.Range.Start.Line != 0 || loc.Range.Start.Character != 0 {
+							t.Errorf("%s: expected range start {0,0}, got {%d,%d}", tc.description, loc.Range.Start.Line, loc.Range.Start.Character)
+						}
+						break
+					}
+				}
+				if !found {
+					t.Errorf("%s: expected target file %q in locations; got URIs: %v", tc.description, tc.wantTargetFile, locations)
+				}
+			} else {
+				// Expect an empty result
+				if locations != nil && len(locations) > 0 {
+					t.Errorf("%s: expected empty locations for unresolved USING, got %v", tc.description, locations)
+				}
+			}
+		})
+	}
+}
+
+// TestProvideDeclaration_UsingDataArea tests T4 AC2: declaration on a USING clause
+// delegates to definition and returns the same Location (FR-58).
+func TestProvideDeclaration_UsingDataArea(t *testing.T) {
+	// Setup
+	enc := protocol.PositionEncodingKindUTF8
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	az := natural.New(nil)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	fixtureRoot := filepath.Join("testdata", "multilib")
+	fixtureAbs := filepath.Join(wd, fixtureRoot)
+
+	_, cfg, err := config.Bootstrap(fixtureAbs, "", logger)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	idx, _, _, err := workspace.BuildWithCache(context.Background(), fixtureAbs, cfg, az, logger, "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to build index: %v", err)
+	}
+
+	resSet := workspace.Resolve(idx, &cfg)
+
+	sourceAbs := filepath.Join(fixtureAbs, "APP/CALLER.NSP")
+	sourceContent, err := os.ReadFile(sourceAbs)
+	if err != nil {
+		t.Fatalf("failed to read source file: %v", err)
+	}
+	_ = sourceContent
+
+	hctx := &handlerContext{
+		idx:         idx,
+		res:         resSet,
+		posEncoding: enc,
+		root:        fixtureAbs,
+		cfg:         cfg,
+		logger:      logger,
+	}
+
+	// Act: call both provideDefinition and provideDeclaration on the same cursor
+	// Cursor on line 2, column 13 (CUSTLDA in "LOCAL USING CUSTLDA")
+	defParams := protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(sourceAbs),
+			},
+			Position: protocol.Position{
+				Line:      uint32(2 - 1),
+				Character: uint32(13 - 1),
+			},
+		},
+	}
+
+	declParams := protocol.DeclarationParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: uri.File(sourceAbs),
+			},
+			Position: protocol.Position{
+				Line:      uint32(2 - 1),
+				Character: uint32(13 - 1),
+			},
+		},
+	}
+
+	defLocations, err := provideDefinition(hctx, defParams)
+	if err != nil {
+		t.Fatalf("provideDefinition failed: %v", err)
+	}
+
+	declLocations, err := provideDeclaration(hctx, declParams)
+	if err != nil {
+		t.Fatalf("provideDeclaration failed: %v", err)
+	}
+
+	// Assert: both return the same non-empty location(s)
+	if (defLocations == nil || len(defLocations) == 0) && (declLocations == nil || len(declLocations) == 0) {
+		t.Error("both provideDefinition and provideDeclaration returned empty; expected same result")
+		return
+	}
+
+	if len(defLocations) != len(declLocations) {
+		t.Errorf("provideDefinition returned %d locations, but provideDeclaration returned %d", len(defLocations), len(declLocations))
+		return
+	}
+
+	// Assert URIs and ranges are identical
+	for i := range defLocations {
+		if defLocations[i].URI != declLocations[i].URI {
+			t.Errorf("location[%d] URI mismatch: definition %q vs declaration %q", i, defLocations[i].URI, declLocations[i].URI)
+		}
+		if defLocations[i].Range != declLocations[i].Range {
+			t.Errorf("location[%d] Range mismatch: definition %v vs declaration %v", i, defLocations[i].Range, declLocations[i].Range)
+		}
+	}
+}

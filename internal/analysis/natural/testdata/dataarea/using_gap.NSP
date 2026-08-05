@@ -1,0 +1,9 @@
+* Test program with malformed USING clause (no name).
+* Feature 36: modeled gap — USING with no name emits no edge.
+DEFINE DATA
+LOCAL USING
+01 #LOCAL-VAR (A10)
+END-DEFINE
+
+WRITE 'Hello'
+END

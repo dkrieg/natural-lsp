@@ -63,12 +63,12 @@ func TestProvideDefinition_MultiLib_USINGDataArea(t *testing.T) {
 	hctx, root := multilibServerSetup(t)
 	callerFile := filepath.Join(root, "APP", "CALLER.NSP")
 
-	// CALLER.NSP line 5: "MOVE 42 TO #CUST-ID"
-	// Cursor on #CUST-ID (0-based line 4, char within the token starting at col 12 → 0-based 11).
+	// CALLER.NSP line 7: "MOVE 42 TO #CUST-ID" (shifted from line 5 due to added USING clauses)
+	// Cursor on #CUST-ID (0-based line 6, char within the token starting at col 12 → 0-based 11).
 	params := protocol.DefinitionParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(callerFile)},
-			Position:     protocol.Position{Line: 4, Character: 14},
+			Position:     protocol.Position{Line: 6, Character: 14},
 		},
 	}
 
@@ -95,12 +95,12 @@ func TestProvideDefinition_MultiLib_SQLDDM(t *testing.T) {
 	hctx, root := multilibServerSetup(t)
 	callerFile := filepath.Join(root, "APP", "CALLER.NSP")
 
-	// CALLER.NSP line 8: "    FROM EMPLOYEE" — cursor on EMPLOYEE.
+	// CALLER.NSP line 10: "    FROM EMPLOYEE" — cursor on EMPLOYEE. (shifted from line 8 due to added USING clauses)
 	// EMPLOYEE starts at 1-based col 10 (0-based char 9); aim mid-token.
 	params := protocol.DefinitionParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: uri.File(callerFile)},
-			Position:     protocol.Position{Line: 7, Character: 12},
+			Position:     protocol.Position{Line: 9, Character: 12},
 		},
 	}
 

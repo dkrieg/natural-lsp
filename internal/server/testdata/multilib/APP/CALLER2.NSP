@@ -1,0 +1,7 @@
+* Second caller using CUSTLDA for references test (T5)
+DEFINE DATA
+LOCAL USING CUSTLDA
+END-DEFINE
+
+MOVE 100 TO #CUST-ID
+END
