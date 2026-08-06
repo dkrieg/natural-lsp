@@ -4,6 +4,7 @@
 // `natural-lsp` language server over stdio — exactly as every other editor
 // launches it (`natural-lsp --stdio`). There is no bespoke transport or protocol.
 
+import * as fs from "fs";
 import * as vscode from "vscode";
 import {
   LanguageClient,
@@ -11,7 +12,7 @@ import {
   ServerOptions,
   TransportKind,
 } from "vscode-languageclient/node";
-import { resolveServerPath } from "./serverPath";
+import { bundledServerPath, describeServerChoice, resolveServerPath } from "./serverPath";
 
 let client: LanguageClient | undefined;
 
@@ -20,12 +21,35 @@ const DOCUMENT_SELECTOR = [{ language: "natural" }];
 
 /**
  * buildClient constructs (but does not start) a LanguageClient that launches the
- * server binary resolved from `naturalLsp.serverPath`.
+ * server binary resolved from `naturalLsp.serverPath`, the bundled binary (if present),
+ * or the default PATH lookup.
  */
-function buildClient(): LanguageClient {
-  const serverPath = resolveServerPath(
-    vscode.workspace.getConfiguration("naturalLsp"),
-  );
+function buildClient(extensionPath: string): LanguageClient {
+  // Compute the bundled candidate: path + fs-existence probe.
+  const bundledPath = bundledServerPath(extensionPath, process.platform as NodeJS.Platform);
+  const bundledCandidate = {
+    path: bundledPath,
+    exists: (p: string) => fs.existsSync(p),
+  };
+
+  const config = vscode.workspace.getConfiguration("naturalLsp");
+  const serverPath = resolveServerPath(config, bundledCandidate);
+
+  // If the resolved path is the bundled binary on Unix, make it executable (0o755).
+  // Failure is tolerated: log at most a warning and continue to launch.
+  if (process.platform !== "win32" && serverPath === bundledPath) {
+    try {
+      fs.chmodSync(serverPath, 0o755);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.warn(`Natural LSP: failed to chmod bundled binary: ${detail}`);
+    }
+  }
+
+  // Log which server was chosen (OQ-3).
+  const choiceInfo = { config, bundled: bundledCandidate, resolvedPath: serverPath };
+  const choiceLabel = describeServerChoice(choiceInfo);
+  console.info(`Natural LSP: using server (${choiceLabel}): ${serverPath}`);
 
   const serverOptions: ServerOptions = {
     command: serverPath,
@@ -58,14 +82,20 @@ function buildClient(): LanguageClient {
  * it surfaces an actionable notification and returns without throwing — the
  * client-side analogue of the server's graceful-degradation stance (FR-43).
  */
-async function startClient(): Promise<void> {
-  client = buildClient();
+async function startClient(extensionPath: string): Promise<void> {
+  client = buildClient(extensionPath);
   try {
     await client.start();
   } catch (err) {
-    const configured = resolveServerPath(
-      vscode.workspace.getConfiguration("naturalLsp"),
-    );
+    // Compute the resolved path for the error message (using the same resolution logic).
+    const bundledPath = bundledServerPath(extensionPath, process.platform as NodeJS.Platform);
+    const bundledCandidate = {
+      path: bundledPath,
+      exists: (p: string) => fs.existsSync(p),
+    };
+    const config = vscode.workspace.getConfiguration("naturalLsp");
+    const configured = resolveServerPath(config, bundledCandidate);
+
     const detail = err instanceof Error ? err.message : String(err);
     void vscode.window.showErrorMessage(
       `Natural LSP: failed to start the language server ("${configured}"). ` +
@@ -89,12 +119,12 @@ export function activate(context: vscode.ExtensionContext): NaturalLspApi {
         await client.stop();
         client = undefined;
       }
-      await startClient();
+      await startClient(context.extensionPath);
     }),
   );
 
   // Kick off the client start; activation itself never blocks on / throws from it.
-  void startClient();
+  void startClient(context.extensionPath);
 
   return { getClient };
 }

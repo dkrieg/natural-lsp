@@ -40,6 +40,25 @@ describe("vsix packaging invariants", () => {
     );
   });
 
+  it(".vscodeignore does not exclude bin/ (holds the bundled server binary)", () => {
+    const raw = fs.readFileSync(VSCODEIGNORE_PATH, "utf8");
+    const offending = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"))
+      // Any glob whose first path segment is `bin` would drop the bundled
+      // natural-lsp server binary from the .vsix (feature 37), so the extension
+      // would fall back to PATH and users lose the zero-deploy launch.
+      .filter((line) => /^!?bin(\/|$)/.test(line));
+
+    assert.deepStrictEqual(
+      offending,
+      [],
+      `.vscodeignore must not exclude bin/ — it carries the bundled server binary (feature 37). ` +
+        `Offending line(s): ${JSON.stringify(offending)}`,
+    );
+  });
+
   it("declares vscode-languageclient as a runtime dependency", () => {
     const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, "utf8"));
     assert.ok(

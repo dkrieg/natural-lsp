@@ -3,3 +3,6 @@ out/
 .vscode-test/
 .vscode-test-server/
 *.vsix
+# bin/ holds the bundled natural-lsp server binary, copied from dist/ at package
+# time by the release workflow (feature 37). It is a build artifact, never committed.
+bin/
