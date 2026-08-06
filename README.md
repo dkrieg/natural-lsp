@@ -378,20 +378,33 @@ An unrecognized value falls back to the default level with an actionable message
 ### VS Code
 
 The companion extension lives in this repo under [`editors/vscode/`](editors/vscode/). It is
-distributed as a `.vsix` (not yet on the VS Code Marketplace). Build one, then install it:
+distributed as a `.vsix` (not on the VS Code Marketplace). Each GitHub Release publishes a
+**platform-specific `.vsix` that bundles the `natural-lsp` server binary** — download the one matching your
+OS/arch and the extension works with **no separate server install** (feature 37):
+
+```bash
+# From the GitHub Release, pick your platform: linux-x64 | linux-arm64 | darwin-x64 | darwin-arm64 | win32-x64
+code --install-extension natural-lsp-vscode-<version>-<platform>.vsix
+```
+
+To build one from source instead (packages the server binary you place in `editors/vscode/bin/`, or none —
+then it falls back to `PATH`):
 
 ```bash
 cd editors/vscode
 npm ci
-npm run package                 # produces natural-lsp-vscode-<version>.vsix
-code --install-extension natural-lsp-vscode-0.1.0.vsix
+npm run package                 # produces a natural-lsp-vscode-<version>.vsix
+code --install-extension natural-lsp-vscode-<version>.vsix
 ```
 
-The extension handles launching the server automatically when a Natural source file (`.NSP`, `.NSN`, `.NSS`, `.NSC`,
-`.NSM`, `.NSL`, `.NSG`, `.NSA`, `.NSH`, `.NSD`, `.NS4`, `.NS7`, `.NS3`, `.NS8`, `.NST`) is opened. No additional
-configuration is required if `natural-lsp` is on your `PATH`.
+The extension launches the server automatically when a Natural source file (`.NSP`, `.NSN`, `.NSS`, `.NSC`,
+`.NSM`, `.NSL`, `.NSG`, `.NSA`, `.NSH`, `.NSD`, `.NS4`, `.NS7`, `.NS3`, `.NS8`, `.NST`) is opened. It resolves
+the server in this order: the **`naturalLsp.serverPath`** setting (if set) → the **bundled** binary shipped
+in the `.vsix` (if present) → `natural-lsp` on your **`PATH`**. So a platform-specific `.vsix` needs no
+configuration, and a source-built/generic `.vsix` still works when `natural-lsp` is on `PATH`.
 
-To point at a specific binary location, add to `.vscode/settings.json`:
+To point at a specific binary (e.g. a dev build), add to `.vscode/settings.json` — this overrides the
+bundled binary:
 
 ```json
 {

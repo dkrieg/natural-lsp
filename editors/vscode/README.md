@@ -23,17 +23,22 @@ The extension activates when the first Natural document is opened
 
 ## Requirements
 
-You need the `natural-lsp` server binary. Install it any of the documented ways
-(pre-built release binary, `go install`, or build from source — see the
-[root README → Installation](../../README.md#installation)). Zero configuration is
-required when the binary is on your `PATH`.
+The **platform-specific `.vsix`** published on each GitHub Release **bundles the `natural-lsp` server
+binary**, so no separate server install is needed — just install the `.vsix` matching your OS/arch. If you
+use a source-built or generic `.vsix` (no bundled binary), you need the `natural-lsp` server installed some
+[documented way](../../README.md#installation) and reachable on your `PATH` (or via `naturalLsp.serverPath`).
+
+The extension resolves the server as: **`naturalLsp.serverPath` (if set) → bundled binary in the `.vsix`
+(if present) → `natural-lsp` on `PATH`**.
 
 ## Install
 
-Install the packaged `.vsix` (this extension is not published to the Marketplace):
+Install the packaged `.vsix` (this extension is not published to the Marketplace) — prefer the
+platform-specific one from the release:
 
 ```bash
-code --install-extension natural-lsp-vscode-0.1.0.vsix
+# platform ∈ linux-x64 | linux-arm64 | darwin-x64 | darwin-arm64 | win32-x64
+code --install-extension natural-lsp-vscode-<version>-<platform>.vsix
 ```
 
 Then open any Natural file (e.g. a `.NSP`) in a workspace that has a

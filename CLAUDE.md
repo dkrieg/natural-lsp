@@ -52,7 +52,8 @@ again — CI was Linux-only, which is why (i) and the earlier CGO/`-race` releas
 (lsp-tracing-and-logging), 27 (variable & reference navigation), 28 (rich symbol detail & `VIEW OF`
 binding), 29 (semantic tokens), 30 (pull diagnostics), 31 (declaration & type-definition
 navigation), 32 (document links), 35 (semantic-tokens classifier performance — an O(n²)→O(n log n)
-fix), and 36 (`DEFINE DATA … USING` data-area navigation — bug #58; cache `0.10.0`) are shipped**
+fix), 36 (`DEFINE DATA … USING` data-area navigation — bug #58; cache `0.10.0`), and 37 (bundled server
+binary in platform-specific `.vsix`) are shipped**
 (see their notes below). **The LSP capability
 surface is now considered complete for v1.0** — the two remaining backlog candidates, **33
 (execute-command)** and **34 (moniker)**, were evaluated and **dropped as non-goals** (their plan dirs
@@ -314,6 +315,26 @@ bump `0.9.0` → `0.10.0`** (the new persisted `EdgeUsesDataArea` edges force a 
 `EdgeKind` value, no struct-shape change). No new capability. `FuzzParse` and the extraction/resolution
 fuzz targets still guard never-panic (FR-43). Closes #58. See
 `docs/plans/features/36-using-data-area-navigation/`.
+
+Feature 37 (bundled server binary) makes the VS Code extension ship the `natural-lsp` server **inside the
+`.vsix`** so opening a Natural file works with **zero separate deployment** (previously the server had to be
+on `PATH` or set via `naturalLsp.serverPath`). Approach: **platform-specific `.vsix`** via VS Code's native
+`vsce package --target <t>` — one `.vsix` per target (`linux-x64`, `linux-arm64`, `darwin-x64`,
+`darwin-arm64`, `win32-x64`), each embedding **only** that platform's binary from the release `dist/`, rather
+than a fat multi-platform `.vsix`. **Editor-client + CI + docs only — no Go / `internal/model` / cache /
+LSP-protocol change.** `editors/vscode/src/serverPath.ts` (kept `vscode`-free and unit-tested) gains
+`bundledServerPath(extPath, platform)` (→ `bin/natural-lsp[.exe]`) and a bundled tier in `resolveServerPath`
+with precedence **`serverPath` override → bundled-if-exists → `PATH`** (backward-compatible when no bundled
+arg), plus `describeServerChoice` for a which-server-chosen activation log (OQ-3). `extension.ts` computes the
+bundled candidate from `context.extensionPath` + `fs.existsSync`, **`chmod 0o755`s the bundled binary on unix**
+(failure-tolerant — the exec bit may not survive a `.vsix`; the extension re-chmods on activation), and
+preserves feature 15's missing-binary notification. `release.yml` builds the 5 platform `.vsix` in one
+per-target loop (copy the matching `dist/` binary into `bin/`, `vsce package --target … --out
+natural-lsp-vscode-<ver>-<target>.vsix`, `rm -rf bin` between iterations) and **verifies each `.vsix` contains
+both the bundled binary and `vscode-languageclient` before publishing** (extends PR #60's guard), attaching
+all 5 alongside the standalone binaries (kept for `go install`/JetBrains/other editors). `.vscodeignore` keeps
+`bin/` (guarded by `packaging.test.ts`); `bin/` is gitignored (a package-time artifact). `serverPath` remains
+the override escape hatch. See `docs/plans/features/37-bundled-server-binary/`.
 
 Feature 24 (cache-format-compaction) fixes a real-user-reported bug: the on-disk workspace cache was
 **~1 GB for ~7,790 files** because it was serialized as **indented** JSON (`json.MarshalIndent`) of the
