@@ -24,7 +24,7 @@ const DOCUMENT_SELECTOR = [{ language: "natural" }];
  * server binary resolved from `naturalLsp.serverPath`, the bundled binary (if present),
  * or the default PATH lookup.
  */
-function buildClient(extensionPath: string): LanguageClient {
+function buildClient(extensionPath: string): { client: LanguageClient; serverPath: string } {
   // Compute the bundled candidate: path + fs-existence probe.
   const bundledPath = bundledServerPath(extensionPath, process.platform as NodeJS.Platform);
   const bundledCandidate = {
@@ -68,12 +68,13 @@ function buildClient(extensionPath: string): LanguageClient {
     },
   };
 
-  return new LanguageClient(
+  const client = new LanguageClient(
     "naturalLsp",
     "Natural LSP",
     serverOptions,
     clientOptions,
   );
+  return { client, serverPath };
 }
 
 /**
@@ -83,18 +84,13 @@ function buildClient(extensionPath: string): LanguageClient {
  * client-side analogue of the server's graceful-degradation stance (FR-43).
  */
 async function startClient(extensionPath: string): Promise<void> {
-  client = buildClient(extensionPath);
+  const built = buildClient(extensionPath);
+  client = built.client;
   try {
     await client.start();
   } catch (err) {
-    // Compute the resolved path for the error message (using the same resolution logic).
-    const bundledPath = bundledServerPath(extensionPath, process.platform as NodeJS.Platform);
-    const bundledCandidate = {
-      path: bundledPath,
-      exists: (p: string) => fs.existsSync(p),
-    };
-    const config = vscode.workspace.getConfiguration("naturalLsp");
-    const configured = resolveServerPath(config, bundledCandidate);
+    // Reuse the path buildClient already resolved (single source of truth).
+    const configured = built.serverPath;
 
     const detail = err instanceof Error ? err.message : String(err);
     void vscode.window.showErrorMessage(

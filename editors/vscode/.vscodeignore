@@ -20,5 +20,10 @@ tsconfig.json
 # extension on activation ("Cannot find module 'vscode-languageclient'"). vsce
 # includes only the production dependency tree here, not devDependencies.
 # If this extension ever adds a bundler (esbuild/webpack), re-add the exclusion.
+# NOTE: bin/ is intentionally NOT excluded either. The release workflow copies the
+# platform's natural-lsp server binary into bin/ before `vsce package --target`, and
+# the extension launches <extensionPath>/bin/natural-lsp[.exe] at activation
+# (feature 37). Excluding bin/ would drop the bundled server. (Guarded by
+# src/test/unit/packaging.test.ts.)
 .github/**
 *.vsix
