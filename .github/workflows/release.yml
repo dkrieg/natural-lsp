@@ -77,39 +77,57 @@ jobs:
           cache: "npm"
           cache-dependency-path: editors/vscode/package-lock.json
 
-      - name: Package VS Code extension (.vsix)
+      - name: Package & verify platform-specific .vsix (bundled server)
         working-directory: editors/vscode
         env:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # Pin the packaged extension version to the release tag (minus the
-          # leading "v") so the .vsix version always matches the release, with no
-          # separate package.json bump to remember. --allow-same-version keeps it
-          # idempotent when package.json already matches; --no-git-tag-version so
-          # nothing is committed (CI-only mutation).
-          npm ci
-          npm version "${VERSION#v}" --no-git-tag-version --allow-same-version
-          npm run compile   # vsce does not compile the sources; build out/ first
-          npm run package   # produces natural-lsp-vscode-<version>.vsix
-          ls -1 ./*.vsix
+          ver="${VERSION#v}"
 
-      - name: Verify .vsix bundles runtime dependencies
-        working-directory: editors/vscode
-        run: |
-          set -euo pipefail
-          # The extension is NOT bundled — out/extension.js require()s
-          # `vscode-languageclient` from node_modules at activation. If
-          # .vscodeignore ever excludes node_modules (or vsce is run with
-          # --no-dependencies), the runtime dep is stripped and the extension
-          # crashes on activation ("Cannot find module 'vscode-languageclient'").
-          # Fail the release here rather than ship a broken .vsix.
-          vsix="$(ls -1 ./*.vsix | head -1)"
-          if ! unzip -l "$vsix" | grep -q 'extension/node_modules/vscode-languageclient/'; then
-            echo "::error::$vsix is missing the vscode-languageclient runtime dependency — the extension would crash on activation. Check editors/vscode/.vscodeignore (node_modules must NOT be excluded while the extension is unbundled)."
-            exit 1
-          fi
-          echo "Verified: $vsix bundles vscode-languageclient (production dependency tree)."
+          npm ci
+          # Pin the .vsix version to the release tag (idempotent; CI-only, not
+          # committed). vsce compiles nothing, so build out/ first, once.
+          npm version "$ver" --no-git-tag-version --allow-same-version
+          npm run compile
+
+          # Build one platform-specific .vsix per target, each embedding ONLY that
+          # platform's server binary from dist/ (produced by `just release`). The
+          # extension resolves <extensionPath>/bin/natural-lsp[.exe] at activation
+          # (feature 37). Fields per entry: <vsce-target> <dist-binary> <bundled-name>.
+          # bundled-name is natural-lsp.exe for win32 (process.platform === 'win32'),
+          # else natural-lsp — matching serverPath.ts's bundledServerPath().
+          for entry in \
+            "linux-x64    natural-lsp-linux-amd64        natural-lsp" \
+            "linux-arm64  natural-lsp-linux-arm64        natural-lsp" \
+            "darwin-x64   natural-lsp-darwin-amd64       natural-lsp" \
+            "darwin-arm64 natural-lsp-darwin-arm64       natural-lsp" \
+            "win32-x64    natural-lsp-windows-amd64.exe  natural-lsp.exe"; do
+            set -- $entry
+            target="$1"; distbin="$2"; binname="$3"
+
+            rm -rf bin && mkdir -p bin
+            cp "../../dist/${distbin}" "bin/${binname}"
+            chmod +x "bin/${binname}" || true   # exec bit may not survive .vsix; extension re-chmods on activation
+
+            out="natural-lsp-vscode-${ver}-${target}.vsix"
+            npx vsce package --target "$target" --out "$out"
+
+            # Fail the release if a .vsix is missing the bundled server binary or
+            # the vscode-languageclient runtime dependency (PR #60) — never ship a
+            # .vsix that crashes on activation.
+            if ! unzip -l "$out" | grep -q "extension/bin/${binname}"; then
+              echo "::error::$out is missing the bundled server binary (extension/bin/${binname})."
+              exit 1
+            fi
+            if ! unzip -l "$out" | grep -q 'extension/node_modules/vscode-languageclient/'; then
+              echo "::error::$out is missing the vscode-languageclient runtime dependency (check editors/vscode/.vscodeignore)."
+              exit 1
+            fi
+            echo "Verified $out: bundles ${binname} + vscode-languageclient."
+          done
+          rm -rf bin
+          echo "Built platform-specific .vsix files:"; ls -1 ./*.vsix
 
       - name: Create tag and GitHub Release
         env:
